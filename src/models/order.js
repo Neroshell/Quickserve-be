@@ -4,6 +4,7 @@ const OrderItemSchema = new mongoose.Schema(
   {
     itemName: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
+
     notes: { type: String, default: "" },
     allergies: { type: [String], default: [] },
   },
@@ -14,6 +15,12 @@ const OrderSchema = new mongoose.Schema(
   {
     orderId: { type: String, required: true, unique: true, index: true },
     tableNumber: { type: String, required: true, index: true },
+      orderType: {
+    type: String,
+    enum: ["dine-in", "takeout"],
+    default: "dine-in",
+    index: true,
+  },
     sessionId: { type: String, index: true }, // optional but scalable
     status: {
       type: String,
