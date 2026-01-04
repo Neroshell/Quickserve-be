@@ -122,3 +122,23 @@ export async function updateOrderStatus(req, res) {
     return res.status(500).json({ message: "Server error" })
   }
 }
+
+export async function deleteOrdersBySession(req, res) {
+  try {
+    const { sessionId } = req.body
+
+    if (!sessionId) {
+      return res.status(400).json({ message: "sessionId is required" })
+    }
+
+    const result = await Order.deleteMany({ sessionId })
+
+    return res.json({
+      message: "Order history cleared",
+      deletedCount: result.deletedCount,
+    })
+  } catch (err) {
+    console.error("Delete session orders error:", err)
+    return res.status(500).json({ message: "Server error" })
+  }
+}
