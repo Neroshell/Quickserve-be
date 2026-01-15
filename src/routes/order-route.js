@@ -8,6 +8,6 @@ router.post("/", createOrder)
 router.delete("/session", deleteOrdersBySession)
 router.get("/:orderId", getOrderById)
 router.patch("/:orderId/status", updateOrderStatus)
-router.delete("/session", deleteOrdersBySession)
+// router.delete("/session", deleteOrdersBySession)
 
 export default router

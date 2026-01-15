@@ -4,6 +4,7 @@ import cors from "cors"
 import orderRoute from "./src/routes/order-route.js"
 import { connectDB } from "./src/config/db.js"
 import qrRoute from "./src/routes/qr-route.js"
+import kitchenRoute from "./src/routes/kitchen-route.js"
 
 // ...
 
@@ -19,6 +20,7 @@ app.use(cors())
 // Routes
 app.use("/orders", orderRoute)
 app.use("/q", qrRoute)
+app.use("/kitchen", kitchenRoute)
 
 
 // Start server (DB first)
