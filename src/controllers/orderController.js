@@ -19,13 +19,13 @@ export async function listOrders(req, res) {
   } catch (err) {
     console.error("List orders error:", err)
     return res.status(500).json({ message: "Server error" })
-   
+
   }
 }
 
 export async function createOrder(req, res) {
   try {
-    const { tableNumber, items, sessionId, tableSessionToken, orderType } = req.body
+    const { tableNumber, items, sessionId, tableSessionToken, orderType, total, currency } = req.body
 
     if (!sessionId) {
       return res.status(400).json({ message: "sessionId is required" })
@@ -79,6 +79,8 @@ export async function createOrder(req, res) {
       sessionId,
       items,
       status: "placed",
+      total: Number(total) || 0,
+      currency: currency || "EUR",
     })
 
     return res.status(201).json({ orderId: saved.orderId, status: saved.status })
@@ -103,25 +105,25 @@ export async function getOrderById(req, res) {
   }
 }
 
-export async function updateOrderStatus(req, res) {
-  try {
-    const { orderId } = req.params
-    const { status } = req.body
+// export async function updateOrderStatus(req, res) {
+//   try {
+//     const { orderId } = req.params
+//     const { status } = req.body
 
-    const allowed = ["placed", "in_progress", "ready", "completed"]
-    if (!allowed.includes(status)) {
-      return res.status(400).json({ message: `Invalid status. Use: ${allowed.join(", ")}` })
-    }
+//     const allowed = ["placed", "in_progress", "ready", "completed"]
+//     if (!allowed.includes(status)) {
+//       return res.status(400).json({ message: `Invalid status. Use: ${allowed.join(", ")}` })
+//     }
 
-    const updated = await Order.findOneAndUpdate({ orderId }, { status }, { new: true }).lean()
-    if (!updated) return res.status(404).json({ message: "Order not found" })
+//     const updated = await Order.findOneAndUpdate({ orderId }, { status }, { new: true }).lean()
+//     if (!updated) return res.status(404).json({ message: "Order not found" })
 
-    return res.json({ orderId: updated.orderId, status: updated.status })
-  } catch (err) {
-    console.error("Update status error:", err)
-    return res.status(500).json({ message: "Server error" })
-  }
-}
+//     return res.json({ orderId: updated.orderId, status: updated.status })
+//   } catch (err) {
+//     console.error("Update status error:", err)
+//     return res.status(500).json({ message: "Server error" })
+//   }
+// }
 
 export async function deleteOrdersBySession(req, res) {
   try {
@@ -142,3 +144,52 @@ export async function deleteOrdersBySession(req, res) {
     return res.status(500).json({ message: "Server error" })
   }
 }
+
+export async function updateOrderStatus(req, res) {
+  try {
+    const { orderId } = req.params
+    const { status: nextStatus } = req.body
+
+    const VALID_STATUSES = ["placed", "in_progress", "ready", "completed"]
+    if (!VALID_STATUSES.includes(nextStatus)) {
+      return res.status(400).json({ error: "Invalid status" })
+    }
+
+    const order = await Order.findOne({ orderId })
+    if (!order) return res.status(404).json({ error: "Order not found" })
+
+    const allowedNext = {
+      placed: ["in_progress"],
+      in_progress: ["ready"],
+      ready: ["completed"],
+      completed: [],
+    }
+
+    if (!allowedNext[order.status].includes(nextStatus)) {
+      return res.status(400).json({
+        error: `Invalid transition ${order.status} -> ${nextStatus}`,
+      })
+    }
+
+    order.status = nextStatus
+
+    // ✅ add timestamps when certain statuses happen
+    if (nextStatus === "ready" && !order.readyAt) order.readyAt = new Date()
+    if (nextStatus === "completed" && !order.completedAt) order.completedAt = new Date()
+
+    await order.save()
+
+    return res.json({
+      success: true,
+      orderId: order.orderId,
+      status: order.status,
+      updatedAt: order.updatedAt,
+      readyAt: order.readyAt,
+      completedAt: order.completedAt,
+    })
+  } catch (err) {
+    console.error("[updateOrderStatus]", err)
+    return res.status(500).json({ error: "Failed to update order status" })
+  }
+}
+

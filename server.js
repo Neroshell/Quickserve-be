@@ -5,8 +5,8 @@ import orderRoute from "./src/routes/order-route.js"
 import { connectDB } from "./src/config/db.js"
 import qrRoute from "./src/routes/qr-route.js"
 import kitchenRoute from "./src/routes/kitchen-route.js"
+import waiterRoute from "./src/routes/waiter-route.js"
 
-// ...
 
 
 
@@ -21,6 +21,8 @@ app.use(cors())
 app.use("/orders", orderRoute)
 app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)
+app.use("/waiter", waiterRoute)
+
 
 
 // Start server (DB first)

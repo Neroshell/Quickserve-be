@@ -60,7 +60,9 @@ export async function kitchenOrders(req, res) {
     // Transform to match your FE shape: add order-level notes/allergies
     const orders = rawOrders.map((o) => {
       const allergiesSet = new Set()
-      const notesParts = []
+
+      // ✅ CHANGE: take ONE special request note (standalone), not "itemName: note"
+      let specialRequest = ""
 
       for (const it of o.items || []) {
         if (Array.isArray(it.allergies)) {
@@ -68,8 +70,10 @@ export async function kitchenOrders(req, res) {
             if (a && String(a).trim()) allergiesSet.add(String(a).trim())
           }
         }
-        if (it.notes && String(it.notes).trim()) {
-          notesParts.push(`${it.itemName}: ${String(it.notes).trim()}`)
+
+        // grab first non-empty note (you mapped same note to all items)
+        if (!specialRequest && it.notes && String(it.notes).trim()) {
+          specialRequest = String(it.notes).trim()
         }
       }
 
@@ -85,7 +89,7 @@ export async function kitchenOrders(req, res) {
           // you can include per-item notes/allergies too if you want later
         })),
         allergies: Array.from(allergiesSet),
-        notes: notesParts.join(" • "),
+        notes: specialRequest, // ✅ standalone note
       }
     })
 

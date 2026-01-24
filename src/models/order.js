@@ -15,22 +15,17 @@ const OrderSchema = new mongoose.Schema(
   {
     orderId: { type: String, required: true, unique: true, index: true },
     tableNumber: { type: String, required: true, index: true },
-      orderType: {
-    type: String,
-    enum: ["dine-in", "takeout"],
-    default: "dine-in",
-    index: true,
-  },
-    sessionId: { type: String, index: true }, // optional but scalable
-    status: {
-      type: String,
-      enum: ["placed", "in_progress", "ready", "completed"],
-      default: "placed",
-      index: true,
-    },
+    orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in", index: true },
+    sessionId: { type: String, index: true },
+    status: { type: String, enum: ["placed", "in_progress", "ready", "completed"], default: "placed", index: true },
     items: { type: [OrderItemSchema], required: true },
+    total: { type: Number, default: 0 }, 
+currency: { type: String, default: "EUR" },
+    readyAt: { type: Date, default: null, index: true },
+    completedAt: { type: Date, default: null, index: true },
   },
-  { timestamps: true }
+  { timestamps: true },
 )
+
 
 export default mongoose.model("Order", OrderSchema)
