@@ -1,12 +1,23 @@
 import express from "express"
-import { waiterOrders, waiterReadyOrders } from "../controllers/waiterController.js"
+import { waiterOrders } from "../controllers/waiterOrdersController.js"
+import {
+    createWaiterCall,
+    listWaiterCalls,
+    claimWaiterCall,
+    resolveWaiterCall,
+} from "../controllers/waiterCallController.js"
 
 const router = express.Router()
 
-// ✅ supports tabs: /waiter?status=placed | in_progress | ready | completed | all
+// Orders: GET /waiter?status=ready|placed|in_progress|all
 router.get("/", waiterOrders)
 
-// optional legacy endpoint
-router.get("/ready", waiterReadyOrders)
+// router.get("/ready", waiterReadyOrders)
+
+// Calls
+router.get("/calls", listWaiterCalls) // /waiter/calls?status=active|pending|acknowledged|resolved
+router.post("/calls", createWaiterCall) // customer/table hits this
+router.patch("/calls/:id/claim", claimWaiterCall) // waiter
+router.patch("/calls/:id/resolve", resolveWaiterCall) // waiter
 
 export default router
