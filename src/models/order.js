@@ -19,8 +19,28 @@ const OrderSchema = new mongoose.Schema(
     sessionId: { type: String, index: true },
     status: { type: String, enum: ["placed", "in_progress", "ready", "completed"], default: "placed", index: true },
     items: { type: [OrderItemSchema], required: true },
-    total: { type: Number, default: 0 }, 
-currency: { type: String, default: "EUR" },
+    total: { type: Number, default: 0 },
+    currency: { type: String, default: "EUR" },
+
+    // Payment fields
+    paymentChannel: {
+      type: String,
+      enum: ["online", "offline"],
+      default: "offline",
+      index: true
+    },
+    paymentStatus: {
+      type: String,
+      enum: ["unpaid", "pending", "paid"],
+      default: "unpaid",
+      index: true
+    },
+    paidVia: {
+      type: String,
+      enum: ["online_card", "pos_card", "cash"],
+      default: null
+    },
+
     readyAt: { type: Date, default: null, index: true },
     completedAt: { type: Date, default: null, index: true },
   },

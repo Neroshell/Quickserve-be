@@ -25,7 +25,10 @@ export async function listOrders(req, res) {
 
 export async function createOrder(req, res) {
   try {
-    const { tableNumber, items, sessionId, tableSessionToken, orderType, total, currency } = req.body
+    const {
+      tableNumber, items, sessionId, tableSessionToken, orderType, total, currency,
+      paymentChannel, paymentStatus, paidVia
+    } = req.body
 
     if (!sessionId) {
       return res.status(400).json({ message: "sessionId is required" })
@@ -81,6 +84,9 @@ export async function createOrder(req, res) {
       status: "placed",
       total: Number(total) || 0,
       currency: currency || "EUR",
+      paymentChannel: paymentChannel || "offline",
+      paymentStatus: paymentStatus || "unpaid",
+      paidVia: paidVia || null,
     })
 
     return res.status(201).json({ orderId: saved.orderId, status: saved.status })
@@ -190,6 +196,40 @@ export async function updateOrderStatus(req, res) {
   } catch (err) {
     console.error("[updateOrderStatus]", err)
     return res.status(500).json({ error: "Failed to update order status" })
+  }
+}
+
+export async function markPaid(req, res) {
+  try {
+    const { orderId } = req.params
+    const { paidVia } = req.body
+
+    const ALLOWED_PAID_VIA = ["pos_card", "cash"]
+    if (!ALLOWED_PAID_VIA.includes(paidVia)) {
+      return res.status(400).json({ message: "Invalid paidVia method" })
+    }
+
+    const order = await Order.findOne({ orderId })
+    if (!order) return res.status(404).json({ message: "Order not found" })
+
+    if (order.paymentStatus === "paid") {
+      return res.status(400).json({ message: "Order is already paid" })
+    }
+
+    order.paymentStatus = "paid"
+    order.paidVia = paidVia
+
+    await order.save()
+
+    return res.json({
+      success: true,
+      orderId: order.orderId,
+      paymentStatus: order.paymentStatus,
+      paidVia: order.paidVia,
+    })
+  } catch (err) {
+    console.error("[markPaid] Error:", err)
+    return res.status(500).json({ message: "Server error" })
   }
 }
 
