@@ -1,5 +1,5 @@
 import express from "express"
-import { sseHandler } from "../utils/sseBus.js"
+import { sseHandler } from "../utils/sseManager.js"
 
 const router = express.Router()
 

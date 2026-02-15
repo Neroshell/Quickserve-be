@@ -1,6 +1,8 @@
 import Order from "../models/order.js"
 import TableSession from "../models/TableSession.js"
 import { generateOrderId } from "../utils/orderId.js"
+import { toOrderDTO } from "../utils/orderDTO.js"
+import { broadcast } from "../utils/sseManager.js"
 
 export async function listOrders(req, res) {
   try {
@@ -88,6 +90,9 @@ export async function createOrder(req, res) {
       paymentStatus: paymentStatus || "unpaid",
       paidVia: paidVia || null,
     })
+
+    const orderDTO = toOrderDTO(saved)
+    broadcast("order_created", { order: orderDTO })
 
     return res.status(201).json({ orderId: saved.orderId, status: saved.status })
   } catch (err) {
@@ -177,6 +182,13 @@ export async function updateOrderStatus(req, res) {
       })
     }
 
+    // ✅ Guard: Offline orders must be paid before being marked as completed (served)
+    if (nextStatus === "completed" && order.paymentChannel === "offline" && order.paymentStatus !== "paid") {
+      return res.status(400).json({
+        error: "Offline orders must be paid before being served",
+      })
+    }
+
     order.status = nextStatus
 
     // ✅ add timestamps when certain statuses happen
@@ -184,6 +196,9 @@ export async function updateOrderStatus(req, res) {
     if (nextStatus === "completed" && !order.completedAt) order.completedAt = new Date()
 
     await order.save()
+
+    const orderDTO = toOrderDTO(order)
+    broadcast("order_updated", { order: orderDTO })
 
     return res.json({
       success: true,
@@ -220,6 +235,9 @@ export async function markPaid(req, res) {
     order.paidVia = paidVia
 
     await order.save()
+
+    const orderDTO = toOrderDTO(order)
+    broadcast("order_updated", { order: orderDTO })
 
     return res.json({
       success: true,

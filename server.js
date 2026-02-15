@@ -6,6 +6,7 @@ import { connectDB } from "./src/config/db.js"
 import qrRoute from "./src/routes/qr-route.js"
 import kitchenRoute from "./src/routes/kitchen-route.js"
 import waiterRoute from "./src/routes/waiter-route.js"
+import sseRoute from "./src/routes/sse-route.js"
 
 
 
@@ -22,6 +23,7 @@ app.use("/orders", orderRoute)
 app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)
 app.use("/waiter", waiterRoute)
+app.use(sseRoute)
 
 
 

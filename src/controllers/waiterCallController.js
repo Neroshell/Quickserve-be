@@ -1,4 +1,5 @@
 import WaiterCall from "../models/WaiterCall.js"
+import { broadcast } from "../utils/sseManager.js"
 
 /**
  * Expects a stable per-device waiter id in header:
@@ -48,6 +49,8 @@ export async function createWaiterCall(req, res) {
       status: "pending",
       createdBy: waiterId || null, // usually null because customer triggers it
     })
+
+    broadcast("waiter_call_created", { call })
 
     return res.status(201).json({ success: true, call })
   } catch (err) {
@@ -122,6 +125,8 @@ export async function claimWaiterCall(req, res) {
       })
     }
 
+    broadcast("waiter_call_updated", { call: claimed })
+
     return res.json({ success: true, call: claimed })
   } catch (err) {
     console.error("[claimWaiterCall]", err)
@@ -170,6 +175,8 @@ export async function resolveWaiterCall(req, res) {
         call: current,
       })
     }
+
+    broadcast("waiter_call_updated", { call: updated })
 
     return res.json({ success: true, call: updated })
   } catch (err) {
