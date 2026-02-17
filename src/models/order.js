@@ -5,6 +5,11 @@ const OrderItemSchema = new mongoose.Schema(
     itemName: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
 
+    category: {
+      type: String,
+      enum: ["food", "drinks"],
+      default: "food"
+    },
     notes: { type: String, default: "" },
     allergies: { type: [String], default: [] },
   },

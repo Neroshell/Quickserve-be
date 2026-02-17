@@ -13,11 +13,12 @@ export function sseHandler(req, res) {
 
     res.flushHeaders?.();
 
-    const client = { res };
+    const role = req.query.role || "anon";
+    const client = { res, role };
     clients.add(client);
 
     // Initial heartbeat to open stream
-    res.write(`event: heartbeat\ndata: ${JSON.stringify({ ok: true, t: Date.now() })}\n\n`);
+    res.write(`event: heartbeat\ndata: ${JSON.stringify({ ok: true, t: Date.now(), role })}\n\n`);
 
     // Ping every 25s
     const keepAlive = setInterval(() => {
@@ -36,17 +37,32 @@ export function sseHandler(req, res) {
     });
 }
 
-/**
- * Broadcast event to all connected clients
- */
-export function broadcast(eventName, payload) {
+export function broadcast(eventName, payload, filterFn = null) {
     const data = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
     for (const client of clients) {
+        if (filterFn && !filterFn(client)) continue;
+
         try {
             client.res.write(data);
         } catch (err) {
             // If write fails, the client is likely disconnected but req.on("close") hasn't fired yet
             clients.delete(client);
+        }
+    }
+}
+
+/**
+ * Broadcast event to specific role
+ */
+export function broadcastToRole(targetRole, eventName, payload) {
+    const data = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+    for (const client of clients) {
+        if (client.role === targetRole) {
+            try {
+                client.res.write(data);
+            } catch (err) {
+                clients.delete(client);
+            }
         }
     }
 }

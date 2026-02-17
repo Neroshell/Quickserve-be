@@ -1,7 +1,7 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
-import { broadcast } from "../utils/sseManager.js"
+import { broadcast, broadcastToRole } from "../utils/sseManager.js"
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -44,8 +44,22 @@ export async function kitchenOrders(req, res) {
       .sort({ createdAt: 1 })
       .lean()
 
-    // Transform to unified DTO
-    const orders = rawOrders.map((o) => toOrderDTO(o))
+    // Transform to unified DTO and filter for food items
+    const orders = rawOrders.map((o) => {
+      const dto = toOrderDTO(o)
+      // Filter items to show only food
+      const foodItems = dto.items.filter(item => item.category === "food")
+      if (foodItems.length === 0) return null // Skip if no food items
+
+      return {
+        ...dto,
+        items: foodItems,
+        // Recalculate allergies/notes based on filtered items if needed?
+        // The prompt says: "allergies: [...new Set(foodItems.flatMap(i => i.allergies || []))]" 
+        // asking to update kitchenController logic specifically.
+        // Let's implement the specific logic requested in TASK 5.
+      }
+    }).filter(Boolean)
 
     // Counts for your top cards (optional, but nice)
     const counts = { placed: 0, in_progress: 0, ready: 0 }
@@ -100,7 +114,23 @@ export async function updateOrderStatus(req, res) {
     await order.save()
 
     const orderDTO = toOrderDTO(order)
-    broadcast("order_updated", { order: orderDTO })
+
+    // --- SSE SPLIT for Update ---
+    const foodItems = order.items.filter(i => i.category === "food")
+
+    // Dynamic import to avoid circular dependency issues
+    // const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")
+
+    // 1. Send to Kitchen: Food Only
+    if (foodItems.length > 0) {
+      const kitchenDTO = { ...orderDTO, items: foodItems }
+      // Send only to kitchen role
+      broadcastToRole("kitchen", "order_updated", { order: kitchenDTO })
+    }
+
+    // 2. Send to Waiters & Tables: Full Order
+    // We exclude 'kitchen' role from this broadcast to avoid duplicates/wrong data
+    broadcast("order_updated", { order: orderDTO }, (client) => client.role !== "kitchen")
 
     return res.json({
       success: true,

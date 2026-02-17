@@ -4,6 +4,7 @@ import { generateOrderId } from "../utils/orderId.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { broadcast } from "../utils/sseManager.js"
 
+
 export async function listOrders(req, res) {
   try {
     const { sessionId, tableNumber } = req.query
@@ -77,13 +78,48 @@ export async function createOrder(req, res) {
     const now = new Date()
     const orderId = generateOrderId(tableNumber, now)
 
+    // // Enrich items with category
+    // const enrichedItems = await Promise.all(
+    //   items.map(async (item) => {
+    //     const menuItem = await MenuItem.findOne({ name: item.itemName }).lean()
+    //     return {
+    //       itemName: item.itemName,
+    //       quantity: item.quantity,
+    //       category: menuItem?.category || "food", // Fallback to food
+    //       notes: item.notes || "",
+    //       allergies: item.allergies || []
+    //     }
+    //   })
+    // )
+
+    // Use category from frontend directly (no DB lookup yet)
+    const enrichedItems = items.map((item) => {
+      // Frontend sends 'orderCategory' ('food' | 'drinks') 
+      // Backend schema expects 'category' ('food' | 'drinks')
+
+      // let cat = item.orderCategory || "food";
+      // if (cat === "drinks") cat = "drinks";
+
+      return {
+        itemName: item.itemName,
+        quantity: item.quantity,
+        category: cat,
+        notes: item.notes || "",
+        allergies: item.allergies || []
+      }
+    })
+
+    // ✅ Detect drinks-only order
+    const hasFood = enrichedItems.some(i => i.category === "food")
+    const initialStatus = hasFood ? "placed" : "ready"
+
     const saved = await Order.create({
       orderId,
       tableNumber,
       orderType: finalOrderType, // ✅ always valid + always present
       sessionId,
-      items,
-      status: "placed",
+      items: enrichedItems,
+      status: initialStatus, // ✅ Skip kitchen workflow for drinks
       total: Number(total) || 0,
       currency: currency || "EUR",
       paymentChannel: paymentChannel || "offline",
@@ -92,7 +128,23 @@ export async function createOrder(req, res) {
     })
 
     const orderDTO = toOrderDTO(saved)
-    broadcast("order_created", { order: orderDTO })
+
+    // --- SSE SPLIT ---
+    const foodItems = saved.items.filter(i => i.category === "food")
+
+    // Dynamic import to avoid circular dependency issues if any
+    const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")
+
+    // 1. Send to Kitchen: Food Only
+    if (foodItems.length > 0) {
+      const kitchenDTO = { ...orderDTO, items: foodItems }
+      // Send only to kitchen role
+      broadcastToRole("kitchen", "order_created", { order: kitchenDTO })
+    }
+
+    // 2. Send to Waiters & Tables: Full Order
+    // We exclude 'kitchen' role from this broadcast to avoid duplicates/wrong data
+    broadcast("order_created", { order: orderDTO }, (client) => client.role !== "kitchen")
 
     return res.status(201).json({ orderId: saved.orderId, status: saved.status })
   } catch (err) {
@@ -237,7 +289,23 @@ export async function markPaid(req, res) {
     await order.save()
 
     const orderDTO = toOrderDTO(order)
-    broadcast("order_updated", { order: orderDTO })
+
+    // --- SSE SPLIT for Payment ---
+    const foodItems = order.items.filter(i => i.category === "food")
+
+    // Dynamic import to avoid circular dependency issues
+    const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")
+
+    // 1. Send to Kitchen: Food Only
+    if (foodItems.length > 0) {
+      const kitchenDTO = { ...orderDTO, items: foodItems }
+      // Send only to kitchen role
+      broadcastToRole("kitchen", "order_updated", { order: kitchenDTO })
+    }
+
+    // 2. Send to Waiters & Tables: Full Order
+    // We exclude 'kitchen' role from this broadcast to avoid duplicates/wrong data
+    broadcast("order_updated", { order: orderDTO }, (client) => client.role !== "kitchen")
 
     return res.json({
       success: true,
