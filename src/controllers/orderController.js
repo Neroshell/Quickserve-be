@@ -97,8 +97,8 @@ export async function createOrder(req, res) {
       // Frontend sends 'orderCategory' ('food' | 'drinks') 
       // Backend schema expects 'category' ('food' | 'drinks')
 
-      // let cat = item.orderCategory || "food";
-      // if (cat === "drinks") cat = "drinks";
+      let cat = item.orderCategory || "food";
+      if (cat === "drinks") cat = "drinks";
 
       return {
         itemName: item.itemName,
