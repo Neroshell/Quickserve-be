@@ -9,7 +9,7 @@ const TableSessionSchema = new mongoose.Schema(
     boundSessionId: { type: String, default: null },
 
     // TTL: Mongo will auto-delete after expiresAt passes
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
   },
   { timestamps: true }
 )
