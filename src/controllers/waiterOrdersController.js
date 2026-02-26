@@ -60,8 +60,8 @@ export async function waiterOrders(req, res) {
                 total: 1,
                 currency: 1,
                 paymentChannel: 1,
- paymentStatus: 1,
-   paidVia: 1,
+                paymentStatus: 1,
+                paidVia: 1,
             }
         )
             // ✅ show READY first if status=all, else normal ordering
@@ -110,6 +110,7 @@ export async function waiterOrders(req, res) {
                 items: (o.items || []).map((it) => ({
                     itemName: it.itemName,
                     quantity: it.quantity,
+                    lineTotal: it.lineTotal || 0,
                     notes: it.notes,
                     allergies: it.allergies
                 })),

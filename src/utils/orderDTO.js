@@ -40,6 +40,7 @@ export function toOrderDTO(orderDoc) {
         items: (o.items || []).map((it) => ({
             itemName: it.itemName,
             quantity: it.quantity,
+            lineTotal: it.lineTotal || 0,
             category: it.category || "food",
             notes: it.notes || "",
             allergies: it.allergies || [],

@@ -1,6 +1,7 @@
 import Order from "../models/order.js"
 import TableSession from "../models/TableSession.js"
 import { generateOrderId } from "../utils/orderId.js"
+import MenuItem from "../models/menuItem.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { broadcast } from "../utils/sseManager.js"
 
@@ -92,26 +93,35 @@ export async function createOrder(req, res) {
     //   })
     // )
 
-    // Use category from frontend directly (no DB lookup yet)
-    const enrichedItems = items.map((item) => {
-      // Frontend sends 'orderCategory' ('food' | 'drinks') 
-      // Backend schema expects 'category' ('food' | 'drinks')
+    // Enrich items with category and unitPrice from DB (authoritative)
+    let calculatedTotal = 0
+    const enrichedItems = await Promise.all(
+      items.map(async (item) => {
+        const menuItem = await MenuItem.findOne({ name: item.itemName }).lean()
+        // Authoritative from DB, fallback to provided price, else 0
+        const unitPrice = menuItem?.price || item.unitPrice || 0
+        const category = menuItem?.category || item.orderCategory || "food"
 
-      let cat = item.orderCategory || "food";
-      if (cat === "drinks") cat = "drinks";
+        const itemLineTotal = Number((unitPrice * item.quantity).toFixed(2))
+        calculatedTotal += itemLineTotal
 
-      return {
-        itemName: item.itemName,
-        quantity: item.quantity,
-        category: cat,
-        notes: item.notes || "",
-        allergies: item.allergies || []
-      }
-    })
+        return {
+          itemName: item.itemName,
+          quantity: item.quantity,
+          lineTotal: itemLineTotal,
+          category,
+          notes: item.notes || "",
+          allergies: item.allergies || []
+        }
+      })
+    )
 
-    // ✅ Detect drinks-only order
+    // Detect drinks-only order
     const hasFood = enrichedItems.some(i => i.category === "food")
     const initialStatus = hasFood ? "placed" : "ready"
+
+    // Use calculated total if possible, fallback to frontend total
+    const finalTotal = calculatedTotal > 0 ? Number(calculatedTotal.toFixed(2)) : (Number(total) || 0)
 
     const saved = await Order.create({
       orderId,
@@ -120,7 +130,7 @@ export async function createOrder(req, res) {
       sessionId,
       items: enrichedItems,
       status: initialStatus, // ✅ Skip kitchen workflow for drinks
-      total: Number(total) || 0,
+      total: finalTotal,
       currency: currency || "EUR",
       paymentChannel: paymentChannel || "offline",
       paymentStatus: paymentStatus || "unpaid",

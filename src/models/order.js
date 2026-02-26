@@ -11,6 +11,7 @@ const OrderItemSchema = new mongoose.Schema(
       default: "food"
     },
     notes: { type: String, default: "" },
+    lineTotal: { type: Number, required: true },
     allergies: { type: [String], default: [] },
   },
   { _id: false }
