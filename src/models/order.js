@@ -49,6 +49,10 @@ const OrderSchema = new mongoose.Schema(
 
     readyAt: { type: Date, default: null, index: true },
     completedAt: { type: Date, default: null, index: true },
+
+    // Stripe fields (online payments only)
+    stripeSessionId: { type: String, default: null },
+    stripeCheckoutUrl: { type: String, default: null },
   },
   { timestamps: true },
 )
