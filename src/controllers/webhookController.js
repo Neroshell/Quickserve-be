@@ -4,6 +4,7 @@ import Order from "../models/order.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
 import { broadcast, broadcastToRole } from "../utils/sseManager.js";
+import { sendReceiptEmail } from "../utils/emailService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -66,6 +67,8 @@ export async function handleStripeWebhook(req, res) {
             const initialStatus = hasFood ? "placed" : "ready";
             const orderId = generateOrderId(pending.tableNumber, now);
 
+            const customerEmail = session.customer_details?.email || null;
+
             const order = await Order.create({
                 orderId,
                 tableNumber: pending.tableNumber,
@@ -79,9 +82,20 @@ export async function handleStripeWebhook(req, res) {
                 paymentStatus: "paid",
                 paidVia: "online_card",
                 stripeSessionId: pending.stripeSessionId,
+                receiptEmail: customerEmail,
+                receiptSent: false
             });
 
             console.log(`[stripeWebhook] ✅ Order created: ${orderId} (status=${initialStatus}, paid=online_card)`);
+
+            // Send receipt automatically if email is available
+            if (customerEmail) {
+                const emailSent = await sendReceiptEmail(order, customerEmail);
+                if (emailSent) {
+                    await Order.findOneAndUpdate({ orderId }, { receiptSent: true });
+                    console.log(`[stripeWebhook] ✅ Receipt sent to ${customerEmail}`);
+                }
+            }
 
             // 5. Broadcast order_created to dashboards
             const orderDTO = toOrderDTO(order);

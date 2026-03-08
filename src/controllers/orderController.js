@@ -4,6 +4,7 @@ import { generateOrderId } from "../utils/orderId.js"
 import MenuItem from "../models/menuItem.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { broadcast } from "../utils/sseManager.js"
+import { sendReceiptEmail } from "../utils/emailService.js"
 
 
 export async function listOrders(req, res) {
@@ -31,7 +32,7 @@ export async function createOrder(req, res) {
   try {
     const {
       tableNumber, items, sessionId, tableSessionToken, orderType, total, currency,
-      paymentChannel, paymentStatus, paidVia
+      paymentChannel, paymentStatus, paidVia, receiptEmail
     } = req.body
 
     if (!sessionId) {
@@ -135,6 +136,7 @@ export async function createOrder(req, res) {
       paymentChannel: paymentChannel || "offline",
       paymentStatus: paymentStatus || "unpaid",
       paidVia: paidVia || null,
+      receiptEmail: receiptEmail || null,
     })
 
     const orderDTO = toOrderDTO(saved)
@@ -300,6 +302,15 @@ export async function markPaid(req, res) {
 
     const orderDTO = toOrderDTO(order)
 
+    // Automatically send receipt if email is present and not sent yet
+    if (order.receiptEmail && !order.receiptSent) {
+      const emailSent = await sendReceiptEmail(order, order.receiptEmail);
+      if (emailSent) {
+        order.receiptSent = true;
+        await order.save();
+      }
+    }
+
     // --- SSE SPLIT for Payment ---
     const foodItems = order.items.filter(i => i.category === "food")
 
@@ -326,6 +337,65 @@ export async function markPaid(req, res) {
   } catch (err) {
     console.error("[markPaid] Error:", err)
     return res.status(500).json({ message: "Server error" })
+  }
+}
+
+export async function sendReceipt(req, res) {
+  try {
+    const { orderId } = req.params;
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const order = await Order.findOne({ orderId }).lean();
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    if (order.receiptSent && order.receiptEmail === email) {
+      return res.status(200).json({ message: "Receipt already sent to this email" });
+    }
+
+    const emailSent = await sendReceiptEmail(order, email);
+
+    if (emailSent) {
+      await Order.findOneAndUpdate(
+        { orderId },
+        { receiptSent: true, receiptEmail: email }
+      );
+      return res.status(200).json({ success: true, message: "Receipt sent successfully" });
+    } else {
+      return res.status(500).json({ success: false, message: "Failed to send receipt email" });
+    }
+  } catch (err) {
+    console.error("Send receipt error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+}
+
+export async function saveReceiptEmail(req, res) {
+  try {
+    const { orderId } = req.params;
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const order = await Order.findOne({ orderId });
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    order.receiptEmail = email;
+    await order.save();
+
+    return res.status(200).json({ success: true, message: "Receipt email saved successfully" });
+  } catch (err) {
+    console.error("Save receipt email error:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 }
 

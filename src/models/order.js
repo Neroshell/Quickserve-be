@@ -53,6 +53,10 @@ const OrderSchema = new mongoose.Schema(
     // Stripe fields (online payments only)
     stripeSessionId: { type: String, default: null },
     stripeCheckoutUrl: { type: String, default: null },
+
+    // Receipt details
+    receiptEmail: { type: String, default: null },
+    receiptSent: { type: Boolean, default: false },
   },
   { timestamps: true },
 )
