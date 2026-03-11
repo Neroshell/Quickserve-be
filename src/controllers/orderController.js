@@ -1,5 +1,6 @@
 import Order from "../models/order.js"
 import TableSession from "../models/TableSession.js"
+import PendingCheckout from "../models/PendingCheckout.js"
 import { generateOrderId } from "../utils/orderId.js"
 import MenuItem from "../models/menuItem.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
@@ -303,12 +304,18 @@ export async function markPaid(req, res) {
     const orderDTO = toOrderDTO(order)
 
     // Automatically send receipt if email is present and not sent yet
+    // Do it asynchronously so we don't block the waiter frontend popup!
     if (order.receiptEmail && !order.receiptSent) {
-      const emailSent = await sendReceiptEmail(order, order.receiptEmail);
-      if (emailSent) {
-        order.receiptSent = true;
-        await order.save();
-      }
+      sendReceiptEmail(order, order.receiptEmail)
+        .then(async (emailSent) => {
+          if (emailSent) {
+            order.receiptSent = true;
+            await order.save();
+          }
+        })
+        .catch((err) => {
+          console.error("[markPaid] ❌ Error sending receipt in background:", err);
+        });
     }
 
     // --- SSE SPLIT for Payment ---
@@ -386,6 +393,13 @@ export async function saveReceiptEmail(req, res) {
 
     const order = await Order.findOne({ orderId });
     if (!order) {
+      // If the webhook hasn't fired yet, save the email to PendingCheckout
+      const pending = await PendingCheckout.findOne({ orderId });
+      if (pending) {
+        pending.receiptEmail = email;
+        await pending.save();
+        return res.status(200).json({ success: true, message: "Receipt email saved for pending checkout successfully" });
+      }
       return res.status(404).json({ message: "Order not found" });
     }
 

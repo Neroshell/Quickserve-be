@@ -65,9 +65,9 @@ export async function handleStripeWebhook(req, res) {
             const now = new Date();
             const hasFood = pending.items.some((i) => i.category === "food");
             const initialStatus = hasFood ? "placed" : "ready";
-            const orderId = generateOrderId(pending.tableNumber, now);
+            const orderId = pending.orderId;
 
-            const customerEmail = session.customer_details?.email || null;
+            const customerEmail = pending.receiptEmail || session.customer_details?.email || null;
 
             const order = await Order.create({
                 orderId,
@@ -89,12 +89,18 @@ export async function handleStripeWebhook(req, res) {
             console.log(`[stripeWebhook] ✅ Order created: ${orderId} (status=${initialStatus}, paid=online_card)`);
 
             // Send receipt automatically if email is available
+            // Make email sending asynchronous so it doesn't block the webhook response or SSE
             if (customerEmail) {
-                const emailSent = await sendReceiptEmail(order, customerEmail);
-                if (emailSent) {
-                    await Order.findOneAndUpdate({ orderId }, { receiptSent: true });
-                    console.log(`[stripeWebhook] ✅ Receipt sent to ${customerEmail}`);
-                }
+                sendReceiptEmail(order, customerEmail)
+                    .then(async (emailSent) => {
+                        if (emailSent) {
+                            await Order.findOneAndUpdate({ orderId }, { receiptSent: true });
+                            console.log(`[stripeWebhook] ✅ Receipt sent to ${customerEmail}`);
+                        }
+                    })
+                    .catch((err) => {
+                        console.error("[stripeWebhook] ❌ Error sending receipt in background:", err);
+                    });
             }
 
             // 5. Broadcast order_created to dashboards

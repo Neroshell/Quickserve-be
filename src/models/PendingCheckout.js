@@ -22,12 +22,14 @@ const PendingItemSchema = new mongoose.Schema(
 
 const PendingCheckoutSchema = new mongoose.Schema(
     {
+        orderId: { type: String, required: true },
         tableNumber: { type: String, required: true },
         orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in" },
         sessionId: { type: String, required: true },
         items: { type: [PendingItemSchema], required: true },
         total: { type: Number, default: 0 },
         currency: { type: String, default: "EUR" },
+        receiptEmail: { type: String, default: null },
 
         // Stripe reference
         stripeSessionId: { type: String, default: null },

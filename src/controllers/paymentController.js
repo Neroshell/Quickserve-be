@@ -1,6 +1,7 @@
 import Stripe from "stripe";
 import TableSession from "../models/TableSession.js";
 import PendingCheckout from "../models/PendingCheckout.js";
+import { generateOrderId } from "../utils/orderId.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
@@ -88,7 +89,11 @@ export async function createCheckoutSession(req, res) {
         }
 
         // --- Save cart data temporarily (not an Order yet) ---
+        const now = new Date();
+        const orderId = generateOrderId(tableNumber, now);
+
         const pending = await PendingCheckout.create({
+            orderId,
             tableNumber,
             orderType: finalOrderType,
             sessionId,
@@ -97,7 +102,7 @@ export async function createCheckoutSession(req, res) {
             currency: finalCurrency.toUpperCase(),
         });
 
-        console.log(`[createCheckoutSession] ✅ PendingCheckout created — _id=${pending._id}, table=${tableNumber}, items=${enrichedItems.length}`);
+        console.log(`[createCheckoutSession] ✅ PendingCheckout created — _id=${pending._id}, orderId=${orderId}, table=${tableNumber}, items=${enrichedItems.length}`);
 
         // --- Create Stripe Checkout Session ---
         const stripeSession = await stripe.checkout.sessions.create({
@@ -106,9 +111,10 @@ export async function createCheckoutSession(req, res) {
             line_items: lineItems,
             metadata: {
                 pendingCheckoutId: pending._id.toString(),
+                orderId,
                 tableNumber,
             },
-            success_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/confirmation?payment=success`,
+            success_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/confirmation?payment=success&orderId=${orderId}`,
             cancel_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/order?payment=cancelled`,
         });
 
