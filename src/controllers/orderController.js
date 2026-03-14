@@ -97,12 +97,16 @@ export async function createOrder(req, res) {
 
     // Enrich items with category and unitPrice from DB (authoritative)
     let calculatedTotal = 0
+    // Get restaurantId from req body (fallback to env/default while Auth is built)
+    const restaurantId = req.body.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
+
     const enrichedItems = await Promise.all(
       items.map(async (item) => {
-        const menuItem = await MenuItem.findOne({ name: item.itemName }).lean()
+        const menuItem = await MenuItem.findOne({ name: item.itemName, restaurantId }).lean()
         // Authoritative from DB, fallback to provided price, else 0
         const unitPrice = menuItem?.price || item.unitPrice || 0
-        const category = menuItem?.category || item.orderCategory || "food"
+        const itemType = menuItem?.type || (item.orderCategory === "drinks" ? "drinks" : "food")
+        const displayCategory = menuItem?.category || "mains"
 
         const itemLineTotal = Number((unitPrice * item.quantity).toFixed(2))
         calculatedTotal += itemLineTotal
@@ -111,7 +115,8 @@ export async function createOrder(req, res) {
           itemName: item.itemName,
           quantity: item.quantity,
           lineTotal: itemLineTotal,
-          category,
+          type: itemType,
+          category: displayCategory,
           notes: item.notes || "",
           allergies: item.allergies || []
         }
@@ -119,7 +124,7 @@ export async function createOrder(req, res) {
     )
 
     // Detect drinks-only order
-    const hasFood = enrichedItems.some(i => i.category === "food")
+    const hasFood = enrichedItems.some(i => i.type === "food")
     const initialStatus = hasFood ? "placed" : "ready"
 
     // Use calculated total if possible, fallback to frontend total
@@ -143,7 +148,7 @@ export async function createOrder(req, res) {
     const orderDTO = toOrderDTO(saved)
 
     // --- SSE SPLIT ---
-    const foodItems = saved.items.filter(i => i.category === "food")
+    const foodItems = saved.items.filter(i => i.type === "food")
 
     // Dynamic import to avoid circular dependency issues if any
     const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")
@@ -319,7 +324,7 @@ export async function markPaid(req, res) {
     }
 
     // --- SSE SPLIT for Payment ---
-    const foodItems = order.items.filter(i => i.category === "food")
+    const foodItems = order.items.filter(i => i.type === "food")
 
     // Dynamic import to avoid circular dependency issues
     const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")

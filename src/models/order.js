@@ -5,10 +5,14 @@ const OrderItemSchema = new mongoose.Schema(
     itemName: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
 
-    category: {
+    type: {
       type: String,
       enum: ["food", "drinks"],
       default: "food"
+    },
+    category: {
+      type: String,
+      default: "mains"
     },
     notes: { type: String, default: "" },
     lineTotal: { type: Number, required: true },

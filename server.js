@@ -33,6 +33,8 @@ app.use("/webhook", webhookRoute)
 app.use(express.json())
 app.use(cors())
 
+import menuRoute from "./src/routes/menu-route.js"
+
 // Routes
 app.use("/orders", orderRoute)
 app.use("/payments", paymentRoute)
@@ -40,6 +42,7 @@ app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)
 app.use("/waiter", waiterRoute)
 app.use("/owner", ownerRoute)
+app.use("/menu-items", menuRoute)
 app.use(sseRoute)
 
 // Start server (DB first)

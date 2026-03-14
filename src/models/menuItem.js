@@ -1,15 +1,22 @@
 import mongoose from "mongoose"
 
 const MenuItemSchema = new mongoose.Schema({
-    name: { type: String, required: true, unique: true },
+    restaurantId: { type: String, required: true, index: true },
+    name: { type: String, required: true },
     price: { type: Number, required: true },
     category: {
-        type: String,
+        type: String, // UI display category: "appetizers", "mains", "desserts", "beverages"
+        required: true,
+        default: "mains"
+    },
+    type: {
+        type: String, // Backend order routing type: "food" or "drinks"
         enum: ["food", "drinks"],
         required: true,
         default: "food"
     },
-    description: { type: String },
+    description: { type: String, default: "" },
+    imageUrl: { type: String, default: "" },
     isAvailable: { type: Boolean, default: true }
 }, { timestamps: true })
 
