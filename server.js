@@ -9,6 +9,7 @@ import waiterRoute from "./src/routes/waiter-route.js"
 import sseRoute from "./src/routes/sse-route.js"
 import paymentRoute from "./src/routes/payment-route.js"
 import webhookRoute from "./src/routes/webhook-route.js"
+import ownerRoute from "./src/routes/owner-route.js"
 
 const app = express()
 const PORT = process.env.PORT || 5000
@@ -38,6 +39,7 @@ app.use("/payments", paymentRoute)
 app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)
 app.use("/waiter", waiterRoute)
+app.use("/owner", ownerRoute)
 app.use(sseRoute)
 
 // Start server (DB first)
