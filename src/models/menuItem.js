@@ -2,7 +2,7 @@ import mongoose from "mongoose"
 
 const MenuItemSchema = new mongoose.Schema({
     restaurantId: { type: String, required: true, index: true },
-    name: { type: String, required: true },
+    name: { type: String, required: true, maxlength: 30 },
     price: { type: Number, required: true },
     category: {
         type: String, // UI display category: "appetizers", "mains", "desserts", "beverages"
@@ -15,7 +15,7 @@ const MenuItemSchema = new mongoose.Schema({
         required: true,
         default: "food"
     },
-    description: { type: String, default: "" },
+    description: { type: String, default: "", maxlength: 70 },
     imageUrl: { type: String, default: "" },
     isAvailable: { type: Boolean, default: true }
 }, { timestamps: true })
