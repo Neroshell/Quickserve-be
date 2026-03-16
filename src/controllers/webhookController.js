@@ -3,7 +3,7 @@ import PendingCheckout from "../models/PendingCheckout.js";
 import Order from "../models/order.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
-import { broadcastToRole } from "../utils/sseManager.js";
+import { broadcast, broadcastToRole } from "../utils/sseManager.js";
 import { sendReceiptEmail } from "../utils/emailService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
@@ -122,22 +122,14 @@ export async function handleStripeWebhook(req, res) {
 
             if (foodItems.length > 0) {
                 const kitchenDTO = { ...orderDTO, items: foodItems };
-
-                // IMPORTANT:
-                // assumes sseManager now supports restaurant-scoped broadcasting
-                broadcastToRole("kitchen", restaurantId, "order_created", {
-                    order: kitchenDTO,
-                });
-
+                broadcastToRole("kitchen", "order_created", { order: kitchenDTO });
                 console.log(
                     `[stripeWebhook] Broadcast to kitchen for restaurantId=${restaurantId}`
                 );
             }
 
-            broadcastToRole("waiter", restaurantId, "order_created", {
-                order: orderDTO,
-            });
-
+            // Send full order to waiter + table clients (not kitchen)
+            broadcast("order_created", { order: orderDTO }, (client) => client.role !== "kitchen");
             console.log(
                 `[stripeWebhook] Broadcast to waiter for restaurantId=${restaurantId}`
             );
