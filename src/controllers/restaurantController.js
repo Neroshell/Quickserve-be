@@ -99,3 +99,68 @@ export async function updateOperatingHours(req, res) {
         return res.status(500).json({ message: "Server error" })
     }
 }
+
+export async function updateOrderingPreferences(req, res) {
+    try {
+        const { restaurantId, orderingPreferences } = req.body
+
+        if (!restaurantId || !orderingPreferences) {
+            return res.status(400).json({ message: "restaurantId and orderingPreferences are required" })
+        }
+
+        // Only allow the known boolean fields to be updated
+        const { dineInEnabled, takeoutEnabled, callWaiterEnabled, hideOutOfStockItems } = orderingPreferences
+        const safePrefs = {}
+        if (typeof dineInEnabled === "boolean") safePrefs["orderingPreferences.dineInEnabled"] = dineInEnabled
+        if (typeof takeoutEnabled === "boolean") safePrefs["orderingPreferences.takeoutEnabled"] = takeoutEnabled
+        if (typeof callWaiterEnabled === "boolean") safePrefs["orderingPreferences.callWaiterEnabled"] = callWaiterEnabled
+        if (typeof hideOutOfStockItems === "boolean") safePrefs["orderingPreferences.hideOutOfStockItems"] = hideOutOfStockItems
+
+        const restaurant = await Restaurant.findOneAndUpdate(
+            { restaurantId },
+            { $set: safePrefs },
+            { new: true, runValidators: true }
+        )
+
+        if (!restaurant) {
+            return res.status(404).json({ message: "Restaurant not found" })
+        }
+
+        return res.json({ orderingPreferences: restaurant.orderingPreferences })
+    } catch (err) {
+        console.error("Update ordering preferences error:", err)
+        return res.status(500).json({ message: "Server error" })
+    }
+}
+
+export async function updatePaymentPreferences(req, res) {
+    try {
+        const { restaurantId, paymentPreferences } = req.body
+
+        if (!restaurantId || !paymentPreferences) {
+            return res.status(400).json({ message: "restaurantId and paymentPreferences are required" })
+        }
+
+        const { acceptOnlinePayments, acceptOfflinePayments, acceptCash, acceptPosCard } = paymentPreferences
+        const safePrefs = {}
+        if (typeof acceptOnlinePayments === "boolean") safePrefs["paymentPreferences.acceptOnlinePayments"] = acceptOnlinePayments
+        if (typeof acceptOfflinePayments === "boolean") safePrefs["paymentPreferences.acceptOfflinePayments"] = acceptOfflinePayments
+        if (typeof acceptCash === "boolean") safePrefs["paymentPreferences.acceptCash"] = acceptCash
+        if (typeof acceptPosCard === "boolean") safePrefs["paymentPreferences.acceptPosCard"] = acceptPosCard
+
+        const restaurant = await Restaurant.findOneAndUpdate(
+            { restaurantId },
+            { $set: safePrefs },
+            { new: true, runValidators: true }
+        )
+
+        if (!restaurant) {
+            return res.status(404).json({ message: "Restaurant not found" })
+        }
+
+        return res.json({ paymentPreferences: restaurant.paymentPreferences })
+    } catch (err) {
+        console.error("Update payment preferences error:", err)
+        return res.status(500).json({ message: "Server error" })
+    }
+}

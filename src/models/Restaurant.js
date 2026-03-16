@@ -16,6 +16,20 @@ const OperatingHoursSchema = new mongoose.Schema({
     Sunday: { type: OperatingDaySchema, default: () => ({}) }
 }, { _id: false })
 
+const OrderingPreferencesSchema = new mongoose.Schema({
+    dineInEnabled: { type: Boolean, default: true },
+    takeoutEnabled: { type: Boolean, default: false },
+    callWaiterEnabled: { type: Boolean, default: true },
+    hideOutOfStockItems: { type: Boolean, default: false },
+}, { _id: false })
+
+const PaymentPreferencesSchema = new mongoose.Schema({
+    acceptOnlinePayments: { type: Boolean, default: true },
+    acceptOfflinePayments: { type: Boolean, default: true },
+    acceptCash: { type: Boolean, default: true },
+    acceptPosCard: { type: Boolean, default: true },
+}, { _id: false })
+
 const RestaurantSchema = new mongoose.Schema({
     restaurantId: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true },
@@ -37,7 +51,9 @@ const RestaurantSchema = new mongoose.Schema({
     currency: { type: String, default: "USD" },
     timezone: { type: String, default: "America/New_York" },
     logoUrl: { type: String, default: "" },
-    operatingHours: { type: OperatingHoursSchema, default: () => ({}) }
+    operatingHours: { type: OperatingHoursSchema, default: () => ({}) },
+    orderingPreferences: { type: OrderingPreferencesSchema, default: () => ({}) },
+    paymentPreferences: { type: PaymentPreferencesSchema, default: () => ({}) }
 }, { timestamps: true })
 
 export default mongoose.model("Restaurant", RestaurantSchema)
