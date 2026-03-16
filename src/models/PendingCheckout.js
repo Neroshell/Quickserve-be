@@ -13,7 +13,8 @@ const PendingItemSchema = new mongoose.Schema(
         itemName: { type: String, required: true },
         quantity: { type: Number, required: true, min: 1 },
         lineTotal: { type: Number, required: true },
-        category: { type: String, enum: ["food", "drinks"], default: "food" },
+        category: { type: String, default: "mains" },
+        type: { type: String, enum: ["food", "drinks"], default: "food" },
         notes: { type: String, default: "" },
         allergies: { type: [String], default: [] },
     },
@@ -22,6 +23,7 @@ const PendingItemSchema = new mongoose.Schema(
 
 const PendingCheckoutSchema = new mongoose.Schema(
     {
+        restaurantId: { type: String, required: true },
         orderId: { type: String, required: true },
         tableNumber: { type: String, required: true },
         orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in" },

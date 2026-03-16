@@ -41,6 +41,7 @@ export function toOrderDTO(orderDoc) {
             itemName: it.itemName,
             quantity: it.quantity,
             lineTotal: it.lineTotal || 0,
+            type: it.type || "food",
             category: it.category || "food",
             notes: it.notes || "",
             allergies: it.allergies || [],

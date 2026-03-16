@@ -30,12 +30,18 @@ export async function waiterOrders(req, res) {
         const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
 
         const status = String(req.query.status || "ready")
+        const restaurantId = req.query.restaurantId
+
+        if (!restaurantId) {
+            return res.status(400).json({ error: "restaurantId is required" })
+        }
 
         // ✅ Fetch all relevant statuses so FE can calculate counts for tabs
         // The FE sends ?status=... but relies on receiving ALL data to show badge counts
         const WAITER_STATUSES = ["placed", "in_progress", "ready", "completed"]
 
         const filter = {
+            restaurantId,
             createdAt: { $gte: startJS, $lt: endJS },
             status: { $in: WAITER_STATUSES },
         }
@@ -70,7 +76,7 @@ export async function waiterOrders(req, res) {
 
         // ✅ counts for tabs (placed/in_progress/ready/completed)
         const countsAgg = await Order.aggregate([
-            { $match: { createdAt: { $gte: startJS, $lt: endJS } } },
+            { $match: { restaurantId, createdAt: { $gte: startJS, $lt: endJS } } },
             { $group: { _id: "$status", count: { $sum: 1 } } },
         ])
 
@@ -97,6 +103,7 @@ export async function waiterOrders(req, res) {
             }
 
             return {
+                restaurantId: o.restaurantId,
                 orderId: o.orderId,
                 tableNumber: o.tableNumber,
                 orderType: o.orderType,

@@ -14,11 +14,12 @@ export function sseHandler(req, res) {
     res.flushHeaders?.();
 
     const role = req.query.role || "anon";
-    const client = { res, role };
+    const restaurantId = req.query.restaurantId || "default-restaurant-id";
+    const client = { res, role, restaurantId };
     clients.add(client);
 
     // Initial heartbeat to open stream
-    res.write(`event: heartbeat\ndata: ${JSON.stringify({ ok: true, t: Date.now(), role })}\n\n`);
+    res.write(`event: heartbeat\ndata: ${JSON.stringify({ ok: true, t: Date.now(), role, restaurantId })}\n\n`);
 
     // Ping every 25s
     const keepAlive = setInterval(() => {
@@ -38,8 +39,13 @@ export function sseHandler(req, res) {
 }
 
 export function broadcast(eventName, payload, filterFn = null) {
+    const restaurantId = payload.restaurantId || (payload.order && payload.order.restaurantId) || (payload.call && payload.call.restaurantId);
     const data = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+
     for (const client of clients) {
+        // Isolation: restaurantId must match if present in payload
+        if (restaurantId && client.restaurantId !== restaurantId) continue;
+
         if (filterFn && !filterFn(client)) continue;
 
         try {
@@ -52,12 +58,17 @@ export function broadcast(eventName, payload, filterFn = null) {
 }
 
 /**
- * Broadcast event to specific role
+ * Broadcast event to specific role within a restaurant
  */
 export function broadcastToRole(targetRole, eventName, payload) {
+    const restaurantId = payload.restaurantId || (payload.order && payload.order.restaurantId) || (payload.call && payload.call.restaurantId);
     const data = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+
     for (const client of clients) {
         if (client.role === targetRole) {
+            // Isolation: restaurantId must match
+            if (restaurantId && client.restaurantId !== restaurantId) continue;
+
             try {
                 client.res.write(data);
             } catch (err) {

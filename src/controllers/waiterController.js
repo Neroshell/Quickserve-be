@@ -27,6 +27,11 @@ function getBusinessDayRange() {
 // GET /waiter?status=ready
 export async function waiterOrders(req, res) {
     try {
+        const { restaurantId } = req.query
+        if (!restaurantId) {
+            return res.status(400).json({ error: "restaurantId is required" })
+        }
+
         const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
 
         const status = String(req.query.status || "ready")
@@ -36,6 +41,7 @@ export async function waiterOrders(req, res) {
         const WAITER_STATUSES = ["placed", "in_progress", "ready", "completed"]
 
         const filter = {
+            restaurantId,
             createdAt: { $gte: startJS, $lt: endJS },
             status: { $in: WAITER_STATUSES },
         }
@@ -67,7 +73,7 @@ export async function waiterOrders(req, res) {
 
         // ✅ counts for tabs (placed/in_progress/ready/completed)
         const countsAgg = await Order.aggregate([
-            { $match: { createdAt: { $gte: startJS, $lt: endJS } } },
+            { $match: { restaurantId, createdAt: { $gte: startJS, $lt: endJS } } },
             { $group: { _id: "$status", count: { $sum: 1 } } },
         ])
 

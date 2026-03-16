@@ -27,6 +27,11 @@ function getBusinessDayRange() {
 
 export async function kitchenOrders(req, res) {
   try {
+    const { restaurantId } = req.query
+    if (!restaurantId) {
+      return res.status(400).json({ error: "restaurantId is required" })
+    }
+
     const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
 
     const ACTIVE_STATUSES = ["placed", "in_progress", "ready"]
@@ -34,6 +39,7 @@ export async function kitchenOrders(req, res) {
     // Pull all fields needed for DTO
     const rawOrders = await Order.find(
       {
+        restaurantId,
         createdAt: { $gte: startJS, $lt: endJS },
         status: { $in: ACTIVE_STATUSES },
       },
@@ -48,7 +54,7 @@ export async function kitchenOrders(req, res) {
     const orders = rawOrders.map((o) => {
       const dto = toOrderDTO(o)
       // Filter items to show only food
-      const foodItems = dto.items.filter(item => item.category === "food")
+      const foodItems = dto.items.filter(item => item.type === "food")
       if (foodItems.length === 0) return null // Skip if no food items
 
       return {
@@ -80,14 +86,18 @@ export async function kitchenOrders(req, res) {
 export async function updateOrderStatus(req, res) {
   try {
     const { orderId } = req.params
-    const { status: nextStatus } = req.body
+    const { status: nextStatus, restaurantId } = req.body
+
+    if (!restaurantId) {
+      return res.status(400).json({ error: "restaurantId is required" })
+    }
 
     const VALID_STATUSES = ["placed", "in_progress", "ready", "completed"]
     if (!VALID_STATUSES.includes(nextStatus)) {
       return res.status(400).json({ error: "Invalid status" })
     }
 
-    const order = await Order.findOne({ orderId })
+    const order = await Order.findOne({ orderId, restaurantId })
     if (!order) return res.status(404).json({ error: "Order not found" })
 
     const allowedNext = {

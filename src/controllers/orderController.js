@@ -10,9 +10,13 @@ import { sendReceiptEmail } from "../utils/emailService.js"
 
 export async function listOrders(req, res) {
   try {
-    const { sessionId, tableNumber } = req.query
+    const { sessionId, tableNumber, restaurantId } = req.query
 
-    const filter = {}
+    if (!restaurantId) {
+      return res.status(400).json({ message: "restaurantId is required" })
+    }
+
+    const filter = { restaurantId }
     if (sessionId) filter.sessionId = sessionId
     if (tableNumber) filter.tableNumber = tableNumber
 
@@ -132,6 +136,7 @@ export async function createOrder(req, res) {
 
     const saved = await Order.create({
       orderId,
+      restaurantId,
       tableNumber,
       orderType: finalOrderType, // ✅ always valid + always present
       sessionId,
@@ -164,7 +169,7 @@ export async function createOrder(req, res) {
     // We exclude 'kitchen' role from this broadcast to avoid duplicates/wrong data
     broadcast("order_created", { order: orderDTO }, (client) => client.role !== "kitchen")
 
-    return res.status(201).json({ orderId: saved.orderId, status: saved.status })
+    return res.status(201).json({ orderId: saved.orderId, restaurantId: saved.restaurantId, status: saved.status })
   } catch (err) {
     console.error("Create order error:", err)
     return res.status(500).json({ message: "Server error" })
@@ -175,8 +180,13 @@ export async function createOrder(req, res) {
 export async function getOrderById(req, res) {
   try {
     const { orderId } = req.params
+    const restaurantId = req.query.restaurantId || req.params.restaurantId
 
-    const order = await Order.findOne({ orderId }).lean()
+    if (!restaurantId) {
+      return res.status(400).json({ message: "restaurantId is required" })
+    }
+
+    const order = await Order.findOne({ orderId, restaurantId }).lean()
     if (!order) return res.status(404).json({ message: "Order not found" })
 
     return res.json(order)
@@ -208,13 +218,13 @@ export async function getOrderById(req, res) {
 
 export async function deleteOrdersBySession(req, res) {
   try {
-    const { sessionId } = req.body
+    const { sessionId, restaurantId } = req.body
 
-    if (!sessionId) {
-      return res.status(400).json({ message: "sessionId is required" })
+    if (!sessionId || !restaurantId) {
+      return res.status(400).json({ message: "sessionId and restaurantId are required" })
     }
 
-    const result = await Order.deleteMany({ sessionId })
+    const result = await Order.deleteMany({ sessionId, restaurantId })
 
     return res.json({
       message: "Order history cleared",
@@ -229,14 +239,18 @@ export async function deleteOrdersBySession(req, res) {
 export async function updateOrderStatus(req, res) {
   try {
     const { orderId } = req.params
-    const { status: nextStatus } = req.body
+    const { status: nextStatus, restaurantId } = req.body
+
+    if (!restaurantId) {
+      return res.status(400).json({ error: "restaurantId is required" })
+    }
 
     const VALID_STATUSES = ["placed", "in_progress", "ready", "completed"]
     if (!VALID_STATUSES.includes(nextStatus)) {
       return res.status(400).json({ error: "Invalid status" })
     }
 
-    const order = await Order.findOne({ orderId })
+    const order = await Order.findOne({ orderId, restaurantId })
     if (!order) return res.status(404).json({ error: "Order not found" })
 
     const allowedNext = {
@@ -287,14 +301,18 @@ export async function updateOrderStatus(req, res) {
 export async function markPaid(req, res) {
   try {
     const { orderId } = req.params
-    const { paidVia } = req.body
+    const { paidVia, restaurantId } = req.body
+
+    if (!restaurantId) {
+      return res.status(400).json({ message: "restaurantId is required" })
+    }
 
     const ALLOWED_PAID_VIA = ["pos_card", "cash"]
     if (!ALLOWED_PAID_VIA.includes(paidVia)) {
       return res.status(400).json({ message: "Invalid paidVia method" })
     }
 
-    const order = await Order.findOne({ orderId })
+    const order = await Order.findOne({ orderId, restaurantId })
     if (!order) return res.status(404).json({ message: "Order not found" })
 
     if (order.paymentStatus === "paid") {

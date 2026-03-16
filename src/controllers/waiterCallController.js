@@ -22,7 +22,11 @@ function getRelativeTime(date) {
 export async function createWaiterCall(req, res) {
   try {
     const waiterId = getWaiterId(req) // can be empty for customer calls (that’s fine)
-    const { tableNumber, reason = "", note = "" } = req.body || {}
+    const { tableNumber, reason = "", note = "", restaurantId } = req.body || {}
+
+    if (!restaurantId) {
+      return res.status(400).json({ error: "restaurantId is required" })
+    }
 
     if (!tableNumber || !String(tableNumber).trim()) {
       return res.status(400).json({ error: "tableNumber is required" })
@@ -30,6 +34,7 @@ export async function createWaiterCall(req, res) {
 
     // OPTIONAL anti-spam: don’t allow multiple pending calls for same table
     const existingPending = await WaiterCall.findOne({
+      restaurantId,
       tableNumber: String(tableNumber).trim(),
       status: "pending",
     }).lean()
@@ -43,6 +48,7 @@ export async function createWaiterCall(req, res) {
     }
 
     const call = await WaiterCall.create({
+      restaurantId,
       tableNumber: String(tableNumber).trim(),
       reason: String(reason || "").trim(),
       note: String(note || "").trim(),
@@ -61,12 +67,17 @@ export async function createWaiterCall(req, res) {
 
 export async function listWaiterCalls(req, res) {
   try {
-    const { status = "active" } = req.query
+    const { status = "active", restaurantId } = req.query
+
+    if (!restaurantId) {
+      return res.status(400).json({ error: "restaurantId is required" })
+    }
+
     // status:
     // - "active" => pending + acknowledged
     // - "pending" | "acknowledged" | "resolved"
 
-    const filter = {}
+    const filter = { restaurantId }
     if (status === "active") {
       filter.status = { $in: ["pending", "acknowledged"] }
     } else if (["pending", "acknowledged", "resolved"].includes(String(status))) {
@@ -96,11 +107,18 @@ export async function claimWaiterCall(req, res) {
     if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
 
     const { id } = req.params
+    const { restaurantId } = req.body
+
+    if (!restaurantId) {
+      return res.status(400).json({ error: "restaurantId is required" })
+    }
+
     const now = new Date()
 
     const claimed = await WaiterCall.findOneAndUpdate(
       {
         _id: id,
+        restaurantId,
         status: "pending",
         claimedBy: null,
       },
@@ -116,7 +134,7 @@ export async function claimWaiterCall(req, res) {
 
     if (!claimed) {
       // either not found, or already claimed
-      const current = await WaiterCall.findById(id).lean()
+      const current = await WaiterCall.findOne({ _id: id, restaurantId }).lean()
       if (!current) return res.status(404).json({ error: "Call not found" })
 
       return res.status(409).json({
@@ -143,11 +161,18 @@ export async function resolveWaiterCall(req, res) {
     if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
 
     const { id } = req.params
+    const { restaurantId } = req.body
+
+    if (!restaurantId) {
+      return res.status(400).json({ error: "restaurantId is required" })
+    }
+
     const now = new Date()
 
     const updated = await WaiterCall.findOneAndUpdate(
       {
         _id: id,
+        restaurantId,
         status: { $in: ["pending", "acknowledged"] },
         // Only claimer can resolve; if still pending, allow resolver to resolve only if they claim first
         $or: [{ claimedBy: waiterId }, { claimedBy: null, status: "pending" }],
@@ -166,7 +191,7 @@ export async function resolveWaiterCall(req, res) {
     ).lean()
 
     if (!updated) {
-      const current = await WaiterCall.findById(id).lean()
+      const current = await WaiterCall.findOne({ _id: id, restaurantId }).lean()
       if (!current) return res.status(404).json({ error: "Call not found" })
 
       // someone else owns it
