@@ -73,27 +73,34 @@ export async function handleStripeWebhook(req, res) {
             const customerEmail = pending.receiptEmail || session.customer_details?.email || null;
             if (customerEmail && !order.receiptSent) {
                 console.log(`[stripeWebhook] Retrying receipt email to ${customerEmail} (idempotency fallback)`);
-                sendReceiptEmail(order, customerEmail)
-                    .then(async (emailSent) => {
-                        if (emailSent) {
-                            await Order.findOneAndUpdate(
-                                { restaurantId, orderId },
-                                { receiptSent: true }
-                            );
-                            console.log(`[stripeWebhook] Receipt sent to ${customerEmail}`);
-                        }
-                    })
-                    .catch((err) => {
-                        console.error("[stripeWebhook] Error sending receipt (fallback):", err);
-                    });
+                try {
+                    const emailSent = await sendReceiptEmail(order, customerEmail);
+                    if (emailSent) {
+                        await Order.findOneAndUpdate(
+                            { restaurantId, orderId },
+                            { receiptSent: true }
+                        );
+                        console.log(`[stripeWebhook] Receipt sent to ${customerEmail}`);
+                    }
+                } catch (err) {
+                    console.error("[stripeWebhook] Error sending receipt (fallback):", err);
+                }
             }
         } else {
             const hasFood = pending.items.some(
                 (i) => i.category === "food" || i.type === "food"
             );
             const initialStatus = hasFood ? "placed" : "ready";
+            
+            console.log(`[stripeWebhook] Resolving customerEmail...`);
+            console.log(`[stripeWebhook] pending.receiptEmail:`, pending.receiptEmail);
+            console.log(`[stripeWebhook] session.customer_details?.email:`, session.customer_details?.email);
+            console.log(`[stripeWebhook] session.customer_email:`, session.customer_email);
+            
             const customerEmail =
                 pending.receiptEmail || session.customer_details?.email || null;
+            
+            console.log(`[stripeWebhook] Final customerEmail resolved to:`, customerEmail);
 
             order = await Order.create({
                 restaurantId,
@@ -116,21 +123,27 @@ export async function handleStripeWebhook(req, res) {
             console.log(
                 `[stripeWebhook] Order created: ${orderId} for restaurantId=${restaurantId}`
             );
+            console.log(`[stripeWebhook] Created order receiptEmail: ${order.receiptEmail}, receiptSent: ${order.receiptSent}`);
 
             if (customerEmail) {
-                sendReceiptEmail(order, customerEmail)
-                    .then(async (emailSent) => {
-                        if (emailSent) {
-                            await Order.findOneAndUpdate(
-                                { restaurantId, orderId },
-                                { receiptSent: true }
-                            );
-                            console.log(`[stripeWebhook] Receipt sent to ${customerEmail}`);
-                        }
-                    })
-                    .catch((err) => {
-                        console.error("[stripeWebhook] Error sending receipt:", err);
-                    });
+                console.log(`[stripeWebhook] Calling sendReceiptEmail for ${customerEmail} on order ${order.orderId}`);
+                try {
+                    const emailSent = await sendReceiptEmail(order, customerEmail);
+                    console.log(`[stripeWebhook] sendReceiptEmail resolved with: ${emailSent}`);
+                    if (emailSent) {
+                        await Order.findOneAndUpdate(
+                            { restaurantId, orderId },
+                            { receiptSent: true }
+                        );
+                        console.log(`[stripeWebhook] Document updated: receiptSent set to true for ${order.orderId}`);
+                    } else {
+                        console.error(`[stripeWebhook] sendReceiptEmail returned false for ${order.orderId}. Not updating receiptSent.`);
+                    }
+                } catch (err) {
+                    console.error("[stripeWebhook] Error in sendReceiptEmail execution block:", err);
+                }
+            } else {
+                console.log(`[stripeWebhook] Skipping sendReceiptEmail because customerEmail is falsy`);
             }
 
             const orderDTO = toOrderDTO(order);

@@ -327,18 +327,17 @@ export async function markPaid(req, res) {
     const orderDTO = toOrderDTO(order)
 
     // Automatically send receipt if email is present and not sent yet
-    // Do it asynchronously so we don't block the waiter frontend popup!
+    // Await it so serverless environments don't terminate the execution mid-flight
     if (order.receiptEmail && !order.receiptSent) {
-      sendReceiptEmail(order, order.receiptEmail)
-        .then(async (emailSent) => {
+      try {
+          const emailSent = await sendReceiptEmail(order, order.receiptEmail);
           if (emailSent) {
             order.receiptSent = true;
             await order.save();
           }
-        })
-        .catch((err) => {
-          console.error("[markPaid] ❌ Error sending receipt in background:", err);
-        });
+      } catch (err) {
+          console.error("[markPaid] ❌ Error sending receipt during execution:", err);
+      }
     }
 
     // --- SSE SPLIT for Payment ---

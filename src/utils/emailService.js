@@ -10,7 +10,16 @@ const transporter = nodemailer.createTransport({
 
 export async function sendReceiptEmail(order, email) {
   try {
+    console.log(`[EmailService] Initiating sendReceiptEmail for order: ${order.orderId}, email: ${email}`);
+    
+    // Explicitly check properties used in email to ensure Mongoose evaluates them correctly or doesn't fail silently
+    if (!order.items || !Array.isArray(order.items)) {
+       console.error(`[EmailService] ❌ order.items is invalid:`, order.items);
+       return false;
+    }
+
     const subject = `Your QuickServe Receipt - Order #${order.orderId.substring(0, 8).toUpperCase()}`;
+    console.log(`[EmailService] Subject formed: ${subject}`);
 
     const formattedDate = new Date().toLocaleDateString("en-GB", {
       day: "numeric",
@@ -18,27 +27,38 @@ export async function sendReceiptEmail(order, email) {
       year: "numeric",
     });
 
-    const itemsHtml = order.items
-      .map(
-        (item) => `
-      <tr>
-        <td style="padding: 14px 0; border-bottom: 1px solid #eceff3;">
-          <div style="font-size: 14px; font-weight: 600; color: #0f172a;">
-            ${item.itemName}
-          </div>
-          <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
-            Qty: ${item.quantity}
-          </div>
-        </td>
-        <td style="padding: 14px 0; border-bottom: 1px solid #eceff3; text-align: right; font-size: 14px; font-weight: 600; color: #0f172a;">
-          ${order.currency} ${item.lineTotal.toFixed(2)}
-        </td>
-      </tr>
-    `
-      )
-      .join("");
+    console.log(`[EmailService] Formatting items HTML...`);
+    let itemsHtml;
+    try {
+      itemsHtml = order.items
+        .map(
+          (item) => `
+        <tr>
+          <td style="padding: 14px 0; border-bottom: 1px solid #eceff3;">
+            <div style="font-size: 14px; font-weight: 600; color: #0f172a;">
+              ${item.itemName}
+            </div>
+            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+              Qty: ${item.quantity}
+            </div>
+          </td>
+          <td style="padding: 14px 0; border-bottom: 1px solid #eceff3; text-align: right; font-size: 14px; font-weight: 600; color: #0f172a;">
+            ${order.currency || 'EUR'} ${(item.lineTotal || 0).toFixed(2)}
+          </td>
+        </tr>
+      `
+        )
+        .join("");
+      console.log(`[EmailService] Items HTML successfully formatted.`);
+    } catch (renderError) {
+      console.error(`[EmailService] ❌ Error generating itemsHtml:`, renderError);
+      return false;
+    }
 
-    const html = `
+    console.log(`[EmailService] Formatting full HTML payload... total: ${order.total}, currency: ${order.currency}`);
+    let html;
+    try {
+      html = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -145,7 +165,7 @@ export async function sendReceiptEmail(order, email) {
                 Total Paid
               </td>
               <td style="text-align: right; font-size: 24px; font-weight: 800; color: #ffffff;">
-                ${order.currency} ${order.total.toFixed(2)}
+                ${order.currency || 'EUR'} ${(order.total || 0).toFixed(2)}
               </td>
             </tr>
           </table>
@@ -170,6 +190,12 @@ export async function sendReceiptEmail(order, email) {
 </body>
 </html>
 `;
+      console.log(`[EmailService] Full HTML string generated successfully.`);
+    } catch (htmlRenderError) {
+      console.error(`[EmailService] ❌ Error generating full HTML payload:`, htmlRenderError);
+      return false;
+    }
+
     const mailOptions = {
       from: `"QuickServe" <${process.env.EMAIL_USER || "your-email@gmail.com"}>`,
       to: email,
@@ -177,11 +203,12 @@ export async function sendReceiptEmail(order, email) {
       html,
     };
 
+    console.log(`[EmailService] Attempting to sendMail to ${email}...`);
     const info = await transporter.sendMail(mailOptions);
     console.log(`[EmailService] ✅ Receipt sent to ${email} (Message ID: ${info.messageId})`);
     return true;
   } catch (error) {
-    console.error("[EmailService] ❌ Error sending receipt:", error);
+    console.error("[EmailService] ❌ Transport/Execution Error sending receipt:", error);
     return false;
   }
 }
