@@ -24,6 +24,7 @@ export async function createCheckoutSession(req, res) {
             tableSessionToken,
             orderType,
             currency,
+            receiptEmail,
         } = req.body;
 
         // --- Validation ---
@@ -102,12 +103,13 @@ export async function createCheckoutSession(req, res) {
             items: enrichedItems,
             total: Number(serverTotal.toFixed(2)),
             currency: finalCurrency.toUpperCase(),
+            receiptEmail: receiptEmail || null,
         });
 
         console.log(`[createCheckoutSession] ✅ PendingCheckout created — _id=${pending._id}, orderId=${orderId}, table=${tableNumber}, items=${enrichedItems.length}`);
 
         // --- Create Stripe Checkout Session ---
-        const stripeSession = await stripe.checkout.sessions.create({
+        const stripeSessionConfig = {
             payment_method_types: ["card"],
             mode: "payment",
             line_items: lineItems,
@@ -119,7 +121,13 @@ export async function createCheckoutSession(req, res) {
             },
             success_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/confirmation?payment=success&orderId=${orderId}&restaurantId=${ts.restaurantId}`,
             cancel_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/order?payment=cancelled&restaurantId=${ts.restaurantId}`,
-        });
+        };
+
+        if (receiptEmail) {
+            stripeSessionConfig.customer_email = receiptEmail;
+        }
+
+        const stripeSession = await stripe.checkout.sessions.create(stripeSessionConfig);
 
         console.log(`[createCheckoutSession] ✅ Stripe session created — id=${stripeSession.id}, metadata=${JSON.stringify(stripeSession.metadata)}`);
 

@@ -68,6 +68,25 @@ export async function handleStripeWebhook(req, res) {
             console.log(
                 `[stripeWebhook] Order already exists for restaurantId=${restaurantId}, orderId=${orderId}`
             );
+
+            // Retry receipt email if it wasn't sent yet
+            const customerEmail = pending.receiptEmail || session.customer_details?.email || null;
+            if (customerEmail && !order.receiptSent) {
+                console.log(`[stripeWebhook] Retrying receipt email to ${customerEmail} (idempotency fallback)`);
+                sendReceiptEmail(order, customerEmail)
+                    .then(async (emailSent) => {
+                        if (emailSent) {
+                            await Order.findOneAndUpdate(
+                                { restaurantId, orderId },
+                                { receiptSent: true }
+                            );
+                            console.log(`[stripeWebhook] Receipt sent to ${customerEmail}`);
+                        }
+                    })
+                    .catch((err) => {
+                        console.error("[stripeWebhook] Error sending receipt (fallback):", err);
+                    });
+            }
         } else {
             const hasFood = pending.items.some(
                 (i) => i.category === "food" || i.type === "food"
