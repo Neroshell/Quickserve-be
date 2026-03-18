@@ -319,50 +319,56 @@ export async function markPaid(req, res) {
       return res.status(400).json({ message: "Order is already paid" })
     }
 
+    // ✅ Step 1: Save payment — this must always succeed
     order.paymentStatus = "paid"
     order.paidVia = paidVia
-
     await order.save()
+    console.log(`[markPaid] ✅ Payment saved for order ${orderId} via ${paidVia}`)
 
     const orderDTO = toOrderDTO(order)
 
-    // Automatically send receipt if email is present and not sent yet
-    // Await it so serverless environments don't terminate the execution mid-flight
-    if (order.receiptEmail && !order.receiptSent) {
-      try {
-          const emailSent = await sendReceiptEmail(order, order.receiptEmail);
-          if (emailSent) {
-            order.receiptSent = true;
-            await order.save();
-          }
-      } catch (err) {
-          console.error("[markPaid] ❌ Error sending receipt during execution:", err);
-      }
-    }
-
-    // --- SSE SPLIT for Payment ---
+    // ✅ Step 2: Broadcast SSE immediately — kitchen & waiter dashboards update in real-time
+    const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")
     const foodItems = order.items.filter(i => i.type === "food")
 
-    // Dynamic import to avoid circular dependency issues
-    const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")
-
-    // 1. Send to Kitchen: Food Only
     if (foodItems.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems }
-      // Send only to kitchen role
       broadcastToRole("kitchen", "order_updated", { order: kitchenDTO })
     }
-
-    // 2. Send to Waiters & Tables: Full Order
-    // We exclude 'kitchen' role from this broadcast to avoid duplicates/wrong data
     broadcast("order_updated", { order: orderDTO }, (client) => client.role !== "kitchen")
 
-    return res.json({
+    // ✅ Step 3: Respond immediately — do NOT wait for email
+    console.log(`[markPaid] ✅ Sending response for order ${orderId}`)
+    res.json({
       success: true,
       orderId: order.orderId,
       paymentStatus: order.paymentStatus,
       paidVia: order.paidVia,
     })
+
+    // ✅ Step 4: Fire-and-forget receipt email — runs AFTER response is sent
+    // This will never block the HTTP response, even if SMTP hangs in production
+    if (order.receiptEmail && !order.receiptSent) {
+      console.log(`[markPaid] 📧 Starting background receipt email for order ${orderId} → ${order.receiptEmail}`)
+      ;(async () => {
+        try {
+          const emailSent = await sendReceiptEmail(order, order.receiptEmail)
+          if (emailSent) {
+            order.receiptSent = true
+            await order.save()
+            console.log(`[markPaid] ✅ Receipt email sent and receiptSent=true saved for order ${orderId}`)
+          } else {
+            console.warn(`[markPaid] ⚠️ sendReceiptEmail returned false for order ${orderId} — email not sent`)
+          }
+        } catch (emailErr) {
+          console.error(`[markPaid] ❌ Background receipt email failed for order ${orderId}:`, emailErr)
+        }
+      })()
+    } else if (order.receiptSent) {
+      console.log(`[markPaid] ℹ️ Receipt already sent for order ${orderId}, skipping`)
+    } else {
+      console.log(`[markPaid] ℹ️ No receiptEmail on order ${orderId}, skipping email`)
+    }
   } catch (err) {
     console.error("[markPaid] Error:", err)
     return res.status(500).json({ message: "Server error" })
