@@ -4,7 +4,7 @@ import PendingCheckout from "../models/PendingCheckout.js"
 import { generateOrderId } from "../utils/orderId.js"
 import MenuItem from "../models/menuItem.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
-import { broadcast } from "../utils/sseManager.js"
+import { publishEvent } from "../utils/sseManager.js"
 import { sendReceiptEmail } from "../utils/emailService.js"
 
 
@@ -152,22 +152,17 @@ export async function createOrder(req, res) {
 
     const orderDTO = toOrderDTO(saved)
 
-    // --- SSE SPLIT ---
+    // --- SSE via Redis pub/sub ---
     const foodItems = saved.items.filter(i => i.type === "food")
 
-    // Dynamic import to avoid circular dependency issues if any
-    const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")
-
-    // 1. Send to Kitchen: Food Only
+    // 1. Kitchen: food items only
     if (foodItems.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems }
-      // Send only to kitchen role
-      broadcastToRole("kitchen", "order_created", { order: kitchenDTO })
+      await publishEvent("order_created", restaurantId, ["kitchen"], { order: kitchenDTO })
     }
 
-    // 2. Send to Waiters & Tables: Full Order
-    // We exclude 'kitchen' role from this broadcast to avoid duplicates/wrong data
-    broadcast("order_created", { order: orderDTO }, (client) => client.role !== "kitchen")
+    // 2. Waiter + table: full order
+    await publishEvent("order_created", restaurantId, ["waiter", "table", "anon"], { order: orderDTO })
 
     return res.status(201).json({ orderId: saved.orderId, restaurantId: saved.restaurantId, status: saved.status })
   } catch (err) {
@@ -282,7 +277,7 @@ export async function updateOrderStatus(req, res) {
     await order.save()
 
     const orderDTO = toOrderDTO(order)
-    broadcast("order_updated", { order: orderDTO })
+    await publishEvent("order_updated", order.restaurantId, null, { order: orderDTO })
 
     return res.json({
       success: true,
@@ -327,15 +322,13 @@ export async function markPaid(req, res) {
 
     const orderDTO = toOrderDTO(order)
 
-    // ✅ Step 2: Broadcast SSE immediately — kitchen & waiter dashboards update in real-time
-    const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")
-    const foodItems = order.items.filter(i => i.type === "food")
-
-    if (foodItems.length > 0) {
-      const kitchenDTO = { ...orderDTO, items: foodItems }
-      broadcastToRole("kitchen", "order_updated", { order: kitchenDTO })
+    // Broadcast via Redis — kitchen gets food-only, waiters get full order
+    const foodItems2 = order.items.filter(i => i.type === "food")
+    if (foodItems2.length > 0) {
+      const kitchenDTO = { ...orderDTO, items: foodItems2 }
+      await publishEvent("order_updated", order.restaurantId, ["kitchen"], { order: kitchenDTO })
     }
-    broadcast("order_updated", { order: orderDTO }, (client) => client.role !== "kitchen")
+    await publishEvent("order_updated", order.restaurantId, ["waiter", "table", "anon"], { order: orderDTO })
 
     // ✅ Step 3: Respond immediately — do NOT wait for email
     console.log(`[markPaid] ✅ Sending response for order ${orderId}`)

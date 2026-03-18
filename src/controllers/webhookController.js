@@ -3,7 +3,7 @@ import PendingCheckout from "../models/PendingCheckout.js";
 import Order from "../models/order.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
-import { broadcast, broadcastToRole } from "../utils/sseManager.js";
+import { publishEvent } from "../utils/sseManager.js";
 import { sendReceiptEmail } from "../utils/emailService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
@@ -152,19 +152,16 @@ export async function handleStripeWebhook(req, res) {
                 (i) => i.category === "food" || i.type === "food"
             );
 
+            // Publish via Redis so ALL instances deliver to their connected SSE clients
             if (foodItems.length > 0) {
                 const kitchenDTO = { ...orderDTO, items: foodItems };
-                broadcastToRole("kitchen", "order_created", { order: kitchenDTO });
-                console.log(
-                    `[stripeWebhook] Broadcast to kitchen for restaurantId=${restaurantId}`
-                );
+                await publishEvent("order_created", restaurantId, ["kitchen"], { order: kitchenDTO });
+                console.log(`[stripeWebhook] Published order_created to kitchen for restaurantId=${restaurantId}`);
             }
 
-            // Send full order to waiter + table clients (not kitchen)
-            broadcast("order_created", { order: orderDTO }, (client) => client.role !== "kitchen");
-            console.log(
-                `[stripeWebhook] Broadcast to waiter for restaurantId=${restaurantId}`
-            );
+            // Full order to waiter + table roles
+            await publishEvent("order_created", restaurantId, ["waiter", "table", "anon"], { order: orderDTO });
+            console.log(`[stripeWebhook] Published order_created to waiter/table for restaurantId=${restaurantId}`);
         }
 
         await PendingCheckout.findByIdAndDelete(pendingCheckoutId);
