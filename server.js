@@ -11,6 +11,7 @@ import paymentRoute from "./src/routes/payment-route.js"
 import webhookRoute from "./src/routes/webhook-route.js"
 import ownerRoute from "./src/routes/owner-route.js"
 import restaurantRoute from "./src/routes/restaurant-route.js"
+import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 
 const app = express()
 const PORT = process.env.PORT || 5000
@@ -49,9 +50,10 @@ app.use("/menu-items", menuRoute)
 app.use("/restaurant", restaurantRoute)
 app.use(sseRoute)
 
-// Start server (DB first)
+// Start server (DB first, then Redis bus, then HTTP)
 async function start() {
   await connectDB()
+  startRealtimeBus()
   app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`)
   })

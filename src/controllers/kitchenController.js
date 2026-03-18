@@ -1,7 +1,7 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
-import { broadcast, broadcastToRole } from "../utils/sseManager.js"
+import { publishEvent } from "../utils/sseManager.js"
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -125,22 +125,17 @@ export async function updateOrderStatus(req, res) {
 
     const orderDTO = toOrderDTO(order)
 
-    // --- SSE SPLIT for Update ---
-    const foodItems = order.items.filter(i => i.category === "food")
+    // --- SSE via Redis pub/sub ---
+    const foodItems = order.items.filter(i => i.category === "food" || i.type === "food")
 
-    // Dynamic import to avoid circular dependency issues
-    // const { broadcast, broadcastToRole } = await import("../utils/sseManager.js")
-
-    // 1. Send to Kitchen: Food Only
+    // Kitchen: food items only
     if (foodItems.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems }
-      // Send only to kitchen role
-      broadcastToRole("kitchen", "order_updated", { order: kitchenDTO })
+      await publishEvent("order_updated", order.restaurantId, ["kitchen"], { order: kitchenDTO })
     }
 
-    // 2. Send to Waiters & Tables: Full Order
-    // We exclude 'kitchen' role from this broadcast to avoid duplicates/wrong data
-    broadcast("order_updated", { order: orderDTO }, (client) => client.role !== "kitchen")
+    // Waiter + table: full order
+    await publishEvent("order_updated", order.restaurantId, ["waiter", "table", "anon"], { order: orderDTO })
 
     return res.json({
       success: true,
