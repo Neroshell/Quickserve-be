@@ -332,16 +332,8 @@ export async function markPaid(req, res) {
 
     // ✅ Step 3: Respond immediately — do NOT wait for email
     console.log(`[markPaid] ✅ Sending response for order ${orderId}`)
-    res.json({
-      success: true,
-      orderId: order.orderId,
-      paymentStatus: order.paymentStatus,
-      paidVia: order.paidVia,
-    })
 
-    // ✅ Step 4: Fire-and-forget receipt email — runs AFTER response is sent
-    // This will never block the HTTP response, even if SMTP hangs in production
-    if (order.receiptEmail && !order.receiptSent) {
+ if (order.receiptEmail && !order.receiptSent) {
       console.log(`[markPaid] 📧 Starting background receipt email for order ${orderId} → ${order.receiptEmail}`)
       ;(async () => {
         try {
@@ -362,6 +354,17 @@ export async function markPaid(req, res) {
     } else {
       console.log(`[markPaid] ℹ️ No receiptEmail on order ${orderId}, skipping email`)
     }
+
+    res.json({
+      success: true,
+      orderId: order.orderId,
+      paymentStatus: order.paymentStatus,
+      paidVia: order.paidVia,
+    })
+
+    // ✅ Step 4: Fire-and-forget receipt email — runs AFTER response is sent
+    // This will never block the HTTP response, even if SMTP hangs in production
+   
   } catch (err) {
     console.error("[markPaid] Error:", err)
     return res.status(500).json({ message: "Server error" })
