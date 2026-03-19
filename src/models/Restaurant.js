@@ -21,6 +21,7 @@ const OrderingPreferencesSchema = new mongoose.Schema({
     takeoutEnabled: { type: Boolean, default: false },
     callWaiterEnabled: { type: Boolean, default: true },
     hideOutOfStockItems: { type: Boolean, default: false },
+    qrOrderingEnabled: { type: Boolean, default: true },
 }, { _id: false })
 
 const PaymentPreferencesSchema = new mongoose.Schema({
@@ -28,6 +29,11 @@ const PaymentPreferencesSchema = new mongoose.Schema({
     acceptOfflinePayments: { type: Boolean, default: true },
     acceptCash: { type: Boolean, default: true },
     acceptPosCard: { type: Boolean, default: true },
+}, { _id: false })
+
+const TablePreferencesSchema = new mongoose.Schema({
+    sessionExpiryMinutes: { type: Number, default: 120, min: [1, 'Session expiry must be positive'] },
+    maxActiveSessionsPerTable: { type: Number, default: 5, min: [1, 'Max active sessions must be positive'] }
 }, { _id: false })
 
 const RestaurantSchema = new mongoose.Schema({
@@ -53,7 +59,8 @@ const RestaurantSchema = new mongoose.Schema({
     logoUrl: { type: String, default: "" },
     operatingHours: { type: OperatingHoursSchema, default: () => ({}) },
     orderingPreferences: { type: OrderingPreferencesSchema, default: () => ({}) },
-    paymentPreferences: { type: PaymentPreferencesSchema, default: () => ({}) }
+    paymentPreferences: { type: PaymentPreferencesSchema, default: () => ({}) },
+    tablePreferences: { type: TablePreferencesSchema, default: () => ({}) }
 }, { timestamps: true })
 
 export default mongoose.model("Restaurant", RestaurantSchema)
