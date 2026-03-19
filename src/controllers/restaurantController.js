@@ -109,12 +109,13 @@ export async function updateOrderingPreferences(req, res) {
         }
 
         // Only allow the known boolean fields to be updated
-        const { dineInEnabled, takeoutEnabled, callWaiterEnabled, hideOutOfStockItems } = orderingPreferences
+        const { dineInEnabled, takeoutEnabled, callWaiterEnabled, hideOutOfStockItems, qrOrderingEnabled } = orderingPreferences
         const safePrefs = {}
         if (typeof dineInEnabled === "boolean") safePrefs["orderingPreferences.dineInEnabled"] = dineInEnabled
         if (typeof takeoutEnabled === "boolean") safePrefs["orderingPreferences.takeoutEnabled"] = takeoutEnabled
         if (typeof callWaiterEnabled === "boolean") safePrefs["orderingPreferences.callWaiterEnabled"] = callWaiterEnabled
         if (typeof hideOutOfStockItems === "boolean") safePrefs["orderingPreferences.hideOutOfStockItems"] = hideOutOfStockItems
+        if (typeof qrOrderingEnabled === "boolean") safePrefs["orderingPreferences.qrOrderingEnabled"] = qrOrderingEnabled
 
         const restaurant = await Restaurant.findOneAndUpdate(
             { restaurantId },
@@ -161,6 +162,46 @@ export async function updatePaymentPreferences(req, res) {
         return res.json({ paymentPreferences: restaurant.paymentPreferences })
     } catch (err) {
         console.error("Update payment preferences error:", err)
+        return res.status(500).json({ message: "Server error" })
+    }
+}
+
+export async function updateTablePreferences(req, res) {
+    try {
+        const { restaurantId, tablePreferences } = req.body
+
+        if (!restaurantId || !tablePreferences) {
+            return res.status(400).json({ message: "restaurantId and tablePreferences are required" })
+        }
+
+        const { sessionExpiryMinutes, maxActiveSessionsPerTable } = tablePreferences
+        const safePrefs = {}
+
+        if (typeof sessionExpiryMinutes === "number" && sessionExpiryMinutes > 0) {
+            safePrefs["tablePreferences.sessionExpiryMinutes"] = sessionExpiryMinutes
+        } else if (sessionExpiryMinutes !== undefined) {
+             return res.status(400).json({ message: "sessionExpiryMinutes must be a positive number" })
+        }
+        
+        if (typeof maxActiveSessionsPerTable === "number" && maxActiveSessionsPerTable > 0) {
+            safePrefs["tablePreferences.maxActiveSessionsPerTable"] = maxActiveSessionsPerTable
+        } else if (maxActiveSessionsPerTable !== undefined) {
+             return res.status(400).json({ message: "maxActiveSessionsPerTable must be a positive number" })
+        }
+
+        const restaurant = await Restaurant.findOneAndUpdate(
+            { restaurantId },
+            { $set: safePrefs },
+            { new: true, runValidators: true }
+        )
+
+        if (!restaurant) {
+            return res.status(404).json({ message: "Restaurant not found" })
+        }
+
+        return res.json({ tablePreferences: restaurant.tablePreferences })
+    } catch (err) {
+        console.error("Update table preferences error:", err)
         return res.status(500).json({ message: "Server error" })
     }
 }
