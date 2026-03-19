@@ -1,5 +1,6 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
+import TableSession from "../models/TableSession.js"
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -118,6 +119,7 @@ export async function ownerOrders(req, res) {
                 paymentChannel: 1,
                 paymentStatus: 1,
                 paidVia: 1,
+                receiptEmail: 1,
             }
         )
             .sort({ updatedAt: -1, createdAt: -1 })
@@ -168,6 +170,7 @@ export async function ownerOrders(req, res) {
                 paymentChannel: o.paymentChannel,
                 paymentStatus: o.paymentStatus,
                 paidVia: o.paidVia,
+                receiptEmail: o.receiptEmail,
                 items: (o.items || []).map((it) => ({
                     itemName: it.itemName,
                     quantity: it.quantity,
@@ -191,6 +194,52 @@ export async function ownerOrders(req, res) {
     } catch (err) {
         console.error("[ownerOrders]", err)
         return res.status(500).json({ error: "Failed to fetch owner orders" })
+    }
+}
+
+export async function getTableSessionsOverview(req, res) {
+    try {
+        const restaurantId = req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
+
+        const now = new Date()
+
+        const sessions = await TableSession.aggregate([
+            {
+                $match: {
+                    restaurantId,
+                    expiresAt: { $gt: now }
+                }
+            },
+            {
+                $group: {
+                    _id: "$tableId",
+                    activeDevices: { $sum: 1 }
+                }
+            },
+            {
+                $sort: {
+                    activeDevices: -1,
+                    _id: 1
+                }
+            }
+        ])
+
+        const activeSessionsNow = sessions.reduce((acc, curr) => acc + curr.activeDevices, 0)
+        const activeTablesNow = sessions.length
+        
+        const tables = sessions.map(s => ({
+            tableNumber: s._id,
+            activeDevices: s.activeDevices
+        }))
+
+        return res.json({
+            activeSessionsNow,
+            activeTablesNow,
+            tables
+        })
+    } catch (err) {
+        console.error("Get table sessions overview error:", err)
+        return res.status(500).json({ message: "Server error retrieving session overview" })
     }
 }
 
