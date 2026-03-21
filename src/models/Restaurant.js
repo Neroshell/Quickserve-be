@@ -57,6 +57,20 @@ const RestaurantSchema = new mongoose.Schema({
     currency: { type: String, default: "USD" },
     timezone: { type: String, default: "America/New_York" },
     logoUrl: { type: String, default: "" },
+    country: { type: String, default: "" },
+    plan: { 
+        type: String, 
+        enum: ["starter", "growth", "enterprise"], 
+        default: "starter" 
+    },
+    status: { 
+        type: String, 
+        enum: ["draft", "active", "suspended", "archived"], 
+        default: "draft" 
+    },
+    notes: { type: String, default: "" },
+    ownerName: { type: String, required: true },
+    ownerEmail: { type: String, required: true },
     operatingHours: { type: OperatingHoursSchema, default: () => ({}) },
     orderingPreferences: { type: OrderingPreferencesSchema, default: () => ({}) },
     paymentPreferences: { type: PaymentPreferencesSchema, default: () => ({}) },

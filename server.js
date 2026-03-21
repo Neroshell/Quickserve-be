@@ -12,6 +12,7 @@ import webhookRoute from "./src/routes/webhook-route.js"
 import ownerRoute from "./src/routes/owner-route.js"
 import restaurantRoute from "./src/routes/restaurant-route.js"
 import tableSessionRoute from "./src/routes/table-session-route.js"
+import adminRoute from "./src/routes/admin-route.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 
 const app = express()
@@ -50,6 +51,7 @@ app.use("/owner", ownerRoute)
 app.use("/menu-items", menuRoute)
 app.use("/restaurant", restaurantRoute)
 app.use("/table-session", tableSessionRoute)
+app.use("/admin", adminRoute)
 app.use(sseRoute)
 
 // Start server (DB first, then Redis bus, then HTTP)
