@@ -1,5 +1,6 @@
 import Restaurant from "../models/Restaurant.js"
 import Order from "../models/order.js"
+import Plan from "../models/Plan.js"
 import crypto from "crypto"
 
 function generateRestaurantId() {
@@ -13,24 +14,7 @@ export async function getSettings(req, res) {
         let restaurant = await Restaurant.findOne({ restaurantId })
 
         if (!restaurant) {
-            // Create a default restaurant record if it doesn't exist
-            restaurant = await Restaurant.create({
-                restaurantId,
-                name: "My Restaurant",
-                displayName: "New Restaurant",
-                slug: `restaurant-${Date.now()}`,
-                currency: "USD",
-                timezone: "America/New_York",
-                operatingHours: {
-                    Monday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
-                    Tuesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
-                    Wednesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
-                    Thursday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
-                    Friday: { enabled: true, openTime: "09:00", closeTime: "23:00" },
-                    Saturday: { enabled: true, openTime: "10:00", closeTime: "23:00" },
-                    Sunday: { enabled: false, openTime: "10:00", closeTime: "22:00" }
-                }
-            })
+            return res.status(404).json({ message: "Restaurant not found" })
         }
 
         return res.json(restaurant)
@@ -42,10 +26,19 @@ export async function getSettings(req, res) {
 
 export async function updateSettings(req, res) {
     try {
-        const { restaurantId, ...updates } = req.body
+        const { restaurantId, settings, ...updates } = req.body
 
         if (!restaurantId) {
             return res.status(400).json({ message: "restaurantId is required" })
+        }
+
+        const updateObj = { ...updates }
+
+        // Handle nested settings if provided
+        if (settings && typeof settings === 'object') {
+            for (const [key, value] of Object.entries(settings)) {
+                updateObj[`settings.${key}`] = value
+            }
         }
 
         // Slug validation if being updated
@@ -66,7 +59,7 @@ export async function updateSettings(req, res) {
 
         const restaurant = await Restaurant.findOneAndUpdate(
             { restaurantId },
-            { $set: updates },
+            { $set: updateObj },
             { new: true, runValidators: true }
         )
 
@@ -212,6 +205,9 @@ export async function updateTablePreferences(req, res) {
     }
 }
 
+const VALID_BUSINESS_TYPES = ["restaurant", "bar_lounge", "hotel_apartment"]
+const VALID_PLANS = ["basic", "starter", "growth", "enterprise"]
+
 export async function createRestaurant(req, res) {
     try {
         const {
@@ -224,15 +220,29 @@ export async function createRestaurant(req, res) {
             country,
             currency,
             timezone,
+            language,
+            settings,
             ownerName,
             ownerEmail,
+            businessType,
             plan,
+            planId,
             notes
         } = req.body
 
         // Simple validation
         if (!name || !displayName || !slug || !ownerName || !ownerEmail) {
             return res.status(400).json({ message: "Missing required fields (name, displayName, slug, ownerName, ownerEmail)" })
+        }
+
+        // businessType validation
+        if (businessType && !VALID_BUSINESS_TYPES.includes(businessType)) {
+            return res.status(400).json({ message: `Invalid businessType. Must be one of: ${VALID_BUSINESS_TYPES.join(", ")}` })
+        }
+
+        // plan validation
+        if (plan && !VALID_PLANS.includes(plan)) {
+            return res.status(400).json({ message: `Invalid plan. Must be one of: ${VALID_PLANS.join(", ")}` })
         }
 
         // Slug validation
@@ -259,15 +269,34 @@ export async function createRestaurant(req, res) {
             country,
             currency,
             timezone,
+            language: language || "en",
+            settings: settings || {
+                onlinePaymentEnabled: true,
+                offlinePaymentEnabled: true,
+                acceptCash: true,
+                acceptPOS: true,
+                dineInEnabled: true,
+                takeoutEnabled: false,
+                callWaiterEnabled: true
+            },
             ownerName,
             ownerEmail,
+            businessType,
             plan,
+            planId,
             notes,
             status: "draft"
         })
 
         return res.status(201).json(restaurant)
     } catch (err) {
+        if (err.code === 11000) {
+            const field = Object.keys(err.keyPattern || {})[0]
+            if (field === "slug") {
+                return res.status(400).json({ message: "A restaurant with this slug already exists. Please choose a different slug." })
+            }
+            return res.status(400).json({ message: "Duplicate entry error" })
+        }
         console.error("Create restaurant error:", err)
         return res.status(500).json({ message: "Server error creating restaurant" })
     }
@@ -275,7 +304,7 @@ export async function createRestaurant(req, res) {
 
 export async function getAdminRestaurants(req, res) {
     try {
-        const restaurants = await Restaurant.find().lean()
+        const restaurants = await Restaurant.find().populate("planId").lean()
 
         const enrichedRestaurants = await Promise.all(restaurants.map(async (rest) => {
             // Aggregate metrics from orders
@@ -298,8 +327,9 @@ export async function getAdminRestaurants(req, res) {
 
             const metrics = stats[0] || { totalSales: 0, lastOrderDate: rest.createdAt, count: 0 }
             
-            // Default commission 10%
-            const commission = metrics.totalSales * 0.1
+            // Calculate commission based on assigned plan or default to 10%
+            const commissionRate = rest.planId?.commissionPercentage ?? 10
+            const commission = metrics.totalSales * (commissionRate / 100)
 
             return {
                 ...rest,
@@ -351,7 +381,7 @@ export async function getAdminOwners(req, res) {
 export async function getAdminRestaurantById(req, res) {
     try {
         const { restaurantId } = req.params
-        const restaurant = await Restaurant.findOne({ restaurantId }).lean()
+        const restaurant = await Restaurant.findOne({ restaurantId }).populate("planId").lean()
 
         if (!restaurant) {
             return res.status(404).json({ message: "Restaurant not found" })
@@ -376,7 +406,10 @@ export async function getAdminRestaurantById(req, res) {
         ])
 
         const metrics = stats[0] || { totalSales: 0, lastOrderDate: restaurant.createdAt, count: 0 }
-        const commission = metrics.totalSales * 0.1
+        
+        // Calculate commission based on assigned plan or default to 10%
+        const commissionRate = restaurant.planId?.commissionPercentage ?? 10
+        const commission = metrics.totalSales * (commissionRate / 100)
 
         const enrichedRestaurant = {
             ...restaurant,
@@ -426,7 +459,10 @@ export async function updateAdminRestaurant(req, res) {
 export async function getAdminDashboardStats(req, res) {
     try {
         // 1. Restaurant Status & Plan Distribution
-        const restaurants = await Restaurant.find().lean()
+        const [restaurants, plans] = await Promise.all([
+            Restaurant.find().lean(),
+            Plan.find({ isActive: true }).lean()
+        ])
         const totalRestaurants = restaurants.length
         
         const statsByStatus = {
@@ -436,12 +472,11 @@ export async function getAdminDashboardStats(req, res) {
             archived: 0
         }
         
-        const statsByPlan = {
-            starter: 0,
-            growth: 0,
-            pro: 0,
-            enterprise: 0
-        }
+        // Build dynamic plan stats from db plans
+        const statsByPlan = {}
+        plans.forEach(p => {
+            statsByPlan[p.name.toLowerCase()] = 0
+        })
         
         const thirtyDaysAgo = new Date()
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
@@ -450,7 +485,17 @@ export async function getAdminDashboardStats(req, res) {
         
         restaurants.forEach(r => {
             if (statsByStatus.hasOwnProperty(r.status)) statsByStatus[r.status]++
-            if (statsByPlan.hasOwnProperty(r.plan)) statsByPlan[r.plan]++
+            
+            // Increment plan stat - handle both string plan name and potential missing plans
+            const planKey = r.plan?.toLowerCase() || "basic"
+            if (statsByPlan.hasOwnProperty(planKey)) {
+                statsByPlan[planKey]++
+            } else if (!statsByPlan[planKey] && plans.length > 0) {
+                // Fallback for custom or legacy plan names not in the current active plans list
+                if (!statsByPlan["other"]) statsByPlan["other"] = 0
+                statsByPlan["other"]++
+            }
+            
             if (new Date(r.createdAt) > thirtyDaysAgo) newRestaurants++
         })
 
@@ -540,5 +585,112 @@ export async function getAdminDashboardStats(req, res) {
     } catch (err) {
         console.error("Dashboard stats error:", err)
         return res.status(500).json({ message: "Server error fetching dashboard stats" })
+    }
+}
+
+export async function getCategories(req, res) {
+    try {
+        const restaurantId = req.query.restaurantId || req.user?.restaurantId
+        if (!restaurantId) {
+            return res.status(400).json({ message: "restaurantId is required" })
+        }
+
+        const restaurant = await Restaurant.findOne({ restaurantId })
+        if (!restaurant) {
+            return res.status(404).json({ message: "Restaurant not found" })
+        }
+
+        // Return menuCategories array or default if not set
+        return res.json(restaurant.menuCategories && restaurant.menuCategories.length > 0 
+            ? restaurant.menuCategories 
+            : ["appetizers", "mains", "desserts", "beverages"])
+    } catch (err) {
+        console.error("Get categories error:", err)
+        return res.status(500).json({ message: "Server error fetching categories" })
+    }
+}
+
+export async function addCategory(req, res) {
+    try {
+        const restaurantId = req.body.restaurantId || req.user?.restaurantId
+        const { category } = req.body
+
+        if (!restaurantId || !category) {
+            return res.status(400).json({ message: "restaurantId and category are required" })
+        }
+
+        const trimmedCategory = category.trim().toLowerCase()
+        if (!trimmedCategory) {
+            return res.status(400).json({ message: "Invalid category" })
+        }
+
+        const restaurant = await Restaurant.findOneAndUpdate(
+            { restaurantId },
+            { $addToSet: { menuCategories: trimmedCategory } },
+            { new: true }
+        )
+
+        if (!restaurant) {
+            return res.status(404).json({ message: "Restaurant not found" })
+        }
+
+        return res.json(restaurant.menuCategories)
+    } catch (err) {
+        console.error("Add category error:", err)
+        return res.status(500).json({ message: "Server error adding category" })
+    }
+}
+
+export async function removeCategory(req, res) {
+    try {
+        const restaurantId = req.query.restaurantId || req.body.restaurantId || req.user?.restaurantId
+        const category = req.query.category || req.body.category
+
+        if (!restaurantId || !category) {
+            return res.status(400).json({ message: "restaurantId and category are required" })
+        }
+
+        const trimmedCategory = category.trim().toLowerCase()
+        const defaultCategories = ["appetizers", "mains", "desserts", "beverages"]
+
+        if (defaultCategories.includes(trimmedCategory)) {
+            return res.status(400).json({ message: "Cannot delete default categories" })
+        }
+
+        const restaurant = await Restaurant.findOneAndUpdate(
+            { restaurantId },
+            { $pull: { menuCategories: trimmedCategory } },
+            { new: true }
+        )
+
+        if (!restaurant) {
+            return res.status(404).json({ message: "Restaurant not found" })
+        }
+
+        return res.json(restaurant.menuCategories)
+    } catch (err) {
+        console.error("Remove category error:", err)
+        return res.status(500).json({ message: "Server error removing category" })
+    }
+}
+
+export async function deleteAdminRestaurant(req, res) {
+    try {
+        const { restaurantId } = req.params;
+
+        if (!restaurantId) {
+            return res.status(400).json({ message: "Restaurant ID is required" });
+        }
+
+        const deletedRestaurant = await Restaurant.findOneAndDelete({ restaurantId });
+
+        if (!deletedRestaurant) {
+            return res.status(404).json({ message: "Restaurant not found" });
+        }
+
+        return res.json({ message: "Restaurant successfully deleted", restaurantId });
+    } catch (err) {
+        console.error("Delete administration restaurant error:", err);
+        return res.status(500).json({ message: "Server error deleting restaurant" });
     }
 }

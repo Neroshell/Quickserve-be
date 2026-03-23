@@ -58,20 +58,42 @@ const RestaurantSchema = new mongoose.Schema({
     timezone: { type: String, default: "America/New_York" },
     logoUrl: { type: String, default: "" },
     country: { type: String, default: "" },
+    taxRate: { type: Number, default: 0, min: 0 },
+    businessType: {
+        type: String,
+        enum: ["restaurant", "bar_lounge", "hotel_apartment"],
+        default: "restaurant"
+    },
+    menuCategories: {
+        type: [String],
+        default: ["appetizers", "mains", "desserts", "beverages"]
+    },
     plan: { 
         type: String, 
-        enum: ["starter", "growth", "enterprise"], 
-        default: "starter" 
+        enum: ["basic", "starter", "growth", "enterprise"], 
+        default: "basic" 
     },
+    planId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan' },
     status: { 
         type: String, 
         enum: ["draft", "active", "suspended", "archived"], 
         default: "draft" 
     },
+    language: { type: String, default: "en" },
+    settings: {
+        onlinePaymentEnabled: { type: Boolean, default: true },
+        offlinePaymentEnabled: { type: Boolean, default: true },
+        acceptCash: { type: Boolean, default: true },
+        acceptPOS: { type: Boolean, default: true },
+        dineInEnabled: { type: Boolean, default: true },
+        takeoutEnabled: { type: Boolean, default: false },
+        callWaiterEnabled: { type: Boolean, default: true },
+    },
     notes: { type: String, default: "" },
     ownerName: { type: String, required: true },
     ownerEmail: { type: String, required: true },
     operatingHours: { type: OperatingHoursSchema, default: () => ({}) },
+    // Legacy fields for backward compatibility
     orderingPreferences: { type: OrderingPreferencesSchema, default: () => ({}) },
     paymentPreferences: { type: PaymentPreferencesSchema, default: () => ({}) },
     tablePreferences: { type: TablePreferencesSchema, default: () => ({}) }

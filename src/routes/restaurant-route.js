@@ -1,5 +1,5 @@
 import express from "express"
-import { getSettings, updateSettings, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences } from "../controllers/restaurantController.js"
+import { getSettings, updateSettings, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory } from "../controllers/restaurantController.js"
 
 const router = express.Router()
 
@@ -20,5 +20,14 @@ router.patch("/settings/payment-preferences", updatePaymentPreferences)
 
 // PATCH /restaurant/settings/table-preferences
 router.patch("/settings/table-preferences", updateTablePreferences)
+
+// GET /restaurant/categories
+router.get("/categories", getCategories)
+
+// POST /restaurant/categories
+router.post("/categories", addCategory)
+
+// DELETE /restaurant/categories
+router.delete("/categories", removeCategory)
 
 export default router
