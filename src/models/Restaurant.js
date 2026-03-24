@@ -115,4 +115,4 @@ const RestaurantSchema = new mongoose.Schema({
     tablePreferences: { type: TablePreferencesSchema, default: () => ({}) }
 }, { timestamps: true })
 
-export default mongoose.model("Restaurant", RestaurantSchema)
+export default mongoose.models.Restaurant || mongoose.model("Restaurant", RestaurantSchema)

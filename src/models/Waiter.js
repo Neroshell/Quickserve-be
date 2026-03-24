@@ -37,4 +37,4 @@ WaiterSchema.index({ restaurantId: 1, waiterId: 1 }, { unique: true })
 // Ensure email is unique per restaurant (useful for future login)
 WaiterSchema.index({ restaurantId: 1, email: 1 }, { unique: true })
 
-export default mongoose.model("Waiter", WaiterSchema)
+export default mongoose.models.Waiter || mongoose.model("Waiter", WaiterSchema)

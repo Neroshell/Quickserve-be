@@ -47,4 +47,4 @@ const PendingCheckoutSchema = new mongoose.Schema(
 
 PendingCheckoutSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
 
-export default mongoose.model("PendingCheckout", PendingCheckoutSchema)
+export default mongoose.models.PendingCheckout || mongoose.model("PendingCheckout", PendingCheckoutSchema)

@@ -20,4 +20,4 @@ const MenuItemSchema = new mongoose.Schema({
     isAvailable: { type: Boolean, default: true }
 }, { timestamps: true })
 
-export default mongoose.model("MenuItem", MenuItemSchema)
+export default mongoose.models.MenuItem || mongoose.model("MenuItem", MenuItemSchema)

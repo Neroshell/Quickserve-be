@@ -120,6 +120,7 @@ export async function ownerOrders(req, res) {
                 paymentStatus: 1,
                 paidVia: 1,
                 receiptEmail: 1,
+                completedBy: 1,
             }
         )
             .sort({ updatedAt: -1, createdAt: -1 })
@@ -182,6 +183,7 @@ export async function ownerOrders(req, res) {
                 notes: specialRequest,
                 total: o.total,
                 currency: o.currency || "EUR",
+                completedBy: o.completedBy || null,
             }
         })
 

@@ -1,5 +1,6 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
+import Waiter from "../models/waiter.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 
@@ -118,6 +119,21 @@ export async function updateOrderStatus(req, res) {
       return res.status(400).json({
         error: "Offline orders must be paid before being served",
       })
+    }
+
+    if (nextStatus === "completed") {
+      const waiterId = req.headers["x-waiter-id"]
+      const waiterName = req.headers["x-waiter-name"]
+
+      if (waiterName) {
+        order.completedBy = waiterName
+      } else if (waiterId) {
+        // Fallback: look up name from DB
+        const waiter = await Waiter.findOne({ restaurantId, waiterId })
+        if (waiter) order.completedBy = waiter.name
+      }
+      
+      order.completedAt = new Date()
     }
 
     order.status = nextStatus

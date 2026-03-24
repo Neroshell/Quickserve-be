@@ -18,4 +18,4 @@ const TableSessionSchema = new mongoose.Schema(
 // TTL index (Mongo deletes docs when expiresAt < now)
 TableSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
 
-export default mongoose.model("TableSession", TableSessionSchema)
+export default mongoose.models.TableSession || mongoose.model("TableSession", TableSessionSchema)

@@ -29,4 +29,4 @@ const WaiterCallSchema = new mongoose.Schema(
   { timestamps: true },
 )
 
-export default mongoose.model("WaiterCall", WaiterCallSchema)
+export default mongoose.models.WaiterCall || mongoose.model("WaiterCall", WaiterCallSchema)

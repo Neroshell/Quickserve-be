@@ -37,6 +37,7 @@ export function toOrderDTO(orderDoc) {
         paymentChannel: o.paymentChannel || "offline",
         paymentStatus: o.paymentStatus || "unpaid",
         paidVia: o.paidVia || null,
+        completedBy: o.completedBy || null,
         items: (o.items || []).map((it) => ({
             itemName: it.itemName,
             quantity: it.quantity,

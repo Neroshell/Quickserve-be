@@ -61,6 +61,9 @@ const OrderSchema = new mongoose.Schema(
 
     // Receipt details
     receiptEmail: { type: String, default: null },
+
+    // Staff attribution
+    completedBy: { type: String, default: null },
   },
   { timestamps: true },
 )
@@ -68,4 +71,4 @@ const OrderSchema = new mongoose.Schema(
 OrderSchema.index({ restaurantId: 1, orderId: 1 }, { unique: true })
 
 
-export default mongoose.model("Order", OrderSchema)
+export default mongoose.models.Order || mongoose.model("Order", OrderSchema)
