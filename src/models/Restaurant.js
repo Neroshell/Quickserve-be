@@ -91,7 +91,22 @@ const RestaurantSchema = new mongoose.Schema({
     },
     notes: { type: String, default: "" },
     ownerName: { type: String, required: true },
-    ownerEmail: { type: String, required: true },
+    ownerEmail: { 
+        type: String, 
+        required: true, 
+        unique: true, 
+        lowercase: true, 
+        trim: true,
+        index: true
+    },
+    ownerStatus: { 
+        type: String, 
+        enum: ["pending", "active", "disabled"], 
+        default: "pending" 
+    },
+    ownerPasswordHash: { type: String },
+    inviteToken: { type: String, index: true },
+    inviteTokenExpires: { type: Date },
     operatingHours: { type: OperatingHoursSchema, default: () => ({}) },
     // Legacy fields for backward compatibility
     orderingPreferences: { type: OrderingPreferencesSchema, default: () => ({}) },

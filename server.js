@@ -13,6 +13,7 @@ import ownerRoute from "./src/routes/owner-route.js"
 import restaurantRoute from "./src/routes/restaurant-route.js"
 import tableSessionRoute from "./src/routes/table-session-route.js"
 import adminRoute from "./src/routes/admin-route.js"
+import authRoute from "./src/routes/auth-route.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 
 const app = express()
@@ -52,6 +53,7 @@ app.use("/menu-items", menuRoute)
 app.use("/restaurant", restaurantRoute)
 app.use("/table-session", tableSessionRoute)
 app.use("/admin", adminRoute)
+app.use("/auth", authRoute)
 app.use(sseRoute)
 
 // Start server (DB first, then Redis bus, then HTTP)

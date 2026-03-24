@@ -2,6 +2,7 @@ import Restaurant from "../models/Restaurant.js"
 import Order from "../models/order.js"
 import Plan from "../models/Plan.js"
 import crypto from "crypto"
+import { sendInvitationEmail } from "../utils/emailService.js"
 
 function generateRestaurantId() {
     return `rest_${crypto.randomBytes(4).toString("hex")}`
@@ -258,6 +259,15 @@ export async function createRestaurant(req, res) {
 
         const restaurantId = generateRestaurantId()
 
+        // Normalize email
+        const normalizedOwnerEmail = ownerEmail.trim().toLowerCase()
+
+        // Explicit check for existing owner account
+        const existingOwner = await Restaurant.findOne({ ownerEmail: normalizedOwnerEmail })
+        if (existingOwner) {
+            return res.status(409).json({ message: "An owner account with this email already exists." })
+        }
+
         const restaurant = await Restaurant.create({
             restaurantId,
             name,
@@ -285,7 +295,16 @@ export async function createRestaurant(req, res) {
             plan,
             planId,
             notes,
-            status: "draft"
+            status: "draft",
+            ownerStatus: "pending",
+            inviteToken: crypto.randomBytes(32).toString("hex"),
+            inviteTokenExpires: new Date(Date.now() + 48 * 60 * 60 * 1000) // 48 hours
+        })
+
+        // Send invitation email in background
+        const inviteLink = `${process.env.FRONTEND_BASE_URL || 'http://localhost:3000'}/setup-account?token=${restaurant.inviteToken}`
+        sendInvitationEmail(restaurant, inviteLink).catch(err => {
+            console.error(`[createRestaurant] Failed to send invitation email to ${ownerEmail}:`, err)
         })
 
         return res.status(201).json(restaurant)
@@ -294,6 +313,9 @@ export async function createRestaurant(req, res) {
             const field = Object.keys(err.keyPattern || {})[0]
             if (field === "slug") {
                 return res.status(400).json({ message: "A restaurant with this slug already exists. Please choose a different slug." })
+            }
+            if (field === "ownerEmail") {
+                return res.status(409).json({ message: "An owner account with this email already exists." })
             }
             return res.status(400).json({ message: "Duplicate entry error" })
         }
