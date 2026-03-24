@@ -90,11 +90,12 @@ const RestaurantSchema = new mongoose.Schema({
         callWaiterEnabled: { type: Boolean, default: true },
     },
     notes: { type: String, default: "" },
-    ownerName: { type: String, required: true },
+    ownerName: { type: String, required: false },
     ownerEmail: { 
         type: String, 
-        required: true, 
+        required: false, 
         unique: true, 
+        sparse: true,
         lowercase: true, 
         trim: true,
         index: true

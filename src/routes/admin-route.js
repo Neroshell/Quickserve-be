@@ -1,11 +1,14 @@
 import express from "express"
-import { createRestaurant, getAdminRestaurants, getAdminOwners, getAdminRestaurantById, updateAdminRestaurant, getAdminDashboardStats, deleteAdminRestaurant } from "../controllers/restaurantController.js"
+import { createRestaurant, getAdminRestaurants, getAdminOwners, createAdminOwner, getAdminRestaurantById, updateAdminRestaurant, getAdminDashboardStats, deleteAdminRestaurant } from "../controllers/restaurantController.js"
 import { getPlans, updatePlan, seedPlans } from "../controllers/planController.js"
 
 const router = express.Router()
 
 // POST /admin/restaurants
 router.post("/restaurants", createRestaurant)
+
+// POST /admin/owners
+router.post("/owners", createAdminOwner)
 
 // GET /admin/restaurants
 router.get("/restaurants", getAdminRestaurants)

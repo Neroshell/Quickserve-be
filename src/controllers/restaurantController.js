@@ -223,8 +223,6 @@ export async function createRestaurant(req, res) {
             timezone,
             language,
             settings,
-            ownerName,
-            ownerEmail,
             businessType,
             plan,
             planId,
@@ -232,8 +230,8 @@ export async function createRestaurant(req, res) {
         } = req.body
 
         // Simple validation
-        if (!name || !displayName || !slug || !ownerName || !ownerEmail) {
-            return res.status(400).json({ message: "Missing required fields (name, displayName, slug, ownerName, ownerEmail)" })
+        if (!name || !displayName || !slug) {
+            return res.status(400).json({ message: "Missing required fields (name, displayName, slug)" })
         }
 
         // businessType validation
@@ -259,15 +257,6 @@ export async function createRestaurant(req, res) {
 
         const restaurantId = generateRestaurantId()
 
-        // Normalize email
-        const normalizedOwnerEmail = ownerEmail.trim().toLowerCase()
-
-        // Explicit check for existing owner account
-        const existingOwner = await Restaurant.findOne({ ownerEmail: normalizedOwnerEmail })
-        if (existingOwner) {
-            return res.status(409).json({ message: "An owner account with this email already exists." })
-        }
-
         const restaurant = await Restaurant.create({
             restaurantId,
             name,
@@ -289,22 +278,11 @@ export async function createRestaurant(req, res) {
                 takeoutEnabled: false,
                 callWaiterEnabled: true
             },
-            ownerName,
-            ownerEmail,
             businessType,
             plan,
             planId,
             notes,
-            status: "draft",
-            ownerStatus: "pending",
-            inviteToken: crypto.randomBytes(32).toString("hex"),
-            inviteTokenExpires: new Date(Date.now() + 48 * 60 * 60 * 1000) // 48 hours
-        })
-
-        // Send invitation email in background
-        const inviteLink = `${process.env.FRONTEND_BASE_URL || 'http://localhost:3000'}/setup-account?token=${restaurant.inviteToken}`
-        sendInvitationEmail(restaurant, inviteLink).catch(err => {
-            console.error(`[createRestaurant] Failed to send invitation email to ${ownerEmail}:`, err)
+            status: "draft"
         })
 
         return res.status(201).json(restaurant)
@@ -314,13 +292,64 @@ export async function createRestaurant(req, res) {
             if (field === "slug") {
                 return res.status(400).json({ message: "A restaurant with this slug already exists. Please choose a different slug." })
             }
-            if (field === "ownerEmail") {
-                return res.status(409).json({ message: "An owner account with this email already exists." })
-            }
             return res.status(400).json({ message: "Duplicate entry error" })
         }
         console.error("Create restaurant error:", err)
         return res.status(500).json({ message: "Server error creating restaurant" })
+    }
+}
+
+export async function createAdminOwner(req, res) {
+    try {
+        const { restaurantId, ownerName, ownerEmail } = req.body
+
+        if (!restaurantId || !ownerName || !ownerEmail) {
+            return res.status(400).json({ message: "Missing required fields (restaurantId, ownerName, ownerEmail)" })
+        }
+
+        const restaurant = await Restaurant.findOne({ restaurantId })
+        if (!restaurant) {
+            return res.status(404).json({ message: "Restaurant not found" })
+        }
+
+        if (restaurant.ownerEmail) {
+            return res.status(400).json({ message: "This restaurant already has an owner assigned" })
+        }
+
+        // Check for existing owner account across all restaurants
+        const normalizedOwnerEmail = ownerEmail.trim().toLowerCase()
+        const existingOwner = await Restaurant.findOne({ ownerEmail: normalizedOwnerEmail })
+        if (existingOwner) {
+            return res.status(409).json({ message: "An owner account with this email already exists." })
+        }
+
+        const inviteToken = crypto.randomBytes(32).toString("hex")
+        const inviteTokenExpires = new Date(Date.now() + 48 * 60 * 60 * 1000) // 48 hours
+
+        const updatedRestaurant = await Restaurant.findOneAndUpdate(
+            { restaurantId },
+            { 
+                $set: { 
+                    ownerName, 
+                    ownerEmail: normalizedOwnerEmail,
+                    ownerStatus: "pending",
+                    inviteToken,
+                    inviteTokenExpires
+                } 
+            },
+            { new: true }
+        )
+
+        // Send invitation email in background
+        const inviteLink = `${process.env.FRONTEND_BASE_URL || 'http://localhost:3000'}/setup-account?token=${inviteToken}`
+        sendInvitationEmail(updatedRestaurant, inviteLink).catch(err => {
+            console.error(`[createAdminOwner] Failed to send invitation email to ${ownerEmail}:`, err)
+        })
+
+        return res.status(201).json(updatedRestaurant)
+    } catch (err) {
+        console.error("Create admin owner error:", err)
+        return res.status(500).json({ message: "Server error creating owner" })
     }
 }
 
