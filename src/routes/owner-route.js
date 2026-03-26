@@ -1,6 +1,15 @@
 import express from "express"
 import { ownerOrders, ownerAnalytics, getTableSessionsOverview } from "../controllers/ownerController.js"
-import { getWaiters, createWaiter, deleteWaiter } from "../controllers/staffController.js"
+import {
+    // Staff Management (new unified API)
+    getStaff,
+    createStaff,
+    deleteStaff,
+    // Legacy waiter routes (backward compat)
+    getWaiters,
+    createWaiter,
+    deleteWaiter
+} from "../controllers/staffController.js"
 
 const router = express.Router()
 
@@ -13,7 +22,21 @@ router.get("/analytics", ownerAnalytics)
 // GET /owner/table-sessions/overview
 router.get("/table-sessions/overview", getTableSessionsOverview)
 
-// --- Waitstaff Management ---
+// ─── Staff Management (unified, multi-role) ───────────────────────────────────
+// Supports ?role=waiter|kitchen|manager&status=active|offline
+
+// GET    /owner/staff
+router.get("/staff", getStaff)
+
+// POST   /owner/staff
+// Body: { staffId?, name, email, role }
+// role must be one of: waiter | kitchen | manager  (selected via card UI, not free-text)
+router.post("/staff", createStaff)
+
+// DELETE /owner/staff/:staffId
+router.delete("/staff/:staffId", deleteStaff)
+
+// ─── Legacy Waitstaff routes (backward compat — do NOT remove) ────────────────
 
 // GET /owner/waiters?restaurantId=...
 router.get("/waiters", getWaiters)

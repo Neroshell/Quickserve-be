@@ -41,7 +41,7 @@ export async function validateInviteToken(req, res) {
 }
 
 /**
- * Validate a waiter invitation token
+ * Validate a staff invitation token (waiter / kitchen / manager)
  * GET /auth/invite/waiter/validate?token=...
  */
 export async function validateWaiterToken(req, res) {
@@ -67,12 +67,15 @@ export async function validateWaiterToken(req, res) {
 
         return res.json({ 
             valid: true, 
+            staffId: waiter.staffId,
+            waiterId: waiter.waiterId, // backward compat
             name: waiter.name,
             email: waiter.email,
-            type: "waitstaff"
+            role: waiter.role || "waiter",
+            type: "staff"
         });
     } catch (err) {
-        console.error("Validate waiter token error:", err);
+        console.error("Validate staff token error:", err);
         return res.status(500).json({ message: "Server error validating token" });
     }
 }
@@ -197,7 +200,7 @@ export async function loginUser(req, res) {
             });
         }
 
-        // 2. Try finding a Waitstaff (Waiter)
+        // 2. Try finding a Staff member (Waiter / Kitchen / Manager)
         const waiter = await Waiter.findOne({ email: email });
         if (waiter) {
             if (waiter.accountStatus !== "active") {
@@ -209,15 +212,19 @@ export async function loginUser(req, res) {
                 return res.status(401).json({ message: "Invalid credentials" });
             }
 
-            // Update Presence Status to Active
+            // Update Presence Status to Active on login
             waiter.presenceStatus = "active";
-            waiter.status = "active"; // sync old status field
+            waiter.status = "active"; // sync legacy field
             await waiter.save();
 
             return res.json({
                 message: "Login successful",
-                type: "waiter",
-                waiterId: waiter.waiterId,
+                // New unified fields
+                type: "staff",
+                staffId: waiter.staffId,
+                role: waiter.role || "waiter",
+                // Legacy backward compat fields
+                waiterId: waiter.waiterId || waiter.staffId,
                 name: waiter.name,
                 email: waiter.email,
                 restaurantId: waiter.restaurantId
@@ -232,18 +239,19 @@ export async function loginUser(req, res) {
 }
 
 /**
- * Logout and set presence to offline for waitstaff
+ * Logout and set presence to offline for all staff types
  * POST /auth/logout
  */
 export async function logoutUser(req, res) {
     try {
         const { email, type } = req.body; // In a real app, this would come from JWT session
 
-        if (type === "waiter" && email) {
+        // Handle both legacy type=="waiter" and new type=="staff"
+        if ((type === "waiter" || type === "staff") && email) {
             const waiter = await Waiter.findOne({ email });
             if (waiter) {
                 waiter.presenceStatus = "offline";
-                waiter.status = "offline"; // sync
+                waiter.status = "offline"; // sync legacy field
                 await waiter.save();
             }
         }

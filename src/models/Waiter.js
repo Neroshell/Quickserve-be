@@ -1,8 +1,23 @@
 import mongoose from "mongoose"
 
+const ALLOWED_ROLES = ["waiter", "kitchen", "manager"]
+
 const WaiterSchema = new mongoose.Schema({
     restaurantId: { type: String, required: true, index: true },
-    waiterId: { type: String, required: true },
+
+    // Unified staff identifier (STF-XXXX). Required for all new records.
+    staffId: { type: String, required: true },
+
+    // Legacy identifier kept for backward compatibility
+    waiterId: { type: String },
+
+    // Staff role — set by the owner via card selection, never free-text
+    role: {
+        type: String,
+        enum: ALLOWED_ROLES,
+        default: "waiter"
+    },
+
     name: { type: String, required: true },
     email: { 
         type: String, 
@@ -31,8 +46,11 @@ const WaiterSchema = new mongoose.Schema({
     inviteTokenExpires: { type: Date }
 }, { timestamps: true })
 
-// Ensure waiterId is unique per restaurant
-WaiterSchema.index({ restaurantId: 1, waiterId: 1 }, { unique: true })
+// Unified staffId must be unique per restaurant
+WaiterSchema.index({ restaurantId: 1, staffId: 1 }, { unique: true })
+
+// Legacy waiterId index — sparse so null values are ignored
+WaiterSchema.index({ restaurantId: 1, waiterId: 1 }, { unique: true, sparse: true })
 
 // Ensure email is unique per restaurant (useful for future login)
 WaiterSchema.index({ restaurantId: 1, email: 1 }, { unique: true })

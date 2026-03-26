@@ -2,115 +2,238 @@ import Waiter from "../models/Waiter.js"
 import crypto from "crypto"
 import { sendWaiterInvitationEmail } from "../utils/emailService.js"
 
+const ALLOWED_ROLES = ["waiter", "kitchen", "manager"]
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 /**
- * Get all waiters for a restaurant
- * GET /owner/waiters?restaurantId=...&status=...
+ * Generate a unique STF-XXXX staffId for the given restaurant.
+ * Retries up to 10 times to avoid collisions.
  */
-export async function getWaiters(req, res) {
+async function generateStaffId(restaurantId) {
+    for (let i = 0; i < 10; i++) {
+        const num = Math.floor(1000 + Math.random() * 9000) // 4-digit number
+        const staffId = `STF-${num}`
+        const exists = await Waiter.findOne({ restaurantId, staffId })
+        if (!exists) return staffId
+    }
+    // Fallback to timestamp-based ID if all randoms collide
+    return `STF-${Date.now().toString().slice(-6)}`
+}
+
+// ─── Staff Management (New unified API) ──────────────────────────────────────
+
+/**
+ * Get all staff for a restaurant
+ * GET /owner/staff?restaurantId=...&role=waiter|kitchen|manager&status=active|offline
+ */
+export async function getStaff(req, res) {
     try {
-        const { restaurantId, status } = req.query
-        
+        const { restaurantId, role, status } = req.query
+
         if (!restaurantId) {
             return res.status(400).json({ error: "restaurantId is required" })
         }
 
         const filter = { restaurantId }
-        // Presence Filter
+
+        // Role filter — set by card selection, never free-text
+        if (role && role !== "all" && ALLOWED_ROLES.includes(role)) {
+            filter.role = role
+        }
+
+        // Presence status filter
         if (status && status !== "all") {
             filter.presenceStatus = status
         }
 
-        const waiters = await Waiter.find(filter).sort({ createdAt: -1 })
-        
-        return res.json(waiters)
+        const staff = await Waiter.find(filter, {
+            __v: 0,
+            passwordHash: 0,
+            inviteToken: 0,
+            inviteTokenExpires: 0
+        }).sort({ createdAt: -1 })
+
+        // Shape response: always expose staffId, role on each record
+        const result = staff.map((s) => ({
+            staffId: s.staffId,
+            waiterId: s.waiterId,   // backward compat
+            role: s.role,
+            name: s.name,
+            email: s.email,
+            accountStatus: s.accountStatus,
+            presenceStatus: s.presenceStatus,
+            restaurantId: s.restaurantId,
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt
+        }))
+
+        return res.json(result)
     } catch (err) {
-        console.error("[getWaiters]", err)
-        return res.status(500).json({ error: "Failed to fetch waiters" })
+        console.error("[getStaff]", err)
+        return res.status(500).json({ error: "Failed to fetch staff" })
     }
 }
 
 /**
- * Create a new waiter
- * POST /owner/waiters?restaurantId=...
+ * Create a new staff member
+ * POST /owner/staff?restaurantId=...
+ * Body: { staffId?, name, email, role }
+ *
+ * role comes from the card UI selection — not a free-text field.
+ * staffId is auto-generated (STF-XXXX) if not provided.
  */
-export async function createWaiter(req, res) {
+export async function createStaff(req, res) {
     try {
         const { restaurantId } = req.query
-        const { waiterId, name, email, status } = req.body
+        let { staffId, name, email, role } = req.body
 
         if (!restaurantId) {
             return res.status(400).json({ error: "restaurantId is required" })
         }
 
-        if (!waiterId || !name || !email) {
-            return res.status(400).json({ error: "waiterId, name, and email are required" })
+        if (!name || !email) {
+            return res.status(400).json({ error: "name and email are required" })
         }
 
-        // Check for existing waiterId in this restaurant
-        const existingId = await Waiter.findOne({ restaurantId, waiterId })
-        if (existingId) {
-            return res.status(409).json({ message: "A waitstaff with this ID already exists in your business." })
+        // Validate role (was selected via card UI — not free-text)
+        if (!role || !ALLOWED_ROLES.includes(role)) {
+            return res.status(400).json({
+                error: `Invalid role. Must be one of: ${ALLOWED_ROLES.join(", ")}`
+            })
         }
 
-        // Check for existing email in this restaurant
-        const existingEmail = await Waiter.findOne({ restaurantId, email })
+        // Auto-generate staffId if omitted
+        if (!staffId || !staffId.trim()) {
+            staffId = await generateStaffId(restaurantId)
+        } else {
+            staffId = staffId.trim().toUpperCase()
+        }
+
+        // Validate staffId format (must start with STF-)
+        if (!/^STF-[A-Z0-9]{4,}$/i.test(staffId)) {
+            return res.status(400).json({
+                error: "staffId must follow the format STF-XXXX (e.g. STF-1023)"
+            })
+        }
+
+        // Uniqueness checks
+        const existingStaffId = await Waiter.findOne({ restaurantId, staffId })
+        if (existingStaffId) {
+            return res.status(409).json({
+                message: "A staff member with this ID already exists in your business."
+            })
+        }
+
+        const existingEmail = await Waiter.findOne({ restaurantId, email: email.toLowerCase().trim() })
         if (existingEmail) {
-            return res.status(409).json({ message: "A waitstaff with this email already exists in your business." })
+            return res.status(409).json({
+                message: "A staff member with this email already exists in your business."
+            })
         }
 
         // Generate secure invite token
         const inviteToken = crypto.randomBytes(32).toString("hex")
         const inviteTokenExpires = new Date(Date.now() + 48 * 60 * 60 * 1000) // 48 hours
 
-        const waiter = await Waiter.create({
+        const staff = await Waiter.create({
             restaurantId,
-            waiterId,
+            staffId,
+            waiterId: staffId, // populate waiterId for backward compat
+            role,
             name,
             email,
             accountStatus: "pending",
             presenceStatus: "offline",
-            status: "offline", // sync
+            status: "offline",
             inviteToken,
             inviteTokenExpires
         })
 
-        // Send email
+        // Send invitation email
         const frontendUrl = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
         const inviteLink = `${frontendUrl}/staff/setup-account?token=${inviteToken}`
-        
-        sendWaiterInvitationEmail(waiter, inviteLink).catch(err => {
-            console.error("[createWaiter] Email failed:", err)
+
+        sendWaiterInvitationEmail(staff, inviteLink).catch((err) => {
+            console.error("[createStaff] Email failed:", err)
         })
 
-        return res.status(201).json(waiter)
+        return res.status(201).json({
+            staffId: staff.staffId,
+            waiterId: staff.waiterId,
+            role: staff.role,
+            name: staff.name,
+            email: staff.email,
+            accountStatus: staff.accountStatus,
+            presenceStatus: staff.presenceStatus,
+            restaurantId: staff.restaurantId,
+            createdAt: staff.createdAt
+        })
     } catch (err) {
-        console.error("[createWaiter]", err)
-        return res.status(500).json({ error: "Failed to create waiter" })
+        console.error("[createStaff]", err)
+        return res.status(500).json({ error: "Failed to create staff member" })
     }
 }
 
 /**
- * Remove a waiter
- * DELETE /owner/waiters/:waiterId?restaurantId=...
+ * Remove a staff member
+ * DELETE /owner/staff/:staffId?restaurantId=...
  */
-export async function deleteWaiter(req, res) {
+export async function deleteStaff(req, res) {
     try {
         const { restaurantId } = req.query
-        const { id } = req.params
+        const { staffId } = req.params
 
         if (!restaurantId) {
             return res.status(400).json({ error: "restaurantId is required" })
         }
 
-        const result = await Waiter.findOneAndDelete({ restaurantId, waiterId: id })
-        
+        // Try staffId first, fall back to waiterId for old records
+        let result = await Waiter.findOneAndDelete({ restaurantId, staffId })
         if (!result) {
-            return res.status(404).json({ error: "Waitstaff not found" })
+            result = await Waiter.findOneAndDelete({ restaurantId, waiterId: staffId })
         }
 
-        return res.json({ message: "Waitstaff removed successfully" })
+        if (!result) {
+            return res.status(404).json({ error: "Staff member not found" })
+        }
+
+        return res.json({ message: "Staff member removed successfully" })
     } catch (err) {
-        console.error("[deleteWaiter]", err)
-        return res.status(500).json({ error: "Failed to remove waiter" })
+        console.error("[deleteStaff]", err)
+        return res.status(500).json({ error: "Failed to remove staff member" })
     }
+}
+
+// ─── Legacy exports (backward compat — keep /owner/waiters working) ───────────
+
+/**
+ * @deprecated Use getStaff instead. Kept for backward compat.
+ */
+export async function getWaiters(req, res) {
+    return getStaff(req, res)
+}
+
+/**
+ * @deprecated Use createStaff instead. Kept for backward compat.
+ * Accepts the old { waiterId, name, email } shape and maps to new schema.
+ */
+export async function createWaiter(req, res) {
+    // Map old waiterId field → staffId for the new flow
+    if (req.body.waiterId && !req.body.staffId) {
+        req.body.staffId = req.body.waiterId
+    }
+    // Default role to "waiter" for legacy callers
+    if (!req.body.role) {
+        req.body.role = "waiter"
+    }
+    return createStaff(req, res)
+}
+
+/**
+ * @deprecated Use deleteStaff instead. Kept for backward compat.
+ */
+export async function deleteWaiter(req, res) {
+    req.params.staffId = req.params.id
+    return deleteStaff(req, res)
 }

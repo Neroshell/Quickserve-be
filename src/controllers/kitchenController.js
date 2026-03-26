@@ -1,6 +1,6 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
-import Waiter from "../models/waiter.js"
+import Waiter from "../models/Waiter.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 
@@ -132,7 +132,7 @@ export async function updateOrderStatus(req, res) {
         const waiter = await Waiter.findOne({ restaurantId, waiterId })
         if (waiter) order.completedBy = waiter.name
       }
-      
+
       order.completedAt = new Date()
     }
 
