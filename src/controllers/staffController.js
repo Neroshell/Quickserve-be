@@ -110,10 +110,10 @@ export async function createStaff(req, res) {
             staffId = staffId.trim().toUpperCase()
         }
 
-        // Validate staffId format (must start with STF-)
-        if (!/^STF-[A-Z0-9]{4,}$/i.test(staffId)) {
+        // Validate staffId format (must start with STF, WTR, KIT, or MGR)
+        if (!/^(STF|WTR|KIT|MGR)-[A-Z0-9]{4,}$/i.test(staffId)) {
             return res.status(400).json({
-                error: "staffId must follow the format STF-XXXX (e.g. STF-1023)"
+                error: "staffId must follow the format WTR-XXXX, KIT-XXXX, MGR-XXXX, or STF-XXXX."
             })
         }
 

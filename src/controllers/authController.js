@@ -222,9 +222,9 @@ export async function loginUser(req, res) {
                 // New unified fields
                 type: "staff",
                 staffId: waiter.staffId,
-                role: waiter.role || "waiter",
+                role: waiter.role || "waitstaff",
                 // Legacy backward compat fields
-                waiterId: waiter.waiterId || waiter.staffId,
+                waiterId: waiter.waiterId,
                 name: waiter.name,
                 email: waiter.email,
                 restaurantId: waiter.restaurantId
