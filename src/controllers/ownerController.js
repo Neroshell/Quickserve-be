@@ -25,10 +25,11 @@ function getBusinessDayRange() {
 // GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...
 export async function ownerOrders(req, res) {
     try {
-        const { range = "today", from, to, status = "all", search = "", restaurantId } = req.query
+        const { range = "today", from, to, status = "all", search = "" } = req.query
+        const businessId = req.query.businessId || req.query.restaurantId
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "restaurantId is required" })
+        if (!businessId) {
+            return res.status(400).json({ error: "businessId is required" })
         }
 
         let startDateJS, endDateJS
@@ -77,7 +78,7 @@ export async function ownerOrders(req, res) {
 
         // 2. Build MongoDB Query
         const filter = {
-            restaurantId,
+            businessId,
             createdAt: { $gte: startDateJS, $lt: endDateJS },
         }
 
@@ -129,7 +130,7 @@ export async function ownerOrders(req, res) {
         // 4. Calculate Status Counts across the ACTIVE date range
         // Note: Counts ignore the current 'status' or 'search' filter so UI tabs show total accurate pool volume
         const countsFilter = {
-            restaurantId,
+            businessId,
             createdAt: { $gte: startDateJS, $lt: endDateJS },
             status: { $in: WAITER_STATUSES }
         }
@@ -201,14 +202,14 @@ export async function ownerOrders(req, res) {
 
 export async function getTableSessionsOverview(req, res) {
     try {
-        const restaurantId = req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
+        const businessId = req.query.businessId || req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
 
         const now = new Date()
 
         const sessions = await TableSession.aggregate([
             {
                 $match: {
-                    restaurantId,
+                    businessId,
                     expiresAt: { $gt: now }
                 }
             },
@@ -248,10 +249,11 @@ export async function getTableSessionsOverview(req, res) {
 // GET /owner/analytics?range=today|yesterday|7days|thisMonth|custom&from=...&to=...
 export async function ownerAnalytics(req, res) {
     try {
-        const { range = "today", from, to, restaurantId } = req.query
+        const { range = "today", from, to } = req.query
+        const businessId = req.query.businessId || req.query.restaurantId
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "restaurantId is required" })
+        if (!businessId) {
+            return res.status(400).json({ error: "businessId is required" })
         }
 
         let startDateJS, endDateJS
@@ -298,7 +300,7 @@ export async function ownerAnalytics(req, res) {
 
         // 2. Fetch Base Orders
         const orders = await Order.find({
-            restaurantId,
+            businessId,
             createdAt: { $gte: startDateJS, $lt: endDateJS }
         }).lean()
 

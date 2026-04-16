@@ -13,14 +13,15 @@ function randomToken() {
 // POST /table-session/start
 router.post("/start", async (req, res) => {
   try {
-    const { restaurantId, tableId } = req.body
+    const businessId = req.body.businessId || req.body.restaurantId
+    const { tableId } = req.body
     
-    if (!restaurantId || !tableId) {
-      return res.status(400).json({ error: "Missing restaurantId or tableId" })
+    if (!businessId || !tableId) {
+      return res.status(400).json({ error: "Missing businessId or tableId" })
     }
 
-    // Validate that the restaurant actually exists
-    const restaurant = await Restaurant.findOne({ restaurantId })
+    // Validate that the business actually exists
+    const restaurant = await Restaurant.findOne({ $or: [{ businessId }, { restaurantId: businessId }] })
     if (!restaurant) {
       return res.status(404).json({ error: "Restaurant not found" })
     }
@@ -33,7 +34,7 @@ router.post("/start", async (req, res) => {
     const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000)
 
     await TableSession.create({
-      restaurantId,
+      businessId,
       tableId,
       token,
       expiresAt,
@@ -43,7 +44,7 @@ router.post("/start", async (req, res) => {
     return res.json({
       token,
       expiresAt,
-      restaurantId,
+      businessId,
       tableId
     })
   } catch (err) {

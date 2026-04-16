@@ -189,7 +189,8 @@ export async function loginUser(req, res) {
             return res.json({
                 message: "Login successful",
                 type: "owner",
-                restaurantId: restaurant.restaurantId,
+                businessId: restaurant.businessId || restaurant.restaurantId,
+                restaurantId: restaurant.businessId || restaurant.restaurantId, // legacy alias
                 ownerName: restaurant.ownerName,
                 ownerEmail: restaurant.ownerEmail,
                 displayName: restaurant.displayName
@@ -219,11 +220,12 @@ export async function loginUser(req, res) {
                 type: "staff",
                 staffId: staff.staffId,
                 role: staff.role || "waitstaff",
+                businessId: staff.businessId || staff.restaurantId,
                 // Legacy backward compat fields
+                restaurantId: staff.businessId || staff.restaurantId,
                 waiterId: staff.waiterId,
                 name: staff.name,
-                email: staff.email,
-                restaurantId: staff.restaurantId
+                email: staff.email
             });
         }
 

@@ -1,7 +1,7 @@
 import mongoose from "mongoose"
 
 const MenuItemSchema = new mongoose.Schema({
-    restaurantId: { type: String, required: true, index: true },
+    businessId: { type: String, required: true, index: true },
     name: { type: String, required: true, maxlength: 30 },
     price: { type: Number, required: true },
     category: {

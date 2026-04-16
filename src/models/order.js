@@ -24,7 +24,7 @@ const OrderItemSchema = new mongoose.Schema(
 const OrderSchema = new mongoose.Schema(
   {
     orderId: { type: String, required: true, unique: true, index: true },
-    restaurantId: { type: String, required: true, index: true },
+    businessId: { type: String, required: true, index: true },
     tableNumber: { type: String, required: true, index: true },
     orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in", index: true },
     sessionId: { type: String, index: true },
@@ -68,7 +68,7 @@ const OrderSchema = new mongoose.Schema(
   { timestamps: true },
 )
 
-OrderSchema.index({ restaurantId: 1, orderId: 1 }, { unique: true })
+OrderSchema.index({ businessId: 1, orderId: 1 }, { unique: true })
 
 
 export default mongoose.models.Order || mongoose.model("Order", OrderSchema)

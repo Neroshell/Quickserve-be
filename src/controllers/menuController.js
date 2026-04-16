@@ -1,15 +1,25 @@
 import MenuItem from "../models/menuItem.js"
 
-// GET /menu-items?restaurantId=...
+/** Accept businessId with fallback to legacy restaurantId */
+function resolveBusinessId(req) {
+    return (
+        req.query.businessId ||
+        req.query.restaurantId ||
+        req.body?.businessId ||
+        req.body?.restaurantId
+    )
+}
+
+// GET /menu-items?businessId=...
 export async function getMenuItems(req, res) {
     try {
-        const { restaurantId } = req.query
+        const businessId = resolveBusinessId(req)
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "Missing restaurantId parameter" })
+        if (!businessId) {
+            return res.status(400).json({ error: "Missing businessId parameter" })
         }
 
-        const items = await MenuItem.find({ restaurantId }).sort({ createdAt: -1 })
+        const items = await MenuItem.find({ businessId }).sort({ createdAt: -1 })
 
         return res.json(items)
     } catch (err) {
@@ -21,14 +31,15 @@ export async function getMenuItems(req, res) {
 // POST /menu-items
 export async function createMenuItem(req, res) {
     try {
-        const { restaurantId, name, price, category, type, description, imageUrl, isAvailable } = req.body
+        const businessId = resolveBusinessId(req)
+        const { name, price, category, type, description, imageUrl, isAvailable } = req.body
 
-        if (!restaurantId || !name || price === undefined || !category || !type) {
-            return res.status(400).json({ error: "Missing required fields (restaurantId, name, price, category, type)" })
+        if (!businessId || !name || price === undefined || !category || !type) {
+            return res.status(400).json({ error: "Missing required fields (businessId, name, price, category, type)" })
         }
 
         const newItem = new MenuItem({
-            restaurantId,
+            businessId,
             name,
             price,
             category,
@@ -51,15 +62,15 @@ export async function createMenuItem(req, res) {
 export async function updateMenuItem(req, res) {
     try {
         const { id } = req.params
-        const { restaurantId } = req.body
+        const businessId = resolveBusinessId(req)
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "Missing restaurantId" })
+        if (!businessId) {
+            return res.status(400).json({ error: "Missing businessId" })
         }
 
         // Validate that the request provides correct tracking reference
         const item = await MenuItem.findOneAndUpdate(
-            { _id: id, restaurantId },
+            { _id: id, businessId },
             { $set: req.body },
             { new: true, runValidators: true }
         )
@@ -79,13 +90,13 @@ export async function updateMenuItem(req, res) {
 export async function deleteMenuItem(req, res) {
     try {
         const { id } = req.params
-        const { restaurantId } = req.query // Usually passed in query or body
+        const businessId = resolveBusinessId(req)
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "Missing restaurantId" })
+        if (!businessId) {
+            return res.status(400).json({ error: "Missing businessId" })
         }
 
-        const deletedItem = await MenuItem.findOneAndDelete({ _id: id, restaurantId })
+        const deletedItem = await MenuItem.findOneAndDelete({ _id: id, businessId })
 
         if (!deletedItem) {
             return res.status(404).json({ error: "Menu item not found or unauthorized" })
@@ -102,14 +113,15 @@ export async function deleteMenuItem(req, res) {
 export async function toggleMenuItemAvailability(req, res) {
     try {
         const { id } = req.params
-        const { restaurantId, isAvailable } = req.body
+        const businessId = resolveBusinessId(req)
+        const { isAvailable } = req.body
 
-        if (!restaurantId || isAvailable === undefined) {
-            return res.status(400).json({ error: "Missing restaurantId or isAvailable flag" })
+        if (!businessId || isAvailable === undefined) {
+            return res.status(400).json({ error: "Missing businessId or isAvailable flag" })
         }
 
         const item = await MenuItem.findOneAndUpdate(
-            { _id: id, restaurantId },
+            { _id: id, businessId },
             { $set: { isAvailable } },
             { new: true }
         )

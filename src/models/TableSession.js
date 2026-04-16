@@ -2,7 +2,7 @@ import mongoose from "mongoose"
 
 const TableSessionSchema = new mongoose.Schema(
   {
-    restaurantId: { type: String, required: true, index: true },
+    businessId: { type: String, required: true, index: true },
     tableId: { type: String, required: true, index: true },
     token: { type: String, required: true, unique: true, index: true },
 

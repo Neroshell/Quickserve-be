@@ -23,7 +23,7 @@ const PendingItemSchema = new mongoose.Schema(
 
 const PendingCheckoutSchema = new mongoose.Schema(
     {
-        restaurantId: { type: String, required: true },
+        businessId: { type: String, required: true },
         orderId: { type: String, required: true },
         tableNumber: { type: String, required: true },
         orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in" },

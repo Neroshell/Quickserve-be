@@ -37,7 +37,9 @@ const TablePreferencesSchema = new mongoose.Schema({
 }, { _id: false })
 
 const RestaurantSchema = new mongoose.Schema({
-    restaurantId: { type: String, required: true, unique: true, index: true },
+    businessId: { type: String, required: true, unique: true, index: true },
+    // Legacy field kept for backward compat during migration
+    restaurantId: { type: String, unique: true, sparse: true, index: true },
     name: { type: String, required: true },
     displayName: { type: String, required: true },
     slug: {

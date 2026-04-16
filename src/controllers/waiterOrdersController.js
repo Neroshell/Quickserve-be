@@ -30,10 +30,10 @@ export async function waiterOrders(req, res) {
         const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
 
         const status = String(req.query.status || "ready")
-        const restaurantId = req.query.restaurantId
+        const businessId = req.query.businessId || req.query.restaurantId
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "restaurantId is required" })
+        if (!businessId) {
+            return res.status(400).json({ error: "businessId is required" })
         }
 
         // ✅ Fetch all relevant statuses so FE can calculate counts for tabs
@@ -41,7 +41,7 @@ export async function waiterOrders(req, res) {
         const WAITER_STATUSES = ["placed", "in_progress", "ready", "completed"]
 
         const filter = {
-            restaurantId,
+            businessId,
             createdAt: { $gte: startJS, $lt: endJS },
             status: { $in: WAITER_STATUSES },
         }
@@ -76,7 +76,7 @@ export async function waiterOrders(req, res) {
 
         // ✅ counts for tabs (placed/in_progress/ready/completed)
         const countsAgg = await Order.aggregate([
-            { $match: { restaurantId, createdAt: { $gte: startJS, $lt: endJS } } },
+            { $match: { businessId, createdAt: { $gte: startJS, $lt: endJS } } },
             { $group: { _id: "$status", count: { $sum: 1 } } },
         ])
 
@@ -103,7 +103,8 @@ export async function waiterOrders(req, res) {
             }
 
             return {
-                restaurantId: o.restaurantId,
+                businessId: o.businessId,
+                restaurantId: o.businessId, // legacy alias
                 orderId: o.orderId,
                 tableNumber: o.tableNumber,
                 orderType: o.orderType,

@@ -7,16 +7,28 @@ import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { sendReceiptEmail } from "../utils/emailService.js"
 
+/** Resolve businessId from request — accepts businessId or legacy restaurantId */
+function resolveBusinessId(req) {
+  return (
+    req.query.businessId ||
+    req.query.restaurantId ||
+    req.body?.businessId ||
+    req.body?.restaurantId ||
+    req.params?.businessId ||
+    req.params?.restaurantId
+  )
+}
 
 export async function listOrders(req, res) {
   try {
-    const { sessionId, tableNumber, restaurantId } = req.query
+    const { sessionId, tableNumber } = req.query
+    const businessId = resolveBusinessId(req)
 
-    if (!restaurantId) {
-      return res.status(400).json({ message: "restaurantId is required" })
+    if (!businessId) {
+      return res.status(400).json({ message: "businessId is required" })
     }
 
-    const filter = { restaurantId }
+    const filter = { businessId }
     if (sessionId) filter.sessionId = sessionId
     if (tableNumber) filter.tableNumber = tableNumber
 
@@ -85,28 +97,14 @@ export async function createOrder(req, res) {
     const now = new Date()
     const orderId = generateOrderId(tableNumber, now)
 
-    // // Enrich items with category
-    // const enrichedItems = await Promise.all(
-    //   items.map(async (item) => {
-    //     const menuItem = await MenuItem.findOne({ name: item.itemName }).lean()
-    //     return {
-    //       itemName: item.itemName,
-    //       quantity: item.quantity,
-    //       category: menuItem?.category || "food", // Fallback to food
-    //       notes: item.notes || "",
-    //       allergies: item.allergies || []
-    //     }
-    //   })
-    // )
+    // Get businessId from req body — accept businessId or legacy restaurantId
+    const businessId = resolveBusinessId(req) || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
 
     // Enrich items with category and unitPrice from DB (authoritative)
     let calculatedTotal = 0
-    // Get restaurantId from req body (fallback to env/default while Auth is built)
-    const restaurantId = req.body.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
-
     const enrichedItems = await Promise.all(
       items.map(async (item) => {
-        const menuItem = await MenuItem.findOne({ name: item.itemName, restaurantId }).lean()
+        const menuItem = await MenuItem.findOne({ name: item.itemName, businessId }).lean()
         // Authoritative from DB, fallback to provided price, else 0
         const unitPrice = menuItem?.price || item.unitPrice || 0
         const itemType = menuItem?.type || (item.orderCategory === "drinks" ? "drinks" : "food")
@@ -136,12 +134,12 @@ export async function createOrder(req, res) {
 
     const saved = await Order.create({
       orderId,
-      restaurantId,
+      businessId,
       tableNumber,
-      orderType: finalOrderType, // ✅ always valid + always present
+      orderType: finalOrderType,
       sessionId,
       items: enrichedItems,
-      status: initialStatus, // ✅ Skip kitchen workflow for drinks
+      status: initialStatus,
       total: finalTotal,
       currency: currency || "EUR",
       paymentChannel: paymentChannel || "offline",
@@ -158,13 +156,13 @@ export async function createOrder(req, res) {
     // 1. Kitchen: food items only
     if (foodItems.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems }
-      await publishEvent("order_created", restaurantId, ["kitchen"], { order: kitchenDTO })
+      await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO })
     }
 
     // 2. Waiter + table: full order
-    await publishEvent("order_created", restaurantId, ["waiter", "table", "anon"], { order: orderDTO })
+    await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
 
-    return res.status(201).json({ orderId: saved.orderId, restaurantId: saved.restaurantId, status: saved.status })
+    return res.status(201).json({ orderId: saved.orderId, businessId: saved.businessId, status: saved.status })
   } catch (err) {
     console.error("Create order error:", err)
     return res.status(500).json({ message: "Server error" })
@@ -175,13 +173,13 @@ export async function createOrder(req, res) {
 export async function getOrderById(req, res) {
   try {
     const { orderId } = req.params
-    const restaurantId = req.query.restaurantId || req.params.restaurantId
+    const businessId = resolveBusinessId(req)
 
-    if (!restaurantId) {
-      return res.status(400).json({ message: "restaurantId is required" })
+    if (!businessId) {
+      return res.status(400).json({ message: "businessId is required" })
     }
 
-    const order = await Order.findOne({ orderId, restaurantId }).lean()
+    const order = await Order.findOne({ orderId, businessId }).lean()
     if (!order) return res.status(404).json({ message: "Order not found" })
 
     return res.json(order)
@@ -191,35 +189,16 @@ export async function getOrderById(req, res) {
   }
 }
 
-// export async function updateOrderStatus(req, res) {
-//   try {
-//     const { orderId } = req.params
-//     const { status } = req.body
-
-//     const allowed = ["placed", "in_progress", "ready", "completed"]
-//     if (!allowed.includes(status)) {
-//       return res.status(400).json({ message: `Invalid status. Use: ${allowed.join(", ")}` })
-//     }
-
-//     const updated = await Order.findOneAndUpdate({ orderId }, { status }, { new: true }).lean()
-//     if (!updated) return res.status(404).json({ message: "Order not found" })
-
-//     return res.json({ orderId: updated.orderId, status: updated.status })
-//   } catch (err) {
-//     console.error("Update status error:", err)
-//     return res.status(500).json({ message: "Server error" })
-//   }
-// }
-
 export async function deleteOrdersBySession(req, res) {
   try {
-    const { sessionId, restaurantId } = req.body
+    const businessId = req.body.businessId || req.body.restaurantId
+    const { sessionId } = req.body
 
-    if (!sessionId || !restaurantId) {
-      return res.status(400).json({ message: "sessionId and restaurantId are required" })
+    if (!sessionId || !businessId) {
+      return res.status(400).json({ message: "sessionId and businessId are required" })
     }
 
-    const result = await Order.deleteMany({ sessionId, restaurantId })
+    const result = await Order.deleteMany({ sessionId, businessId })
 
     return res.json({
       message: "Order history cleared",
@@ -234,10 +213,11 @@ export async function deleteOrdersBySession(req, res) {
 export async function updateOrderStatus(req, res) {
   try {
     const { orderId } = req.params
-    const { status: nextStatus, restaurantId } = req.body
+    const { status: nextStatus } = req.body
+    const businessId = resolveBusinessId(req)
 
-    if (!restaurantId) {
-      return res.status(400).json({ error: "restaurantId is required" })
+    if (!businessId) {
+      return res.status(400).json({ error: "businessId is required" })
     }
 
     const VALID_STATUSES = ["placed", "in_progress", "ready", "completed"]
@@ -245,7 +225,7 @@ export async function updateOrderStatus(req, res) {
       return res.status(400).json({ error: "Invalid status" })
     }
 
-    const order = await Order.findOne({ orderId, restaurantId })
+    const order = await Order.findOne({ orderId, businessId })
     if (!order) return res.status(404).json({ error: "Order not found" })
 
     const allowedNext = {
@@ -277,7 +257,7 @@ export async function updateOrderStatus(req, res) {
     await order.save()
 
     const orderDTO = toOrderDTO(order)
-    await publishEvent("order_updated", order.restaurantId, null, { order: orderDTO })
+    await publishEvent("order_updated", order.businessId, null, { order: orderDTO })
 
     return res.json({
       success: true,
@@ -296,10 +276,11 @@ export async function updateOrderStatus(req, res) {
 export async function markPaid(req, res) {
   try {
     const { orderId } = req.params
-    const { paidVia, restaurantId } = req.body
+    const { paidVia } = req.body
+    const businessId = resolveBusinessId(req)
 
-    if (!restaurantId) {
-      return res.status(400).json({ message: "restaurantId is required" })
+    if (!businessId) {
+      return res.status(400).json({ message: "businessId is required" })
     }
 
     const ALLOWED_PAID_VIA = ["pos_card", "cash"]
@@ -307,7 +288,7 @@ export async function markPaid(req, res) {
       return res.status(400).json({ message: "Invalid paidVia method" })
     }
 
-    const order = await Order.findOne({ orderId, restaurantId })
+    const order = await Order.findOne({ orderId, businessId })
     if (!order) return res.status(404).json({ message: "Order not found" })
 
     if (order.paymentStatus === "paid") {
@@ -326,9 +307,9 @@ export async function markPaid(req, res) {
     const foodItems2 = order.items.filter(i => i.type === "food")
     if (foodItems2.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems2 }
-      await publishEvent("order_updated", order.restaurantId, ["kitchen"], { order: kitchenDTO })
+      await publishEvent("order_updated", order.businessId, ["kitchen"], { order: kitchenDTO })
     }
-    await publishEvent("order_updated", order.restaurantId, ["waiter", "table", "anon"], { order: orderDTO })
+    await publishEvent("order_updated", order.businessId, ["waiter", "table", "anon"], { order: orderDTO })
 
     // ✅ Step 3: Respond immediately — do NOT wait for email
     console.log(`[markPaid] ✅ Sending response for order ${orderId}`)

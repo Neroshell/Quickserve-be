@@ -28,9 +28,9 @@ function getBusinessDayRange() {
 
 export async function kitchenOrders(req, res) {
   try {
-    const { restaurantId } = req.query
-    if (!restaurantId) {
-      return res.status(400).json({ error: "restaurantId is required" })
+    const businessId = req.query.businessId || req.query.restaurantId
+    if (!businessId) {
+      return res.status(400).json({ error: "businessId is required" })
     }
 
     const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
@@ -40,7 +40,7 @@ export async function kitchenOrders(req, res) {
     // Pull all fields needed for DTO
     const rawOrders = await Order.find(
       {
-        restaurantId,
+        businessId,
         createdAt: { $gte: startJS, $lt: endJS },
         status: { $in: ACTIVE_STATUSES },
       },
@@ -87,10 +87,11 @@ export async function kitchenOrders(req, res) {
 export async function updateOrderStatus(req, res) {
   try {
     const { orderId } = req.params
-    const { status: nextStatus, restaurantId } = req.body
+    const { status: nextStatus } = req.body
+    const businessId = req.body.businessId || req.body.restaurantId
 
-    if (!restaurantId) {
-      return res.status(400).json({ error: "restaurantId is required" })
+    if (!businessId) {
+      return res.status(400).json({ error: "businessId is required" })
     }
 
     const VALID_STATUSES = ["placed", "in_progress", "ready", "completed"]
@@ -98,7 +99,7 @@ export async function updateOrderStatus(req, res) {
       return res.status(400).json({ error: "Invalid status" })
     }
 
-    const order = await Order.findOne({ orderId, restaurantId })
+    const order = await Order.findOne({ orderId, businessId })
     if (!order) return res.status(404).json({ error: "Order not found" })
 
     const allowedNext = {
@@ -130,7 +131,7 @@ export async function updateOrderStatus(req, res) {
       } else if (waiterId) {
         // Fallback: look up name from DB using either staffId or legacy waiterId
         const staff = await Staff.findOne({ 
-          restaurantId, 
+          businessId, 
           $or: [{ staffId: waiterId }, { waiterId }] 
         })
         if (staff) order.completedBy = staff.name
@@ -150,11 +151,11 @@ export async function updateOrderStatus(req, res) {
     // Kitchen: food items only
     if (foodItems.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems }
-      await publishEvent("order_updated", order.restaurantId, ["kitchen"], { order: kitchenDTO })
+      await publishEvent("order_updated", order.businessId, ["kitchen"], { order: kitchenDTO })
     }
 
     // Waiter + table: full order
-    await publishEvent("order_updated", order.restaurantId, ["waiter", "table", "anon"], { order: orderDTO })
+    await publishEvent("order_updated", order.businessId, ["waiter", "table", "anon"], { order: orderDTO })
 
     return res.json({
       success: true,

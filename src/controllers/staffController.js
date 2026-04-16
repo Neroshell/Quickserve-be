@@ -7,14 +7,27 @@ const ALLOWED_ROLES = ["waiter", "kitchen", "manager"]
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Generate a unique STF-XXXX staffId for the given restaurant.
+ * Resolve business identity from request — accepts businessId (preferred) or
+ * restaurantId (legacy fallback) from either query string or body.
+ */
+function resolveBusinessId(req) {
+    return (
+        req.query.businessId ||
+        req.query.restaurantId || // legacy fallback
+        req.body?.businessId ||
+        req.body?.restaurantId
+    )
+}
+
+/**
+ * Generate a unique STF-XXXX staffId for the given business.
  * Retries up to 10 times to avoid collisions.
  */
-async function generateStaffId(restaurantId) {
+async function generateStaffId(businessId) {
     for (let i = 0; i < 10; i++) {
         const num = Math.floor(1000 + Math.random() * 9000) // 4-digit number
         const staffId = `STF-${num}`
-        const exists = await Staff.findOne({ restaurantId, staffId })
+        const exists = await Staff.findOne({ businessId, staffId })
         if (!exists) return staffId
     }
     // Fallback to timestamp-based ID if all randoms collide
@@ -24,18 +37,19 @@ async function generateStaffId(restaurantId) {
 // ─── Staff Management (New unified API) ──────────────────────────────────────
 
 /**
- * Get all staff for a restaurant
- * GET /owner/staff?restaurantId=...&role=waiter|kitchen|manager&status=active|offline
+ * Get all staff for a business
+ * GET /owner/staff?businessId=...&role=waiter|kitchen|manager&status=active|offline
  */
 export async function getStaff(req, res) {
     try {
-        const { restaurantId, role, status } = req.query
+        const { role, status } = req.query
+        const businessId = resolveBusinessId(req)
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "restaurantId is required" })
+        if (!businessId) {
+            return res.status(400).json({ error: "businessId is required" })
         }
 
-        const filter = { restaurantId }
+        const filter = { businessId }
 
         // Role filter — set by card selection, never free-text
         if (role && role !== "all" && ALLOWED_ROLES.includes(role)) {
@@ -63,7 +77,8 @@ export async function getStaff(req, res) {
             email: s.email,
             accountStatus: s.accountStatus,
             presenceStatus: s.presenceStatus,
-            restaurantId: s.restaurantId,
+            businessId: s.businessId,
+            restaurantId: s.businessId, // legacy alias
             createdAt: s.createdAt,
             updatedAt: s.updatedAt
         }))
@@ -77,7 +92,7 @@ export async function getStaff(req, res) {
 
 /**
  * Create a new staff member
- * POST /owner/staff?restaurantId=...
+ * POST /owner/staff?businessId=...
  * Body: { staffId?, name, email, role }
  *
  * role comes from the card UI selection — not a free-text field.
@@ -85,11 +100,11 @@ export async function getStaff(req, res) {
  */
 export async function createStaff(req, res) {
     try {
-        const { restaurantId } = req.query
+        const businessId = resolveBusinessId(req)
         let { staffId, name, email, role } = req.body
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "restaurantId is required" })
+        if (!businessId) {
+            return res.status(400).json({ error: "businessId is required" })
         }
 
         if (!name || !email) {
@@ -105,7 +120,7 @@ export async function createStaff(req, res) {
 
         // Auto-generate staffId if omitted
         if (!staffId || !staffId.trim()) {
-            staffId = await generateStaffId(restaurantId)
+            staffId = await generateStaffId(businessId)
         } else {
             staffId = staffId.trim().toUpperCase()
         }
@@ -118,14 +133,14 @@ export async function createStaff(req, res) {
         }
 
         // Uniqueness checks
-        const existingStaffId = await Staff.findOne({ restaurantId, staffId })
+        const existingStaffId = await Staff.findOne({ businessId, staffId })
         if (existingStaffId) {
             return res.status(409).json({
                 message: "A staff member with this ID already exists in your business."
             })
         }
 
-        const existingEmail = await Staff.findOne({ restaurantId, email: email.toLowerCase().trim() })
+        const existingEmail = await Staff.findOne({ businessId, email: email.toLowerCase().trim() })
         if (existingEmail) {
             return res.status(409).json({
                 message: "A staff member with this email already exists in your business."
@@ -137,7 +152,7 @@ export async function createStaff(req, res) {
         const inviteTokenExpires = new Date(Date.now() + 48 * 60 * 60 * 1000) // 48 hours
 
         const staff = await Staff.create({
-            restaurantId,
+            businessId,
             staffId,
             waiterId: staffId, // populate waiterId for backward compat
             role,
@@ -166,7 +181,8 @@ export async function createStaff(req, res) {
             email: staff.email,
             accountStatus: staff.accountStatus,
             presenceStatus: staff.presenceStatus,
-            restaurantId: staff.restaurantId,
+            businessId: staff.businessId,
+            restaurantId: staff.businessId, // legacy alias
             createdAt: staff.createdAt
         })
     } catch (err) {
@@ -177,21 +193,21 @@ export async function createStaff(req, res) {
 
 /**
  * Remove a staff member
- * DELETE /owner/staff/:staffId?restaurantId=...
+ * DELETE /owner/staff/:staffId?businessId=...
  */
 export async function deleteStaff(req, res) {
     try {
-        const { restaurantId } = req.query
+        const businessId = resolveBusinessId(req)
         const { staffId } = req.params
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "restaurantId is required" })
+        if (!businessId) {
+            return res.status(400).json({ error: "businessId is required" })
         }
 
         // Try staffId first, fall back to waiterId for old records
-        let result = await Staff.findOneAndDelete({ restaurantId, staffId })
+        let result = await Staff.findOneAndDelete({ businessId, staffId })
         if (!result) {
-            result = await Staff.findOneAndDelete({ restaurantId, waiterId: staffId })
+            result = await Staff.findOneAndDelete({ businessId, waiterId: staffId })
         }
 
         if (!result) {

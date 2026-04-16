@@ -10,9 +10,9 @@ function generateRestaurantId() {
 
 export async function getSettings(req, res) {
     try {
-        const restaurantId = req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
+        const businessId = req.query.businessId || req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
 
-        let restaurant = await Restaurant.findOne({ restaurantId })
+        let restaurant = await Restaurant.findOne({ businessId })
 
         if (!restaurant) {
             return res.status(404).json({ message: "Restaurant not found" })
@@ -27,10 +27,11 @@ export async function getSettings(req, res) {
 
 export async function updateSettings(req, res) {
     try {
-        const { restaurantId, settings, ...updates } = req.body
+        const { settings, ...updates } = req.body
+        const businessId = req.body.businessId || req.body.restaurantId
 
-        if (!restaurantId) {
-            return res.status(400).json({ message: "restaurantId is required" })
+        if (!businessId) {
+            return res.status(400).json({ message: "businessId is required" })
         }
 
         const updateObj = { ...updates }
@@ -52,14 +53,14 @@ export async function updateSettings(req, res) {
                 return res.status(400).json({ message: "Slug must be between 3 and 40 characters" })
             }
 
-            const existing = await Restaurant.findOne({ slug: updates.slug, restaurantId: { $ne: restaurantId } })
+            const existing = await Restaurant.findOne({ slug: updates.slug, businessId: { $ne: businessId } })
             if (existing) {
                 return res.status(400).json({ message: "Slug already in use" })
             }
         }
 
         const restaurant = await Restaurant.findOneAndUpdate(
-            { restaurantId },
+            { businessId },
             { $set: updateObj },
             { new: true, runValidators: true }
         )
@@ -77,14 +78,15 @@ export async function updateSettings(req, res) {
 
 export async function updateOperatingHours(req, res) {
     try {
-        const { restaurantId, operatingHours } = req.body
+        const { operatingHours } = req.body
+        const businessId = req.body.businessId || req.body.restaurantId
 
-        if (!restaurantId || !operatingHours) {
-            return res.status(400).json({ message: "restaurantId and operatingHours are required" })
+        if (!businessId || !operatingHours) {
+            return res.status(400).json({ message: "businessId and operatingHours are required" })
         }
 
         const restaurant = await Restaurant.findOneAndUpdate(
-            { restaurantId },
+            { businessId },
             { $set: { operatingHours } },
             { new: true, runValidators: true }
         )
@@ -102,10 +104,11 @@ export async function updateOperatingHours(req, res) {
 
 export async function updateOrderingPreferences(req, res) {
     try {
-        const { restaurantId, orderingPreferences } = req.body
+        const { orderingPreferences } = req.body
+        const businessId = req.body.businessId || req.body.restaurantId
 
-        if (!restaurantId || !orderingPreferences) {
-            return res.status(400).json({ message: "restaurantId and orderingPreferences are required" })
+        if (!businessId || !orderingPreferences) {
+            return res.status(400).json({ message: "businessId and orderingPreferences are required" })
         }
 
         // Only allow the known boolean fields to be updated
@@ -118,7 +121,7 @@ export async function updateOrderingPreferences(req, res) {
         if (typeof qrOrderingEnabled === "boolean") safePrefs["orderingPreferences.qrOrderingEnabled"] = qrOrderingEnabled
 
         const restaurant = await Restaurant.findOneAndUpdate(
-            { restaurantId },
+            { businessId },
             { $set: safePrefs },
             { new: true, runValidators: true }
         )
@@ -136,10 +139,11 @@ export async function updateOrderingPreferences(req, res) {
 
 export async function updatePaymentPreferences(req, res) {
     try {
-        const { restaurantId, paymentPreferences } = req.body
+        const { paymentPreferences } = req.body
+        const businessId = req.body.businessId || req.body.restaurantId
 
-        if (!restaurantId || !paymentPreferences) {
-            return res.status(400).json({ message: "restaurantId and paymentPreferences are required" })
+        if (!businessId || !paymentPreferences) {
+            return res.status(400).json({ message: "businessId and paymentPreferences are required" })
         }
 
         const { acceptOnlinePayments, acceptOfflinePayments, acceptCash, acceptPosCard } = paymentPreferences
@@ -150,7 +154,7 @@ export async function updatePaymentPreferences(req, res) {
         if (typeof acceptPosCard === "boolean") safePrefs["paymentPreferences.acceptPosCard"] = acceptPosCard
 
         const restaurant = await Restaurant.findOneAndUpdate(
-            { restaurantId },
+            { businessId },
             { $set: safePrefs },
             { new: true, runValidators: true }
         )
@@ -168,10 +172,11 @@ export async function updatePaymentPreferences(req, res) {
 
 export async function updateTablePreferences(req, res) {
     try {
-        const { restaurantId, tablePreferences } = req.body
+        const { tablePreferences } = req.body
+        const businessId = req.body.businessId || req.body.restaurantId
 
-        if (!restaurantId || !tablePreferences) {
-            return res.status(400).json({ message: "restaurantId and tablePreferences are required" })
+        if (!businessId || !tablePreferences) {
+            return res.status(400).json({ message: "businessId and tablePreferences are required" })
         }
 
         const { sessionExpiryMinutes, maxActiveSessionsPerTable } = tablePreferences
@@ -190,7 +195,7 @@ export async function updateTablePreferences(req, res) {
         }
 
         const restaurant = await Restaurant.findOneAndUpdate(
-            { restaurantId },
+            { businessId },
             { $set: safePrefs },
             { new: true, runValidators: true }
         )
@@ -255,10 +260,11 @@ export async function createRestaurant(req, res) {
             return res.status(400).json({ message: "Slug already in use" })
         }
 
-        const restaurantId = generateRestaurantId()
+        const businessId = generateRestaurantId()
 
         const restaurant = await Restaurant.create({
-            restaurantId,
+            businessId,
+            restaurantId: businessId, // legacy alias stored in DB for existing integrations
             name,
             displayName,
             slug,
@@ -301,13 +307,14 @@ export async function createRestaurant(req, res) {
 
 export async function createAdminOwner(req, res) {
     try {
-        const { restaurantId, ownerName, ownerEmail } = req.body
+        const { ownerName, ownerEmail } = req.body
+        const businessId = req.body.businessId || req.body.restaurantId
 
-        if (!restaurantId || !ownerName || !ownerEmail) {
-            return res.status(400).json({ message: "Missing required fields (restaurantId, ownerName, ownerEmail)" })
+        if (!businessId || !ownerName || !ownerEmail) {
+            return res.status(400).json({ message: "Missing required fields (businessId, ownerName, ownerEmail)" })
         }
 
-        const restaurant = await Restaurant.findOne({ restaurantId })
+        const restaurant = await Restaurant.findOne({ businessId })
         if (!restaurant) {
             return res.status(404).json({ message: "Restaurant not found" })
         }
@@ -327,7 +334,7 @@ export async function createAdminOwner(req, res) {
         const inviteTokenExpires = new Date(Date.now() + 48 * 60 * 60 * 1000) // 48 hours
 
         const updatedRestaurant = await Restaurant.findOneAndUpdate(
-            { restaurantId },
+            { businessId },
             { 
                 $set: { 
                     ownerName, 
@@ -362,7 +369,7 @@ export async function getAdminRestaurants(req, res) {
             const stats = await Order.aggregate([
                 { 
                     $match: { 
-                        restaurantId: rest.restaurantId,
+                        $or: [{ businessId: rest.businessId }, { restaurantId: rest.restaurantId }],
                         paymentStatus: "paid"
                     } 
                 },
@@ -418,7 +425,7 @@ export async function getAdminOwners(req, res) {
             email: rest.ownerEmail || "Unknown",
             status: "active",
             createdAt: rest.createdAt,
-            restaurantId: rest.restaurantId,
+            restaurantId: rest.businessId || rest.restaurantId,
             restaurantName: rest.displayName
         }))
 
@@ -431,8 +438,8 @@ export async function getAdminOwners(req, res) {
 
 export async function getAdminRestaurantById(req, res) {
     try {
-        const { restaurantId } = req.params
-        const restaurant = await Restaurant.findOne({ restaurantId }).populate("planId").lean()
+        const { restaurantId: paramId } = req.params
+        const restaurant = await Restaurant.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] }).populate("planId").lean()
 
         if (!restaurant) {
             return res.status(404).json({ message: "Restaurant not found" })
@@ -442,7 +449,7 @@ export async function getAdminRestaurantById(req, res) {
         const stats = await Order.aggregate([
             { 
                 $match: { 
-                    restaurantId: restaurant.restaurantId,
+                    $or: [{ businessId: restaurant.businessId }, { restaurantId: restaurant.restaurantId }],
                     paymentStatus: "paid"
                 } 
             },
@@ -487,11 +494,11 @@ export async function getAdminRestaurantById(req, res) {
 
 export async function updateAdminRestaurant(req, res) {
     try {
-        const { restaurantId } = req.params
+        const { restaurantId: paramId } = req.params
         const updateData = req.body
 
         const restaurant = await Restaurant.findOneAndUpdate(
-            { restaurantId },
+            { $or: [{ businessId: paramId }, { restaurantId: paramId }] },
             { $set: updateData },
             { new: true }
         )
@@ -641,12 +648,12 @@ export async function getAdminDashboardStats(req, res) {
 
 export async function getCategories(req, res) {
     try {
-        const restaurantId = req.query.restaurantId || req.user?.restaurantId
-        if (!restaurantId) {
-            return res.status(400).json({ message: "restaurantId is required" })
+        const businessId = req.query.businessId || req.query.restaurantId || req.user?.businessId || req.user?.restaurantId
+        if (!businessId) {
+            return res.status(400).json({ message: "businessId is required" })
         }
 
-        const restaurant = await Restaurant.findOne({ restaurantId })
+        const restaurant = await Restaurant.findOne({ businessId })
         if (!restaurant) {
             return res.status(404).json({ message: "Restaurant not found" })
         }
@@ -663,11 +670,11 @@ export async function getCategories(req, res) {
 
 export async function addCategory(req, res) {
     try {
-        const restaurantId = req.body.restaurantId || req.user?.restaurantId
+        const businessId = req.body.businessId || req.body.restaurantId || req.user?.businessId || req.user?.restaurantId
         const { category } = req.body
 
-        if (!restaurantId || !category) {
-            return res.status(400).json({ message: "restaurantId and category are required" })
+        if (!businessId || !category) {
+            return res.status(400).json({ message: "businessId and category are required" })
         }
 
         const trimmedCategory = category.trim().toLowerCase()
@@ -676,7 +683,7 @@ export async function addCategory(req, res) {
         }
 
         const restaurant = await Restaurant.findOneAndUpdate(
-            { restaurantId },
+            { businessId },
             { $addToSet: { menuCategories: trimmedCategory } },
             { new: true }
         )
@@ -694,11 +701,11 @@ export async function addCategory(req, res) {
 
 export async function removeCategory(req, res) {
     try {
-        const restaurantId = req.query.restaurantId || req.body.restaurantId || req.user?.restaurantId
+        const businessId = req.query.businessId || req.query.restaurantId || req.body.businessId || req.body.restaurantId || req.user?.businessId || req.user?.restaurantId
         const category = req.query.category || req.body.category
 
-        if (!restaurantId || !category) {
-            return res.status(400).json({ message: "restaurantId and category are required" })
+        if (!businessId || !category) {
+            return res.status(400).json({ message: "businessId and category are required" })
         }
 
         const trimmedCategory = category.trim().toLowerCase()
@@ -727,19 +734,19 @@ export async function removeCategory(req, res) {
 
 export async function deleteAdminRestaurant(req, res) {
     try {
-        const { restaurantId } = req.params;
+        const { restaurantId: paramId } = req.params;
 
-        if (!restaurantId) {
-            return res.status(400).json({ message: "Restaurant ID is required" });
+        if (!paramId) {
+            return res.status(400).json({ message: "Business ID is required" });
         }
 
-        const deletedRestaurant = await Restaurant.findOneAndDelete({ restaurantId });
+        const deletedRestaurant = await Restaurant.findOneAndDelete({ $or: [{ businessId: paramId }, { restaurantId: paramId }] });
 
         if (!deletedRestaurant) {
             return res.status(404).json({ message: "Restaurant not found" });
         }
 
-        return res.json({ message: "Restaurant successfully deleted", restaurantId });
+        return res.json({ message: "Restaurant successfully deleted", businessId: paramId });
     } catch (err) {
         console.error("Delete administration restaurant error:", err);
         return res.status(500).json({ message: "Server error deleting restaurant" });

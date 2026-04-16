@@ -2,7 +2,7 @@ import mongoose from "mongoose"
 
 const WaiterCallSchema = new mongoose.Schema(
   {
-    restaurantId: { type: String, required: true, index: true },
+    businessId: { type: String, required: true, index: true },
     tableNumber: { type: String, required: true, index: true },
 
     // Optional metadata (future-proof)
