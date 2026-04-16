@@ -1,6 +1,6 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
-import Waiter from "../models/Waiter.js"
+import Staff from "../models/Staff.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 
@@ -128,9 +128,12 @@ export async function updateOrderStatus(req, res) {
       if (waiterName) {
         order.completedBy = waiterName
       } else if (waiterId) {
-        // Fallback: look up name from DB
-        const waiter = await Waiter.findOne({ restaurantId, waiterId })
-        if (waiter) order.completedBy = waiter.name
+        // Fallback: look up name from DB using either staffId or legacy waiterId
+        const staff = await Staff.findOne({ 
+          restaurantId, 
+          $or: [{ staffId: waiterId }, { waiterId }] 
+        })
+        if (staff) order.completedBy = staff.name
       }
 
       order.completedAt = new Date()

@@ -1,6 +1,6 @@
-import Waiter from "../models/Waiter.js"
+import Staff from "../models/Staff.js"
 import crypto from "crypto"
-import { sendWaiterInvitationEmail } from "../utils/emailService.js"
+import { sendStaffInvitationEmail } from "../utils/emailService.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager"]
 
@@ -14,7 +14,7 @@ async function generateStaffId(restaurantId) {
     for (let i = 0; i < 10; i++) {
         const num = Math.floor(1000 + Math.random() * 9000) // 4-digit number
         const staffId = `STF-${num}`
-        const exists = await Waiter.findOne({ restaurantId, staffId })
+        const exists = await Staff.findOne({ restaurantId, staffId })
         if (!exists) return staffId
     }
     // Fallback to timestamp-based ID if all randoms collide
@@ -47,7 +47,7 @@ export async function getStaff(req, res) {
             filter.presenceStatus = status
         }
 
-        const staff = await Waiter.find(filter, {
+        const staff = await Staff.find(filter, {
             __v: 0,
             passwordHash: 0,
             inviteToken: 0,
@@ -118,14 +118,14 @@ export async function createStaff(req, res) {
         }
 
         // Uniqueness checks
-        const existingStaffId = await Waiter.findOne({ restaurantId, staffId })
+        const existingStaffId = await Staff.findOne({ restaurantId, staffId })
         if (existingStaffId) {
             return res.status(409).json({
                 message: "A staff member with this ID already exists in your business."
             })
         }
 
-        const existingEmail = await Waiter.findOne({ restaurantId, email: email.toLowerCase().trim() })
+        const existingEmail = await Staff.findOne({ restaurantId, email: email.toLowerCase().trim() })
         if (existingEmail) {
             return res.status(409).json({
                 message: "A staff member with this email already exists in your business."
@@ -136,7 +136,7 @@ export async function createStaff(req, res) {
         const inviteToken = crypto.randomBytes(32).toString("hex")
         const inviteTokenExpires = new Date(Date.now() + 48 * 60 * 60 * 1000) // 48 hours
 
-        const staff = await Waiter.create({
+        const staff = await Staff.create({
             restaurantId,
             staffId,
             waiterId: staffId, // populate waiterId for backward compat
@@ -154,7 +154,7 @@ export async function createStaff(req, res) {
         const frontendUrl = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
         const inviteLink = `${frontendUrl}/staff/setup-account?token=${inviteToken}`
 
-        sendWaiterInvitationEmail(staff, inviteLink).catch((err) => {
+        sendStaffInvitationEmail(staff, inviteLink).catch((err) => {
             console.error("[createStaff] Email failed:", err)
         })
 
@@ -189,9 +189,9 @@ export async function deleteStaff(req, res) {
         }
 
         // Try staffId first, fall back to waiterId for old records
-        let result = await Waiter.findOneAndDelete({ restaurantId, staffId })
+        let result = await Staff.findOneAndDelete({ restaurantId, staffId })
         if (!result) {
-            result = await Waiter.findOneAndDelete({ restaurantId, waiterId: staffId })
+            result = await Staff.findOneAndDelete({ restaurantId, waiterId: staffId })
         }
 
         if (!result) {

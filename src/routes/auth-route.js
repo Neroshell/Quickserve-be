@@ -12,12 +12,12 @@ router.post("/invite/setup-password", setupOwnerPassword);
 // POST /auth/login
 router.post("/login", loginUser);
 
-// GET /auth/invite/waiter/validate?token=...
-import { validateWaiterToken, setupWaiterPassword, logoutUser } from "../controllers/authController.js";
-router.get("/invite/waiter/validate", validateWaiterToken);
+// GET /auth/invite/staff/validate?token=...
+import { validateStaffToken, setupStaffPassword, logoutUser } from "../controllers/authController.js";
+router.get("/invite/staff/validate", validateStaffToken);
 
-// POST /auth/invite/waiter/setup-password
-router.post("/invite/waiter/setup-password", setupWaiterPassword);
+// POST /auth/invite/staff/setup-password
+router.post("/invite/staff/setup-password", setupStaffPassword);
 
 // POST /auth/logout
 router.post("/logout", logoutUser);

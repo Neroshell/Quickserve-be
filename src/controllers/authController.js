@@ -1,5 +1,5 @@
 import Restaurant from "../models/Restaurant.js";
-import Waiter from "../models/Waiter.js";
+import Staff from "../models/Staff.js";
 import bcrypt from "bcrypt";
 
 /**
@@ -42,9 +42,9 @@ export async function validateInviteToken(req, res) {
 
 /**
  * Validate a staff invitation token (waiter / kitchen / manager)
- * GET /auth/invite/waiter/validate?token=...
+ * GET /auth/invite/staff/validate?token=...
  */
-export async function validateWaiterToken(req, res) {
+export async function validateStaffToken(req, res) {
     try {
         const { token } = req.query;
 
@@ -52,13 +52,13 @@ export async function validateWaiterToken(req, res) {
             return res.status(400).json({ message: "Token is required" });
         }
 
-        const waiter = await Waiter.findOne({
+        const staff = await Staff.findOne({
             inviteToken: token,
             inviteTokenExpires: { $gt: new Date() },
             accountStatus: "pending"
         });
 
-        if (!waiter) {
+        if (!staff) {
             return res.status(404).json({ 
                 valid: false, 
                 message: "Invitation link is invalid, expired, or has already been used." 
@@ -67,11 +67,11 @@ export async function validateWaiterToken(req, res) {
 
         return res.json({ 
             valid: true, 
-            staffId: waiter.staffId,
-            waiterId: waiter.waiterId, // backward compat
-            name: waiter.name,
-            email: waiter.email,
-            role: waiter.role || "waiter",
+            staffId: staff.staffId,
+            waiterId: staff.waiterId, // backward compat
+            name: staff.name,
+            email: staff.email,
+            role: staff.role || "waiter",
             type: "staff"
         });
     } catch (err) {
@@ -112,10 +112,6 @@ export async function setupOwnerPassword(req, res) {
         restaurant.inviteToken = null;
         restaurant.inviteTokenExpires = null;
         
-        // Also mark restaurant status as active if it was draft? 
-        // User said: "mark owner account as active", "after setting password, owner account should become active"
-        // Let's stick to ownerStatus first.
-        
         await restaurant.save();
 
         return res.json({ message: "Password setup successful! You can now log in." });
@@ -126,10 +122,10 @@ export async function setupOwnerPassword(req, res) {
 }
 
 /**
- * Set waiter password using token
- * POST /auth/invite/waiter/setup-password
+ * Set staff password using token
+ * POST /auth/invite/staff/setup-password
  */
-export async function setupWaiterPassword(req, res) {
+export async function setupStaffPassword(req, res) {
     try {
         const { token, password } = req.body;
 
@@ -137,13 +133,13 @@ export async function setupWaiterPassword(req, res) {
             return res.status(400).json({ message: "Token and password are required" });
         }
 
-        const waiter = await Waiter.findOne({
+        const staff = await Staff.findOne({
             inviteToken: token,
             inviteTokenExpires: { $gt: new Date() },
             accountStatus: "pending"
         });
 
-        if (!waiter) {
+        if (!staff) {
             return res.status(404).json({ message: "Invalid or expired invitation token" });
         }
 
@@ -151,23 +147,23 @@ export async function setupWaiterPassword(req, res) {
         const saltRounds = 10;
         const passwordHash = await bcrypt.hash(password, saltRounds);
 
-        // Update waiter account
-        waiter.passwordHash = passwordHash;
-        waiter.accountStatus = "active";
-        waiter.inviteToken = null;
-        waiter.inviteTokenExpires = null;
+        // Update staff account
+        staff.passwordHash = passwordHash;
+        staff.accountStatus = "active";
+        staff.inviteToken = null;
+        staff.inviteTokenExpires = null;
         
-        await waiter.save();
+        await staff.save();
 
         return res.json({ message: "Account setup successful! You can now log in." });
     } catch (err) {
-        console.error("Setup waiter password error:", err);
+        console.error("Setup staff password error:", err);
         return res.status(500).json({ message: "Server error setting up password" });
     }
 }
 
 /**
- * Unified login for both owners and waitstaff
+ * Unified login for both owners and staff
  * POST /auth/login
  */
 export async function loginUser(req, res) {
@@ -201,33 +197,33 @@ export async function loginUser(req, res) {
         }
 
         // 2. Try finding a Staff member (Waiter / Kitchen / Manager)
-        const waiter = await Waiter.findOne({ email: email });
-        if (waiter) {
-            if (waiter.accountStatus !== "active") {
+        const staff = await Staff.findOne({ email: email });
+        if (staff) {
+            if (staff.accountStatus !== "active") {
                 return res.status(401).json({ message: "Account is not active. Please complete your setup first." });
             }
 
-            const isMatch = await bcrypt.compare(password, waiter.passwordHash);
+            const isMatch = await bcrypt.compare(password, staff.passwordHash);
             if (!isMatch) {
                 return res.status(401).json({ message: "Invalid credentials" });
             }
 
             // Update Presence Status to Active on login
-            waiter.presenceStatus = "active";
-            waiter.status = "active"; // sync legacy field
-            await waiter.save();
+            staff.presenceStatus = "active";
+            staff.status = "active"; // sync legacy field
+            await staff.save();
 
             return res.json({
                 message: "Login successful",
                 // New unified fields
                 type: "staff",
-                staffId: waiter.staffId,
-                role: waiter.role || "waitstaff",
+                staffId: staff.staffId,
+                role: staff.role || "waitstaff",
                 // Legacy backward compat fields
-                waiterId: waiter.waiterId,
-                name: waiter.name,
-                email: waiter.email,
-                restaurantId: waiter.restaurantId
+                waiterId: staff.waiterId,
+                name: staff.name,
+                email: staff.email,
+                restaurantId: staff.restaurantId
             });
         }
 
@@ -248,11 +244,11 @@ export async function logoutUser(req, res) {
 
         // Handle both legacy type=="waiter" and new type=="staff"
         if ((type === "waiter" || type === "staff") && email) {
-            const waiter = await Waiter.findOne({ email });
-            if (waiter) {
-                waiter.presenceStatus = "offline";
-                waiter.status = "offline"; // sync legacy field
-                await waiter.save();
+            const staff = await Staff.findOne({ email });
+            if (staff) {
+                staff.presenceStatus = "offline";
+                staff.status = "offline"; // sync legacy field
+                await staff.save();
             }
         }
 

@@ -302,12 +302,12 @@ export async function sendInvitationEmail(restaurant, inviteLink) {
   }
 }
 
-export async function sendWaiterInvitationEmail(waiter, inviteLink) {
+export async function sendStaffInvitationEmail(staff, inviteLink) {
   try {
-    const { name, email } = waiter;
-    console.log(`[EmailService] Sending waiter invitation to ${email} for ${name}`);
+    const { name, email } = staff;
+    console.log(`[EmailService] Sending staff invitation to ${email} for ${name}`);
 
-    const subject = `You've been added as Waitstaff on QuickServe`;
+    const subject = `You've been added as Staff on QuickServe`;
 
     const html = `
 <!DOCTYPE html>
@@ -326,7 +326,7 @@ export async function sendWaiterInvitationEmail(waiter, inviteLink) {
           QuickServe
         </div>
         <div style="margin-top: 6px; font-size: 13px; color: #e0f2fe;">
-          Waitstaff Onboarding
+          Staff Onboarding
         </div>
       </div>
 
@@ -336,7 +336,7 @@ export async function sendWaiterInvitationEmail(waiter, inviteLink) {
           Hello ${name},
         </h2>
         <p style="margin: 0 0 20px; font-size: 16px; line-height: 1.6; color: #334155;">
-          You have been added as a member of the <strong>Waitstaff</strong> for a restaurant on QuickServe.
+          You have been added as a member of the <strong>Staff</strong> for a restaurant on QuickServe.
         </p>
         <p style="margin: 0 0 30px; font-size: 16px; line-height: 1.6; color: #334155;">
           To get started and access your staff dashboard, please set up your account password by clicking the button below:
@@ -383,10 +383,10 @@ export async function sendWaiterInvitationEmail(waiter, inviteLink) {
     };
 
     const info = await transporter.sendMail(mailOptions);
-    console.log(`[EmailService] ✅ Waiter invitation sent to ${email} (Message ID: ${info.messageId})`);
+    console.log(`[EmailService] ✅ Staff invitation sent to ${email} (Message ID: ${info.messageId})`);
     return true;
   } catch (error) {
-    console.error("[EmailService] ❌ Error sending waiter invitation email:", error);
+    console.error("[EmailService] ❌ Error sending staff invitation email:", error);
     return false;
   }
 }
