@@ -1,4 +1,4 @@
-import Restaurant from "../models/Restaurant.js";
+import Business from "../models/Business.js";
 import Staff from "../models/Staff.js";
 import bcrypt from "bcrypt";
 
@@ -14,13 +14,13 @@ export async function validateInviteToken(req, res) {
             return res.status(400).json({ message: "Token is required" });
         }
 
-        const restaurant = await Restaurant.findOne({
+        const business = await Business.findOne({
             inviteToken: token,
             inviteTokenExpires: { $gt: new Date() },
             ownerStatus: "pending"
         });
 
-        if (!restaurant) {
+        if (!business) {
             return res.status(404).json({ 
                 valid: false, 
                 message: "Invitation link is invalid, expired, or has already been used." 
@@ -29,9 +29,10 @@ export async function validateInviteToken(req, res) {
 
         return res.json({ 
             valid: true, 
-            ownerName: restaurant.ownerName,
-            ownerEmail: restaurant.ownerEmail,
-            restaurantName: restaurant.displayName,
+            ownerName: business.ownerName,
+            ownerEmail: business.ownerEmail,
+            businessName: business.displayName,
+            restaurantName: business.displayName, // legacy alias
             type: "owner"
         });
     } catch (err) {
@@ -92,27 +93,25 @@ export async function setupOwnerPassword(req, res) {
             return res.status(400).json({ message: "Token and password are required" });
         }
 
-        const restaurant = await Restaurant.findOne({
+        const business = await Business.findOne({
             inviteToken: token,
             inviteTokenExpires: { $gt: new Date() },
             ownerStatus: "pending"
         });
 
-        if (!restaurant) {
+        if (!business) {
             return res.status(404).json({ message: "Invalid or expired invitation token" });
         }
 
-        // Hash password
         const saltRounds = 10;
         const passwordHash = await bcrypt.hash(password, saltRounds);
 
-        // Update restaurant/owner account
-        restaurant.ownerPasswordHash = passwordHash;
-        restaurant.ownerStatus = "active";
-        restaurant.inviteToken = null;
-        restaurant.inviteTokenExpires = null;
+        business.ownerPasswordHash = passwordHash;
+        business.ownerStatus = "active";
+        business.inviteToken = null;
+        business.inviteTokenExpires = null;
         
-        await restaurant.save();
+        await business.save();
 
         return res.json({ message: "Password setup successful! You can now log in." });
     } catch (err) {
@@ -143,11 +142,9 @@ export async function setupStaffPassword(req, res) {
             return res.status(404).json({ message: "Invalid or expired invitation token" });
         }
 
-        // Hash password
         const saltRounds = 10;
         const passwordHash = await bcrypt.hash(password, saltRounds);
 
-        // Update staff account
         staff.passwordHash = passwordHash;
         staff.accountStatus = "active";
         staff.inviteToken = null;
@@ -174,14 +171,14 @@ export async function loginUser(req, res) {
             return res.status(400).json({ message: "Email and password are required" });
         }
 
-        // 1. Try finding an Owner (Restaurant)
-        const restaurant = await Restaurant.findOne({ ownerEmail: email });
-        if (restaurant) {
-            if (restaurant.ownerStatus !== "active") {
+        // 1. Try finding an Owner (Business)
+        const business = await Business.findOne({ ownerEmail: email });
+        if (business) {
+            if (business.ownerStatus !== "active") {
                 return res.status(401).json({ message: "Account is not active. Please check your email for the setup link." });
             }
 
-            const isMatch = await bcrypt.compare(password, restaurant.ownerPasswordHash);
+            const isMatch = await bcrypt.compare(password, business.ownerPasswordHash);
             if (!isMatch) {
                 return res.status(401).json({ message: "Invalid credentials" });
             }
@@ -189,11 +186,11 @@ export async function loginUser(req, res) {
             return res.json({
                 message: "Login successful",
                 type: "owner",
-                businessId: restaurant.businessId || restaurant.restaurantId,
-                restaurantId: restaurant.businessId || restaurant.restaurantId, // legacy alias
-                ownerName: restaurant.ownerName,
-                ownerEmail: restaurant.ownerEmail,
-                displayName: restaurant.displayName
+                businessId: business.businessId || business.restaurantId,
+                restaurantId: business.businessId || business.restaurantId, // legacy alias
+                ownerName: business.ownerName,
+                ownerEmail: business.ownerEmail,
+                displayName: business.displayName
             });
         }
 
@@ -216,13 +213,11 @@ export async function loginUser(req, res) {
 
             return res.json({
                 message: "Login successful",
-                // New unified fields
                 type: "staff",
                 staffId: staff.staffId,
                 role: staff.role || "waitstaff",
                 businessId: staff.businessId || staff.restaurantId,
-                // Legacy backward compat fields
-                restaurantId: staff.businessId || staff.restaurantId,
+                restaurantId: staff.businessId || staff.restaurantId, // legacy alias
                 waiterId: staff.waiterId,
                 name: staff.name,
                 email: staff.email
@@ -242,7 +237,7 @@ export async function loginUser(req, res) {
  */
 export async function logoutUser(req, res) {
     try {
-        const { email, type } = req.body; // In a real app, this would come from JWT session
+        const { email, type } = req.body;
 
         // Handle both legacy type=="waiter" and new type=="staff"
         if ((type === "waiter" || type === "staff") && email) {

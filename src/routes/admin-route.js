@@ -1,17 +1,17 @@
 import express from "express"
-import { createRestaurant, getAdminRestaurants, getAdminOwners, createAdminOwner, getAdminRestaurantById, updateAdminRestaurant, getAdminDashboardStats, deleteAdminRestaurant } from "../controllers/restaurantController.js"
+import { createBusiness, getAdminBusinesses, getAdminOwners, createAdminOwner, getAdminBusinessById, updateAdminBusiness, getAdminDashboardStats, deleteAdminBusiness } from "../controllers/businessController.js"
 import { getPlans, updatePlan, seedPlans } from "../controllers/planController.js"
 
 const router = express.Router()
 
-// POST /admin/restaurants
-router.post("/restaurants", createRestaurant)
+// POST /admin/businesses
+router.post("/businesses", createBusiness)
 
 // POST /admin/owners
 router.post("/owners", createAdminOwner)
 
-// GET /admin/restaurants
-router.get("/restaurants", getAdminRestaurants)
+// GET /admin/businesses
+router.get("/businesses", getAdminBusinesses)
 
 // GET /admin/owners
 router.get("/owners", getAdminOwners)
@@ -19,14 +19,14 @@ router.get("/owners", getAdminOwners)
 // GET /admin/dashboard-stats
 router.get("/dashboard-stats", getAdminDashboardStats)
 
-// GET /admin/restaurants/:businessId
-router.get("/restaurants/:businessId", getAdminRestaurantById)
+// GET /admin/businesses/:businessId
+router.get("/businesses/:businessId", getAdminBusinessById)
 
-// PATCH /admin/restaurants/:businessId
-router.patch("/restaurants/:businessId", updateAdminRestaurant)
+// PATCH /admin/businesses/:businessId
+router.patch("/businesses/:businessId", updateAdminBusiness)
 
-// DELETE /admin/restaurants/:businessId
-router.delete("/restaurants/:businessId", deleteAdminRestaurant)
+// DELETE /admin/businesses/:businessId
+router.delete("/businesses/:businessId", deleteAdminBusiness)
 
 // GET /admin/plans
 router.get("/plans", getPlans)

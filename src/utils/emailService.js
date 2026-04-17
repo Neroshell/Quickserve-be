@@ -213,9 +213,9 @@ export async function sendReceiptEmail(order, email) {
   }
 }
 
-export async function sendInvitationEmail(restaurant, inviteLink) {
+export async function sendInvitationEmail(business, inviteLink) {
   try {
-    const { ownerName, ownerEmail, displayName } = restaurant;
+    const { ownerName, ownerEmail, displayName } = business;
     console.log(`[EmailService] Sending invitation to ${ownerEmail} for ${displayName}`);
 
     const subject = `Welcome to QuickServe - Set up your account for ${displayName}`;
@@ -336,7 +336,7 @@ export async function sendStaffInvitationEmail(staff, inviteLink) {
           Hello ${name},
         </h2>
         <p style="margin: 0 0 20px; font-size: 16px; line-height: 1.6; color: #334155;">
-          You have been added as a member of the <strong>Staff</strong> for a restaurant on QuickServe.
+          You have been added as a member of the <strong>Staff</strong> for a business on QuickServe.
         </p>
         <p style="margin: 0 0 30px; font-size: 16px; line-height: 1.6; color: #334155;">
           To get started and access your staff dashboard, please set up your account password by clicking the button below:

@@ -1,7 +1,7 @@
 import express from "express"
 import crypto from "crypto"
 import TableSession from "../models/TableSession.js"
-import Restaurant from "../models/Restaurant.js"
+import Business from "../models/Business.js"
 
 const router = express.Router()
 
@@ -21,16 +21,15 @@ router.post("/start", async (req, res) => {
     }
 
     // Validate that the business actually exists
-    const restaurant = await Restaurant.findOne({ $or: [{ businessId }, { restaurantId: businessId }] })
-    if (!restaurant) {
-      return res.status(404).json({ error: "Restaurant not found" })
+    const business = await Business.findOne({ $or: [{ businessId }, { restaurantId: businessId }] })
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
     }
 
     const token = randomToken()
-    // Session length ideally comes from restaurant settings (e.g. `restaurant.settings.service.sessionExpiryMinutes`).
-    // Using a default fallback of 120 minutes for now to match old behavior.
+    // Session length comes from business settings, fallback to 120 minutes
     const fallbackMinutes = 120
-    const expiryMinutes = restaurant?.settings?.service?.sessionExpiryMinutes || fallbackMinutes
+    const expiryMinutes = business?.settings?.service?.sessionExpiryMinutes || fallbackMinutes
     const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000)
 
     await TableSession.create({

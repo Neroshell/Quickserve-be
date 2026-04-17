@@ -4,7 +4,7 @@
 //   1. Track locally-connected SSE clients (per-instance in-memory Set)
 //   2. Register/deregister clients via sseHandler
 //   3. broadcastLocal(msg) — deliver a canonical event message to matching local clients
-//   4. publishEvent(event, restaurantId, targets, payload) — publish to Redis
+//   4. publishEvent(event, businessId, targets, payload) — publish to Redis
 //      OR broadcast directly (local fallback when Redis is unavailable)
 //
 // ─────────────────────────────────────────────────────────────────────────────

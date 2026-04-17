@@ -1,7 +1,7 @@
 import express from "express"
 import crypto from "crypto"
 import TableSession from "../models/TableSession.js"
-import Restaurant from "../models/Restaurant.js"
+import Business from "../models/Business.js"
 
 const router = express.Router()
 
@@ -21,10 +21,10 @@ router.get("/:businessId/:tableId", async (req, res) => {
     }
 
     // Validate that the business actually exists (check both businessId and legacy restaurantId)
-    const restaurant = await Restaurant.findOne({
+    const business = await Business.findOne({
       $or: [{ businessId }, { restaurantId: businessId }]
     })
-    if (!restaurant) {
+    if (!business) {
       return res.status(404).send("Business not found")
     }
 
@@ -39,9 +39,7 @@ router.get("/:businessId/:tableId", async (req, res) => {
       boundSessionId: null,
     })
 
-    // frontend base url (set in env for prod)
     const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
-
     const redirectUrl = `${FRONTEND_BASE_URL}/table/${encodeURIComponent(tableId)}?businessId=${encodeURIComponent(businessId)}&st=${encodeURIComponent(token)}`
     return res.redirect(302, redirectUrl)
   } catch (err) {
