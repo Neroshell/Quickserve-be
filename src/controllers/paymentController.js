@@ -95,7 +95,7 @@ export async function createCheckoutSession(req, res) {
         const orderId = generateOrderId(tableNumber, now);
 
         const pending = await PendingCheckout.create({
-            restaurantId: ts.restaurantId,
+            businessId: ts.businessId,
             orderId,
             tableNumber,
             orderType: finalOrderType,
@@ -117,10 +117,10 @@ export async function createCheckoutSession(req, res) {
                 pendingCheckoutId: pending._id.toString(),
                 orderId,
                 tableNumber,
-                restaurantId: ts.restaurantId,
+                businessId: ts.businessId,
             },
-            success_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/confirmation?payment=success&orderId=${orderId}&restaurantId=${ts.restaurantId}`,
-            cancel_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/order?payment=cancelled&restaurantId=${ts.restaurantId}`,
+            success_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/confirmation?payment=success&orderId=${orderId}&businessId=${ts.businessId}`,
+            cancel_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/order?payment=cancelled&businessId=${ts.businessId}`,
         };
 
         if (receiptEmail) {

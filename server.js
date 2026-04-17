@@ -43,7 +43,7 @@ import restaurantScopedRoute from "./src/routes/restaurant-scoped-route.js"
 
 // Routes
 app.use("/orders", orderRoute)
-app.use("/restaurants/:restaurantId/orders", restaurantScopedRoute)
+app.use("/restaurants/:businessId/orders", restaurantScopedRoute)
 app.use("/payments", paymentRoute)
 app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)

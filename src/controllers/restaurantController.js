@@ -4,7 +4,7 @@ import Plan from "../models/Plan.js"
 import crypto from "crypto"
 import { sendInvitationEmail } from "../utils/emailService.js"
 
-function generateRestaurantId() {
+function generateBusinessId() {
     return `rest_${crypto.randomBytes(4).toString("hex")}`
 }
 
@@ -260,7 +260,7 @@ export async function createRestaurant(req, res) {
             return res.status(400).json({ message: "Slug already in use" })
         }
 
-        const businessId = generateRestaurantId()
+        const businessId = generateBusinessId()
 
         const restaurant = await Restaurant.create({
             businessId,
@@ -420,12 +420,12 @@ export async function getAdminOwners(req, res) {
         // Extract owners from restaurants
         // In the current schema, each restaurant has one owner (ownerName, ownerEmail)
         const owners = restaurants.map(rest => ({
-            id: rest._id, // Using restaurant _id as the owner id for now
+            id: rest._id,
             name: rest.ownerName || "Unknown",
             email: rest.ownerEmail || "Unknown",
             status: "active",
             createdAt: rest.createdAt,
-            restaurantId: rest.businessId || rest.restaurantId,
+            businessId: rest.businessId,
             restaurantName: rest.displayName
         }))
 
@@ -438,7 +438,7 @@ export async function getAdminOwners(req, res) {
 
 export async function getAdminRestaurantById(req, res) {
     try {
-        const { restaurantId: paramId } = req.params
+        const { businessId: paramId } = req.params
         const restaurant = await Restaurant.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] }).populate("planId").lean()
 
         if (!restaurant) {
@@ -494,7 +494,7 @@ export async function getAdminRestaurantById(req, res) {
 
 export async function updateAdminRestaurant(req, res) {
     try {
-        const { restaurantId: paramId } = req.params
+        const { businessId: paramId } = req.params
         const updateData = req.body
 
         const restaurant = await Restaurant.findOneAndUpdate(
@@ -575,11 +575,11 @@ export async function getAdminDashboardStats(req, res) {
                     orderCount: [
                         { $count: "count" }
                     ],
-                    byRestaurant: [
+                    byBusiness: [
                         { $match: { paymentStatus: "paid" } },
                         {
                             $group: {
-                                _id: "$restaurantId",
+                                _id: "$businessId",
                                 revenue: { $sum: "$total" },
                                 orders: { $sum: 1 }
                             }
@@ -589,7 +589,7 @@ export async function getAdminDashboardStats(req, res) {
                     ],
                     zeroOrders30d: [
                         { $match: { createdAt: { $gte: thirtyDaysAgo } } },
-                        { $group: { _id: "$restaurantId" } }
+                        { $group: { _id: "$businessId" } }
                     ]
                 }
             }
@@ -598,15 +598,15 @@ export async function getAdminDashboardStats(req, res) {
         const totals = orderStats[0].totals[0] || { totalRevenue: 0, totalTransactions: 0 }
         const totalOrders = orderStats[0].orderCount[0]?.count || 0
         
-        // Enrich top restaurants with display names
-        const topByRevenueData = orderStats[0].byRestaurant
-        const restaurantIds = topByRevenueData.map(item => item._id)
-        const topRestaurantDocs = await Restaurant.find({ restaurantId: { $in: restaurantIds } }).lean()
+        // Enrich top businesses with display names
+        const topByRevenueData = orderStats[0].byBusiness
+        const businessIds = topByRevenueData.map(item => item._id)
+        const topRestaurantDocs = await Restaurant.find({ businessId: { $in: businessIds } }).lean()
         
         const enrichedTopByRevenue = topByRevenueData.map(item => {
-            const doc = topRestaurantDocs.find(d => d.restaurantId === item._id)
+            const doc = topRestaurantDocs.find(d => d.businessId === item._id)
             return {
-                restaurantId: item._id,
+                businessId: item._id,
                 displayName: doc?.displayName || "Unknown",
                 revenue: item.revenue,
                 orders: item.orders,
@@ -618,9 +618,9 @@ export async function getAdminDashboardStats(req, res) {
         const topByRevenue = enrichedTopByRevenue.slice(0, 5)
 
         // Calculate zero orders in last 30 days
-        const activeRestaurantIdsWithOrders = new Set(orderStats[0].zeroOrders30d.map(item => item._id))
+        const activeBusinessIdsWithOrders = new Set(orderStats[0].zeroOrders30d.map(item => item._id))
         const zeroOrders30dCount = restaurants.filter(r => 
-            r.status === "active" && !activeRestaurantIdsWithOrders.has(r.restaurantId)
+            r.status === "active" && !activeBusinessIdsWithOrders.has(r.businessId)
         ).length
 
         const dashboardData = {
@@ -716,7 +716,7 @@ export async function removeCategory(req, res) {
         }
 
         const restaurant = await Restaurant.findOneAndUpdate(
-            { restaurantId },
+            { businessId },
             { $pull: { menuCategories: trimmedCategory } },
             { new: true }
         )
@@ -734,7 +734,7 @@ export async function removeCategory(req, res) {
 
 export async function deleteAdminRestaurant(req, res) {
     try {
-        const { restaurantId: paramId } = req.params;
+        const { businessId: paramId } = req.params;
 
         if (!paramId) {
             return res.status(400).json({ message: "Business ID is required" });

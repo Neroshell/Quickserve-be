@@ -48,25 +48,25 @@ export async function handleStripeWebhook(req, res) {
             return res.status(200).send();
         }
 
-        if (!pending.restaurantId) {
-            console.error(`[stripeWebhook] PendingCheckout missing restaurantId: ${pendingCheckoutId}`);
+        if (!pending.businessId) {
+            console.error(`[stripeWebhook] PendingCheckout missing businessId: ${pendingCheckoutId}`);
             return res.status(200).send();
         }
 
         console.log(
-            `[stripeWebhook] PendingCheckout found — restaurantId=${pending.restaurantId}, table=${pending.tableNumber}, items=${pending.items.length}`
+            `[stripeWebhook] PendingCheckout found — businessId=${pending.businessId}, table=${pending.tableNumber}, items=${pending.items.length}`
         );
 
-        const restaurantId = pending.restaurantId;
+        const businessId = pending.businessId;
         const orderId = pending.orderId || generateOrderId(pending.tableNumber);
 
         // Idempotency guard:
         // if Stripe retries the webhook, do not create duplicate orders
-        let order = await Order.findOne({ restaurantId, orderId });
+        let order = await Order.findOne({ businessId, orderId });
 
         if (order) {
             console.log(
-                `[stripeWebhook] Order already exists for restaurantId=${restaurantId}, orderId=${orderId}`
+                `[stripeWebhook] Order already exists for businessId=${businessId}, orderId=${orderId}`
             );
 
             // Retry receipt email if it wasn't sent yet
@@ -77,7 +77,7 @@ export async function handleStripeWebhook(req, res) {
                     const emailSent = await sendReceiptEmail(order, customerEmail);
                     if (emailSent) {
                         await Order.findOneAndUpdate(
-                            { restaurantId, orderId },
+                            { businessId, orderId },
                             { receiptSent: true }
                         );
                         console.log(`[stripeWebhook] Receipt sent to ${customerEmail}`);
@@ -103,7 +103,7 @@ export async function handleStripeWebhook(req, res) {
             console.log(`[stripeWebhook] Final customerEmail resolved to:`, customerEmail);
 
             order = await Order.create({
-                restaurantId,
+                businessId,
                 orderId,
                 tableNumber: pending.tableNumber,
                 orderType: pending.orderType,
@@ -121,7 +121,7 @@ export async function handleStripeWebhook(req, res) {
             });
 
             console.log(
-                `[stripeWebhook] Order created: ${orderId} for restaurantId=${restaurantId}`
+                `[stripeWebhook] Order created: ${orderId} for businessId=${businessId}`
             );
             console.log(`[stripeWebhook] Created order receiptEmail: ${order.receiptEmail}, receiptSent: ${order.receiptSent}`);
 
@@ -132,7 +132,7 @@ export async function handleStripeWebhook(req, res) {
                     console.log(`[stripeWebhook] sendReceiptEmail resolved with: ${emailSent}`);
                     if (emailSent) {
                         await Order.findOneAndUpdate(
-                            { restaurantId, orderId },
+                            { businessId, orderId },
                             { receiptSent: true }
                         );
                         console.log(`[stripeWebhook] Document updated: receiptSent set to true for ${order.orderId}`);
@@ -155,13 +155,13 @@ export async function handleStripeWebhook(req, res) {
             // Publish via Redis so ALL instances deliver to their connected SSE clients
             if (foodItems.length > 0) {
                 const kitchenDTO = { ...orderDTO, items: foodItems };
-                await publishEvent("order_created", restaurantId, ["kitchen"], { order: kitchenDTO });
-                console.log(`[stripeWebhook] Published order_created to kitchen for restaurantId=${restaurantId}`);
+                await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO });
+                console.log(`[stripeWebhook] Published order_created to kitchen for businessId=${businessId}`);
             }
 
             // Full order to waiter + table roles
-            await publishEvent("order_created", restaurantId, ["waiter", "table", "anon"], { order: orderDTO });
-            console.log(`[stripeWebhook] Published order_created to waiter/table for restaurantId=${restaurantId}`);
+            await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO });
+            console.log(`[stripeWebhook] Published order_created to waiter/table for businessId=${businessId}`);
         }
 
         await PendingCheckout.findByIdAndDelete(pendingCheckoutId);

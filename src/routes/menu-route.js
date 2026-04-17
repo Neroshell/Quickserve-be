@@ -9,7 +9,7 @@ import {
 
 const router = express.Router()
 
-// GET /menu-items?restaurantId=...
+// GET /menu-items?businessId=...
 router.get("/", getMenuItems)
 
 // POST /menu-items

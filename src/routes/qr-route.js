@@ -10,27 +10,29 @@ function randomToken() {
   return crypto.randomBytes(24).toString("base64url")
 }
 
-// GET /q/:restaurantId/:tableId -> create token, redirect to frontend with ?st=
-router.get("/:restaurantId/:tableId", async (req, res) => {
+// GET /q/:businessId/:tableId -> create token, redirect to frontend with ?st=
+router.get("/:businessId/:tableId", async (req, res) => {
   try {
-    const { restaurantId, tableId } = req.params
-    console.log(`QR request for ${restaurantId}, tableId: ${tableId}`);
+    const { businessId, tableId } = req.params
+    console.log(`QR request for ${businessId}, tableId: ${tableId}`);
 
-    if (!restaurantId || !tableId) {
-      return res.status(400).send("Missing restaurantId or tableId")
+    if (!businessId || !tableId) {
+      return res.status(400).send("Missing businessId or tableId")
     }
 
-    // Validate that the restaurant actually exists
-    const restaurant = await Restaurant.findOne({ restaurantId })
+    // Validate that the business actually exists (check both businessId and legacy restaurantId)
+    const restaurant = await Restaurant.findOne({
+      $or: [{ businessId }, { restaurantId: businessId }]
+    })
     if (!restaurant) {
-      return res.status(404).send("Restaurant not found")
+      return res.status(404).send("Business not found")
     }
 
     const token = randomToken()
     const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000) // 2 hours
 
     await TableSession.create({
-      restaurantId,
+      businessId,
       tableId,
       token,
       expiresAt,
@@ -40,7 +42,7 @@ router.get("/:restaurantId/:tableId", async (req, res) => {
     // frontend base url (set in env for prod)
     const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
 
-    const redirectUrl = `${FRONTEND_BASE_URL}/table/${encodeURIComponent(tableId)}?restaurantId=${encodeURIComponent(restaurantId)}&st=${encodeURIComponent(token)}`
+    const redirectUrl = `${FRONTEND_BASE_URL}/table/${encodeURIComponent(tableId)}?businessId=${encodeURIComponent(businessId)}&st=${encodeURIComponent(token)}`
     return res.redirect(302, redirectUrl)
   } catch (err) {
     console.error("QR start error:", err)

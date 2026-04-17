@@ -19,14 +19,14 @@ router.get("/owners", getAdminOwners)
 // GET /admin/dashboard-stats
 router.get("/dashboard-stats", getAdminDashboardStats)
 
-// GET /admin/restaurants/:restaurantId
-router.get("/restaurants/:restaurantId", getAdminRestaurantById)
+// GET /admin/restaurants/:businessId
+router.get("/restaurants/:businessId", getAdminRestaurantById)
 
-// PATCH /admin/restaurants/:restaurantId
-router.patch("/restaurants/:restaurantId", updateAdminRestaurant)
+// PATCH /admin/restaurants/:businessId
+router.patch("/restaurants/:businessId", updateAdminRestaurant)
 
-// DELETE /admin/restaurants/:restaurantId
-router.delete("/restaurants/:restaurantId", deleteAdminRestaurant)
+// DELETE /admin/restaurants/:businessId
+router.delete("/restaurants/:businessId", deleteAdminRestaurant)
 
 // GET /admin/plans
 router.get("/plans", getPlans)
