@@ -1,10 +1,10 @@
 // redisClient.js
 // Two dedicated ioredis connections are required:
-//   - redisPub  → used exclusively to PUBLISH events
-//   - redisSub  → used exclusively to SUBSCRIBE (a subscribed client cannot publish)
+//   - redisPub     → used exclusively to PUBLISH events (SSE)
+//   - redisSub     → used exclusively to SUBSCRIBE for events (SSE) (a subscribed client cannot publish)
 //
-// If REDIS_URL is absent (local dev without Redis) both are null and the system
-// falls back to direct in-process broadcast inside sseManager.js.
+// If REDIS_URL is absent (local dev without Redis) clients are null and systems
+// fall back to default in-memory or in-process behavior.
 
 import Redis from "ioredis"
 
@@ -32,6 +32,11 @@ function createClient(role) {
     client.on("error", (err) => console.error(`[Redis:${role}] ❌ Error:`, err.message))
     client.on("close", () => console.warn(`[Redis:${role}] ⚠️ Connection closed`))
     client.on("reconnecting", () => console.warn(`[Redis:${role}] 🔄 Reconnecting...`))
+
+    // DEBUG: trace commands to find syntax error
+    client.on("command", (cmd) => {
+        console.log(`[Redis:${role}] CMD: ${cmd.name}`, cmd.args);
+    });
 
     return client
 }

@@ -2,7 +2,10 @@ import express from "express"
 import { createBusiness, getAdminBusinesses, getAdminOwners, createAdminOwner, getAdminBusinessById, updateAdminBusiness, getAdminDashboardStats, deleteAdminBusiness } from "../controllers/businessController.js"
 import { getPlans, updatePlan, seedPlans } from "../controllers/planController.js"
 
+import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+
 const router = express.Router()
+router.use(requireAuth, requireRole("owner", "admin"))
 
 // POST /admin/businesses
 router.post("/businesses", createBusiness)

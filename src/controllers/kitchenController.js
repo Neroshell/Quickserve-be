@@ -28,7 +28,7 @@ function getBusinessDayRange() {
 
 export async function kitchenOrders(req, res) {
   try {
-    const businessId = req.query.businessId || req.query.restaurantId
+    const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" })
     }
@@ -88,7 +88,7 @@ export async function updateOrderStatus(req, res) {
   try {
     const { orderId } = req.params
     const { status: nextStatus } = req.body
-    const businessId = req.body.businessId || req.body.restaurantId
+    const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
 
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" })

@@ -1,4 +1,4 @@
-import Business from "../models/Business.js";
+﻿import Business from "../models/Business.js";
 import Staff from "../models/Staff.js";
 import bcrypt from "bcrypt";
 
@@ -165,6 +165,7 @@ export async function setupStaffPassword(req, res) {
  */
 export async function loginUser(req, res) {
     try {
+        console.log("req.session exists?", !!req.session)
         const { email, password } = req.body;
 
         if (!email || !password) {
@@ -183,14 +184,40 @@ export async function loginUser(req, res) {
                 return res.status(401).json({ message: "Invalid credentials" });
             }
 
-            return res.json({
-                message: "Login successful",
-                type: "owner",
-                businessId: business.businessId || business.restaurantId,
-                restaurantId: business.businessId || business.restaurantId, // legacy alias
-                ownerName: business.ownerName,
-                ownerEmail: business.ownerEmail,
-                displayName: business.displayName
+            console.log(`[Login] Owner login attempt for: ${email}`);
+            const userObj = {
+                userId: business._id.toString(),
+                email: business.ownerEmail,
+                role: "owner",
+                businessId: business.businessId || business.restaurantId
+            };
+
+            return new Promise((resolve, reject) => {
+                console.log(`[Login] Regenerating session for owner: ${email}`);
+                req.session.regenerate((err) => {
+                    if (err) {
+                        console.error("[Login] Session regenerate error:", err);
+                        return reject(err);
+                    }
+                    console.log(`[Login] Session regenerated, saving user data: ${email}`);
+                    req.session.user = userObj;
+                    req.session.save((err) => {
+                        if (err) {
+                            console.error("[Login] Session save error:", err);
+                            return reject(err);
+                        }
+                        console.log(`[Login] Session saved successfully: ${email}`);
+                        resolve(res.json({
+                            message: "Login successful",
+                            type: "owner",
+                            businessId: business.businessId || business.restaurantId,
+                            restaurantId: business.businessId || business.restaurantId,
+                            ownerName: business.ownerName,
+                            ownerEmail: business.ownerEmail,
+                            displayName: business.displayName
+                        }));
+                    });
+                });
             });
         }
 
@@ -211,22 +238,38 @@ export async function loginUser(req, res) {
             staff.status = "active"; // sync legacy field
             await staff.save();
 
-            return res.json({
-                message: "Login successful",
-                type: "staff",
+            const userObj = {
                 staffId: staff.staffId,
-                role: staff.role || "waitstaff",
-                businessId: staff.businessId || staff.restaurantId,
-                restaurantId: staff.businessId || staff.restaurantId, // legacy alias
-                waiterId: staff.waiterId,
-                name: staff.name,
-                email: staff.email
+                email: staff.email,
+                role: staff.role || "waiter",
+                businessId: staff.businessId || staff.restaurantId
+            };
+
+            return new Promise((resolve, reject) => {
+                req.session.regenerate((err) => {
+                    if (err) return reject(err);
+                    req.session.user = userObj;
+                    req.session.save((err) => {
+                        if (err) return reject(err);
+                        resolve(res.json({
+                            message: "Login successful",
+                            type: "staff",
+                            staffId: staff.staffId,
+                            role: staff.role || "waitstaff",
+                            businessId: staff.businessId || staff.restaurantId,
+                            restaurantId: staff.businessId || staff.restaurantId,
+                            waiterId: staff.waiterId,
+                            name: staff.name,
+                            email: staff.email
+                        }));
+                    });
+                });
             });
         }
 
         return res.status(401).json({ message: "Invalid credentials" });
     } catch (err) {
-        console.error("Login error:", err);
+        console.error("Login Error Details:", err);
         return res.status(500).json({ message: "Server error during login" });
     }
 }
@@ -249,9 +292,39 @@ export async function logoutUser(req, res) {
             }
         }
 
-        return res.json({ message: "Logged out successfully" });
+        return new Promise((resolve, reject) => {
+            req.session.destroy((err) => {
+                if (err) return reject(err);
+                res.clearCookie("qs_dashboard_session");
+                resolve(res.json({ message: "Logged out successfully" }));
+            });
+        });
     } catch (err) {
         console.error("Logout error:", err);
         return res.status(500).json({ message: "Server error during logout" });
+    }
+}
+
+export async function getMe(req, res) {
+    try {
+        if (!req.session || !req.session.user) {
+            return res.status(401).json({ message: "Not authenticated" });
+        }
+        
+        const { role, email } = req.session.user;
+
+        // Optionally, grab fresh data from DB to ensure user isn't disabled
+        if (role === 'owner' || role === 'admin') {
+            const business = await Business.findOne({ ownerEmail: email, ownerStatus: "active" }).select('-ownerPasswordHash');
+            if (!business) return res.status(401).json({ message: "Account disabled or not found." });
+            return res.json({ ...req.session.user, displayName: business.displayName, name: business.ownerName });
+        } else {
+            const staff = await Staff.findOne({ email, accountStatus: "active" }).select('-passwordHash');
+            if (!staff) return res.status(401).json({ message: "Account disabled or not found." });
+            return res.json({ ...req.session.user, name: staff.name, waiterId: staff.waiterId });
+        }
+    } catch (err) {
+        console.error("GetMe error:", err);
+        return res.status(500).json({ message: "Server error retrieving session state" });
     }
 }

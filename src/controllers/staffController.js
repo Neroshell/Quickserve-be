@@ -12,6 +12,7 @@ const ALLOWED_ROLES = ["waiter", "kitchen", "manager"]
  */
 function resolveBusinessId(req) {
     return (
+        req.session?.user?.businessId ||
         req.query.businessId ||
         req.query.restaurantId || // legacy fallback
         req.body?.businessId ||

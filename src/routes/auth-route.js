@@ -1,5 +1,5 @@
 import express from "express";
-import { validateInviteToken, setupOwnerPassword, loginUser } from "../controllers/authController.js";
+import { validateInviteToken, setupOwnerPassword, loginUser, getMe } from "../controllers/authController.js";
 
 const router = express.Router();
 
@@ -11,6 +11,9 @@ router.post("/invite/setup-password", setupOwnerPassword);
 
 // POST /auth/login
 router.post("/login", loginUser);
+
+// GET /auth/me
+router.get("/me", getMe);
 
 // GET /auth/invite/staff/validate?token=...
 import { validateStaffToken, setupStaffPassword, logoutUser } from "../controllers/authController.js";

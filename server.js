@@ -15,8 +15,12 @@ import tableSessionRoute from "./src/routes/table-session-route.js"
 import adminRoute from "./src/routes/admin-route.js"
 import authRoute from "./src/routes/auth-route.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
+import helmet from "helmet"
+import { sessionMiddleware } from "./src/config/session.js"
+import { connectSessionRedis } from "./src/config/sessionRedisClient.js"
 
 const app = express()
+app.set("trust proxy", 1) // required for secure cookies behind proxies like vercel
 const PORT = process.env.PORT || 5000
 
 // ⚠️ IMPORTANT: Webhook route must be registered BEFORE express.json()
@@ -35,8 +39,17 @@ app.get("/webhook/test", (req, res) => res.send("webhook endpoint reachable"))
 app.use("/webhook", webhookRoute)
 
 // Global middleware
+app.use(helmet())
 app.use(express.json())
-app.use(cors())
+
+// For cors logic update later, ensure credentials:true is present if needed. Default is * which blocks credentials.
+// Let's modify cors to explicitly allow credentials for dashboard frontends
+const origins = [
+  process.env.FRONTEND_BASE_URL || "http://localhost:3000",
+  "http://localhost:3001"
+];
+app.use(cors({ origin: origins, credentials: true }))
+app.use(sessionMiddleware)
 
 import menuRoute from "./src/routes/menu-route.js"
 import restaurantScopedRoute from "./src/routes/restaurant-scoped-route.js"
@@ -59,6 +72,7 @@ app.use(sseRoute)
 // Start server (DB first, then Redis bus, then HTTP)
 async function start() {
   await connectDB()
+  await connectSessionRedis()
   startRealtimeBus()
   app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`)

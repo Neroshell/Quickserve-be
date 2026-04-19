@@ -7,7 +7,10 @@ import {
     resolveWaiterCall,
 } from "../controllers/waiterCallController.js"
 
+import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+
 const router = express.Router()
+router.use(requireAuth, requireRole("waiter"))
 
 // Orders: GET /waiter?status=ready|placed|in_progress|all
 router.get("/", waiterOrders)

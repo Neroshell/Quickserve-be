@@ -23,7 +23,7 @@ export async function createWaiterCall(req, res) {
   try {
     const waiterId = getWaiterId(req) // can be empty for customer calls (that’s fine)
     const { tableNumber, reason = "", note = "" } = req.body || {}
-    const businessId = req.body?.businessId || req.body?.restaurantId
+    const businessId = req.session?.user?.businessId || req.body?.businessId || req.body?.restaurantId
 
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" })
@@ -69,7 +69,7 @@ export async function createWaiterCall(req, res) {
 export async function listWaiterCalls(req, res) {
   try {
     const { status = "active" } = req.query
-    const businessId = req.query.businessId || req.query.restaurantId
+    const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
 
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" })
@@ -109,7 +109,7 @@ export async function claimWaiterCall(req, res) {
     if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
 
     const { id } = req.params
-    const businessId = req.body.businessId || req.body.restaurantId
+    const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
 
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" })
@@ -163,7 +163,7 @@ export async function resolveWaiterCall(req, res) {
     if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
 
     const { id } = req.params
-    const businessId = req.body.businessId || req.body.restaurantId
+    const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
 
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" })

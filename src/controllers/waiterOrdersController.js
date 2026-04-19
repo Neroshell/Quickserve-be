@@ -30,7 +30,7 @@ export async function waiterOrders(req, res) {
         const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
 
         const status = String(req.query.status || "ready")
-        const businessId = req.query.businessId || req.query.restaurantId
+        const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
 
         if (!businessId) {
             return res.status(400).json({ error: "businessId is required" })

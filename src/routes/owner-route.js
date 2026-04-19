@@ -11,7 +11,10 @@ import {
     deleteWaiter
 } from "../controllers/staffController.js"
 
+import { requireAuth, requireOwner } from "../middleware/authMiddleware.js"
+
 const router = express.Router()
+router.use(requireAuth, requireOwner)
 
 // GET /owner/orders
 router.get("/orders", ownerOrders)

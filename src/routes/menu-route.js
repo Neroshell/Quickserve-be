@@ -7,21 +7,25 @@ import {
     toggleMenuItemAvailability
 } from "../controllers/menuController.js"
 
+import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+
 const router = express.Router()
+
+const requireManager = [requireAuth, requireRole("owner", "admin", "manager")]
 
 // GET /menu-items?businessId=...
 router.get("/", getMenuItems)
 
 // POST /menu-items
-router.post("/", createMenuItem)
+router.post("/", requireManager, createMenuItem)
 
 // PATCH /menu-items/:id
-router.patch("/:id", updateMenuItem)
+router.patch("/:id", requireManager, updateMenuItem)
 
 // DELETE /menu-items/:id
-router.delete("/:id", deleteMenuItem)
+router.delete("/:id", requireManager, deleteMenuItem)
 
 // PATCH /menu-items/:id/availability
-router.patch("/:id/availability", toggleMenuItemAvailability)
+router.patch("/:id/availability", requireManager, toggleMenuItemAvailability)
 
 export default router

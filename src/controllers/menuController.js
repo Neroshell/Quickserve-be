@@ -3,6 +3,7 @@ import MenuItem from "../models/menuItem.js"
 /** Accept businessId with fallback to legacy restaurantId */
 function resolveBusinessId(req) {
     return (
+        req.session?.user?.businessId ||
         req.query.businessId ||
         req.query.restaurantId ||
         req.body?.businessId ||
