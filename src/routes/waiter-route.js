@@ -1,5 +1,6 @@
 import express from "express"
 import { waiterOrders } from "../controllers/waiterOrdersController.js"
+import { updateOrderStatus } from "../controllers/kitchenController.js"
 import {
     createWaiterCall,
     listWaiterCalls,
@@ -14,6 +15,10 @@ router.use(requireAuth, requireRole("waiter"))
 
 // Orders: GET /waiter?status=ready|placed|in_progress|all
 router.get("/", waiterOrders)
+
+// Mark order as served (completed) — waiter action, not a kitchen action
+// PATCH /waiter/orders/:orderId/status
+router.patch("/orders/:orderId/status", updateOrderStatus)
 
 // router.get("/ready", waiterReadyOrders)
 

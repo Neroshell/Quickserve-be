@@ -1,4 +1,4 @@
-﻿import Business from "../models/Business.js";
+import Business from "../models/Business.js";
 import Staff from "../models/Staff.js";
 import bcrypt from "bcrypt";
 
@@ -280,28 +280,41 @@ export async function loginUser(req, res) {
  */
 export async function logoutUser(req, res) {
     try {
-        const { email, type } = req.body;
-
-        // Handle both legacy type=="waiter" and new type=="staff"
-        if ((type === "waiter" || type === "staff") && email) {
-            const staff = await Staff.findOne({ email });
-            if (staff) {
-                staff.presenceStatus = "offline";
-                staff.status = "offline"; // sync legacy field
-                await staff.save();
+        // Mark staff as offline if applicable
+        const sessionUser = req.session?.user;
+        if (sessionUser && (sessionUser.role === "waiter" || sessionUser.role === "staff" || sessionUser.role === "kitchen") && sessionUser.email) {
+            try {
+                const staff = await Staff.findOne({ email: sessionUser.email });
+                if (staff) {
+                    staff.presenceStatus = "offline";
+                    staff.status = "offline";
+                    await staff.save();
+                }
+            } catch (dbErr) {
+                console.error("Logout: failed to set presence offline:", dbErr.message);
+                // Non-fatal — continue with session destruction
             }
         }
 
-        return new Promise((resolve, reject) => {
-            req.session.destroy((err) => {
-                if (err) return reject(err);
-                res.clearCookie("qs_dashboard_session");
-                resolve(res.json({ message: "Logged out successfully" }));
+        // Destroy session — always clear the cookie even if this fails
+        try {
+            await new Promise((resolve, reject) => {
+                req.session.destroy((err) => {
+                    if (err) return reject(err);
+                    resolve();
+                });
             });
-        });
+        } catch (destroyErr) {
+            console.error("Logout: session.destroy error (non-fatal):", destroyErr.message);
+        }
+
+        res.clearCookie("qs_dashboard_session");
+        return res.json({ message: "Logged out successfully" });
     } catch (err) {
         console.error("Logout error:", err);
-        return res.status(500).json({ message: "Server error during logout" });
+        // Still attempt to clear cookie and return success to the client
+        res.clearCookie("qs_dashboard_session");
+        return res.json({ message: "Logged out" });
     }
 }
 
