@@ -5,7 +5,7 @@ import crypto from "crypto"
 import { sendInvitationEmail } from "../utils/emailService.js"
 
 function generateBusinessId() {
-    return `rest_${crypto.randomBytes(4).toString("hex")}`
+    return `rest_${crypto.randomBytes(7).toString("hex")}`
 }
 
 export async function getSettings(req, res) {
