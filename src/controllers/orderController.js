@@ -6,6 +6,7 @@ import MenuItem from "../models/menuItem.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { sendReceiptEmail } from "../utils/emailService.js"
+import ServicePoint from "../models/ServicePoint.js"
 
 /** Resolve businessId from request — accepts businessId or legacy restaurantId */
 function resolveBusinessId(req) {
@@ -37,6 +38,17 @@ export async function listOrders(req, res) {
     }
 
     const orders = await Order.find(filter).sort({ createdAt: -1 }).lean()
+    
+    // Hydrate table labels for service points
+    for (const order of orders) {
+      if (order.tableNumber && order.tableNumber.startsWith("sp_")) {
+        const sp = await ServicePoint.findOne({ servicePointId: order.tableNumber, businessId }).lean()
+        if (sp) {
+          order.tableLabel = sp.label || sp.code
+        }
+      }
+    }
+
     return res.json(orders)
   } catch (err) {
     console.error("List orders error:", err)
@@ -181,6 +193,14 @@ export async function getOrderById(req, res) {
 
     const order = await Order.findOne({ orderId, businessId }).lean()
     if (!order) return res.status(404).json({ message: "Order not found" })
+
+    // Hydrate display name
+    if (order.tableNumber && order.tableNumber.startsWith("sp_")) {
+      const sp = await ServicePoint.findOne({ servicePointId: order.tableNumber, businessId }).lean()
+      if (sp) {
+        order.tableLabel = sp.label || sp.code
+      }
+    }
 
     return res.json(order)
   } catch (err) {

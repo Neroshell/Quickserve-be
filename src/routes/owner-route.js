@@ -10,6 +10,13 @@ import {
     createWaiter,
     deleteWaiter
 } from "../controllers/staffController.js"
+import {
+    listServicePoints,
+    getServicePoint,
+    createServicePoint,
+    updateServicePoint,
+    toggleServicePoint,
+} from "../controllers/servicePointController.js"
 
 import { requireAuth, requireOwner } from "../middleware/authMiddleware.js"
 
@@ -49,5 +56,25 @@ router.post("/waiters", createWaiter)
 
 // DELETE /owner/waiters/:id?businessId=...
 router.delete("/waiters/:id", deleteWaiter)
+
+// ─── Service Point Management ─────────────────────────────────────────────────
+// businessId is always derived from the authenticated owner session — never from body/query
+
+// GET    /owner/service-points[?active=true|false]
+router.get("/service-points", listServicePoints)
+
+// POST   /owner/service-points
+// Body: { label, code?, capacity? }
+router.post("/service-points", createServicePoint)
+
+// GET    /owner/service-points/:servicePointId
+router.get("/service-points/:servicePointId", getServicePoint)
+
+// PATCH  /owner/service-points/:servicePointId
+// Body: { label?, code?, capacity? }
+router.patch("/service-points/:servicePointId", updateServicePoint)
+
+// PATCH  /owner/service-points/:servicePointId/toggle  — flip isActive
+router.patch("/service-points/:servicePointId/toggle", toggleServicePoint)
 
 export default router
