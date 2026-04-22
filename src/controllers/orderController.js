@@ -144,10 +144,15 @@ export async function createOrder(req, res) {
     // Use calculated total if possible, fallback to frontend total
     const finalTotal = calculatedTotal > 0 ? Number(calculatedTotal.toFixed(2)) : (Number(total) || 0)
 
+    // Resolve human-friendly label for display (stored once, no need to look up later)
+    const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId }).lean()
+    const tableLabel = sp?.label || sp?.code || tableNumber
+
     const saved = await Order.create({
       orderId,
       businessId,
       tableNumber,
+      tableLabel,
       orderType: finalOrderType,
       sessionId,
       items: enrichedItems,

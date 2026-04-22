@@ -107,6 +107,7 @@ export async function waiterOrders(req, res) {
                 restaurantId: o.businessId, // legacy alias
                 orderId: o.orderId,
                 tableNumber: o.tableNumber,
+                tableLabel: o.tableLabel || o.tableNumber,
                 orderType: o.orderType,
                 status: o.status,
                 createdAt: o.createdAt,

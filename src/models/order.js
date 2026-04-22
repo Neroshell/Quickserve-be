@@ -25,7 +25,8 @@ const OrderSchema = new mongoose.Schema(
   {
     orderId: { type: String, required: true, unique: true, index: true },
     businessId: { type: String, required: true, index: true },
-    tableNumber: { type: String, required: true, index: true },
+    tableNumber: { type: String, required: true, index: true }, // internal servicePointId — for routing/lookups only
+    tableLabel: { type: String, default: "" }, // human-friendly display label, e.g. "Table 12"
     orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in", index: true },
     sessionId: { type: String, index: true },
     status: { type: String, enum: ["placed", "in_progress", "ready", "completed"], default: "placed", index: true },

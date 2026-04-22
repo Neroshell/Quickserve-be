@@ -163,7 +163,8 @@ export async function ownerOrders(req, res) {
 
             return {
                 orderId: o.orderId,
-                tableNumber: o.tableNumber,
+             
+                tableLabel: o.tableLabel,
                 orderType: o.orderType,
                 status: o.status,
                 createdAt: o.createdAt,
