@@ -11,10 +11,11 @@ export const sessionMiddleware = session({
     secret: process.env.SESSION_SECRET || "fallback-secret-for-dev-quickserve",
     resave: false,
     saveUninitialized: false,
+    rolling: true, // 🟢 FIX: Refreshes the cookie & Redis TTL on every user activity
     cookie: {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production", // requires trust proxy in express
-        sameSite: "lax",
+        sameSite: "lax", // NOTE: change to "none" if frontend & backend are on completely different domains
         maxAge: 8 * 60 * 60 * 1000 // 8 hours
     }
 })
