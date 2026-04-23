@@ -109,6 +109,7 @@ export async function ownerOrders(req, res) {
                 _id: 0,
                 orderId: 1,
                 tableNumber: 1,
+                tableLabel: 1,
                 orderType: 1,
                 status: 1,
                 createdAt: 1,
