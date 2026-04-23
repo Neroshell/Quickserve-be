@@ -45,7 +45,9 @@ const StaffSchema = new mongoose.Schema({
     },
     passwordHash: { type: String },
     inviteToken: { type: String },
-    inviteTokenExpires: { type: Date }
+    inviteTokenExpires: { type: Date },
+    passwordResetToken: { type: String, index: true },
+    passwordResetExpires: { type: Date },
 }, { timestamps: true })
 
 // Unified staffId must be unique per business

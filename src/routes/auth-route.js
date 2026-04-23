@@ -1,5 +1,5 @@
 import express from "express";
-import { validateInviteToken, setupOwnerPassword, loginUser, getMe } from "../controllers/authController.js";
+import { validateInviteToken, setupOwnerPassword, loginUser, getMe, requestPasswordReset, resetPassword } from "../controllers/authController.js";
 
 const router = express.Router();
 
@@ -24,5 +24,11 @@ router.post("/invite/staff/setup-password", setupStaffPassword);
 
 // POST /auth/logout
 router.post("/logout", logoutUser);
+
+// POST /auth/forgot-password
+router.post("/forgot-password", requestPasswordReset);
+
+// POST /auth/reset-password
+router.post("/reset-password", resetPassword);
 
 export default router;

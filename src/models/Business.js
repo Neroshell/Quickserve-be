@@ -110,6 +110,8 @@ const BusinessSchema = new mongoose.Schema({
     ownerPasswordHash: { type: String },
     inviteToken: { type: String, index: true },
     inviteTokenExpires: { type: Date },
+    passwordResetToken: { type: String, index: true },
+    passwordResetExpires: { type: Date },
     operatingHours: { type: OperatingHoursSchema, default: () => ({}) },
     // Legacy fields for backward compatibility
     orderingPreferences: { type: OrderingPreferencesSchema, default: () => ({}) },

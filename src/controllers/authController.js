@@ -1,6 +1,8 @@
 import Business from "../models/Business.js";
 import Staff from "../models/Staff.js";
 import bcrypt from "bcrypt";
+import crypto from "crypto";
+import { sendPasswordResetEmail } from "../utils/emailService.js";
 
 /**
  * Validate an invitation token
@@ -339,5 +341,122 @@ export async function getMe(req, res) {
     } catch (err) {
         console.error("GetMe error:", err);
         return res.status(500).json({ message: "Server error retrieving session state" });
+    }
+}
+
+/**
+ * Request a password reset email
+ * POST /auth/forgot-password
+ */
+export async function requestPasswordReset(req, res) {
+    try {
+        const { email } = req.body;
+        
+        if (!email) {
+            return res.status(400).json({ message: "Email is required" });
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+        
+        // Find user by email (Owner first)
+        let user = await Business.findOne({ ownerEmail: normalizedEmail });
+        let userType = "owner";
+        let userName = user ? user.ownerName : null;
+
+        // If not owner, try Staff
+        if (!user) {
+            user = await Staff.findOne({ email: normalizedEmail });
+            userType = "staff";
+            userName = user ? user.name : null;
+        }
+
+        // Always return success immediately to prevent email enumeration attacks
+        res.json({ message: "If an account exists, a reset link has been sent." });
+
+        if (!user) return; // Stop processing, but client already got success response
+
+        // Generate token
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        const resetTokenExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+        // Save token to correct model
+        if (userType === "owner") {
+            user.passwordResetToken = resetToken;
+            user.passwordResetExpires = resetTokenExpires;
+            await user.save();
+        } else {
+            user.passwordResetToken = resetToken;
+            user.passwordResetExpires = resetTokenExpires;
+            await user.save();
+        }
+
+        // Send Email
+        const resetLink = `${process.env.FRONTEND_BASE_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+        await sendPasswordResetEmail(normalizedEmail, userName, resetLink);
+
+    } catch (err) {
+        console.error("Forgot password error:", err);
+        // Do not fail the client request for security and UX purposes if we've already responded
+        if (!res.headersSent) {
+            return res.status(500).json({ message: "Server error processing request" });
+        }
+    }
+}
+
+/**
+ * Reset password using token
+ * POST /auth/reset-password
+ */
+export async function resetPassword(req, res) {
+    try {
+        const { token, password } = req.body;
+
+        if (!token || !password) {
+            return res.status(400).json({ message: "Token and new password are required" });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({ message: "Password must be at least 6 characters long" });
+        }
+
+        // Try to find the user with the valid token
+        let user = await Business.findOne({
+            passwordResetToken: token,
+            passwordResetExpires: { $gt: new Date() }
+        });
+        let userType = "owner";
+
+        if (!user) {
+            user = await Staff.findOne({
+                passwordResetToken: token,
+                passwordResetExpires: { $gt: new Date() }
+            });
+            userType = "staff";
+        }
+
+        if (!user) {
+            return res.status(400).json({ message: "Token is invalid or has expired." });
+        }
+
+        const saltRounds = 10;
+        const passwordHash = await bcrypt.hash(password, saltRounds);
+
+        if (userType === "owner") {
+            user.ownerPasswordHash = passwordHash;
+            user.passwordResetToken = undefined;
+            user.passwordResetExpires = undefined;
+            await user.save();
+        } else {
+            user.passwordHash = passwordHash;
+            user.passwordResetToken = undefined;
+            user.passwordResetExpires = undefined;
+            await user.save();
+        }
+
+        return res.json({ message: "Password has been successfully reset. You can now log in." });
+
+    } catch (err) {
+        console.error("Reset password error:", err);
+        return res.status(500).json({ message: "Server error resetting password" });
     }
 }
