@@ -8,7 +8,7 @@ export const sessionMiddleware = session({
         prefix: "qs:sess:" 
     }),
     name: "qs_dashboard_session",
-    secret: process.env.SESSION_SECRET || "fallback-secret-for-dev-quickserve",
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     rolling: true, // 🟢 FIX: Refreshes the cookie & Redis TTL on every user activity

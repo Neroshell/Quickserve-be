@@ -94,7 +94,8 @@ export async function ownerOrders(req, res) {
         // If we strictly want search DB-side we can implement it, OR we fetch the array and the frontend trims. 
         // Frontend search is generally fine for <1000 orders/day, but doing it backend scales better. (Regex on orderId/tableNumber).
         if (search) {
-            const searchRegex = new RegExp(search, "i")
+            const escapeRegex = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const searchRegex = new RegExp(escapeRegex(search), "i")
             filter.$or = [
                 { orderId: { $regex: searchRegex } },
                 { tableNumber: { $regex: searchRegex } }

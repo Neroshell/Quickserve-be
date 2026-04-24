@@ -1,7 +1,16 @@
 import express from "express";
+import rateLimit from "express-rate-limit";
 import { validateInviteToken, setupOwnerPassword, loginUser, getMe, requestPasswordReset, resetPassword } from "../controllers/authController.js";
 
 const router = express.Router();
+
+const authLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 10, // Limit each IP to 10 requests per minute
+  message: { message: "Too many requests. Please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // GET /auth/invite/validate?token=...
 router.get("/invite/validate", validateInviteToken);
@@ -10,7 +19,7 @@ router.get("/invite/validate", validateInviteToken);
 router.post("/invite/setup-password", setupOwnerPassword);
 
 // POST /auth/login
-router.post("/login", loginUser);
+router.post("/login", authLimiter, loginUser);
 
 // GET /auth/me
 router.get("/me", getMe);
@@ -26,9 +35,9 @@ router.post("/invite/staff/setup-password", setupStaffPassword);
 router.post("/logout", logoutUser);
 
 // POST /auth/forgot-password
-router.post("/forgot-password", requestPasswordReset);
+router.post("/forgot-password", authLimiter, requestPasswordReset);
 
 // POST /auth/reset-password
-router.post("/reset-password", resetPassword);
+router.post("/reset-password", authLimiter, resetPassword);
 
 export default router;

@@ -95,6 +95,11 @@ export async function setupOwnerPassword(req, res) {
             return res.status(400).json({ message: "Token and password are required" });
         }
 
+        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+        if (!passwordRegex.test(password)) {
+            return res.status(400).json({ message: "Password must be at least 8 characters long, and contain at least one uppercase letter, one lowercase letter, and one number." });
+        }
+
         const business = await Business.findOne({
             inviteToken: token,
             inviteTokenExpires: { $gt: new Date() },
@@ -132,6 +137,11 @@ export async function setupStaffPassword(req, res) {
 
         if (!token || !password) {
             return res.status(400).json({ message: "Token and password are required" });
+        }
+
+        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+        if (!passwordRegex.test(password)) {
+            return res.status(400).json({ message: "Password must be at least 8 characters long, and contain at least one uppercase letter, one lowercase letter, and one number." });
         }
 
         const staff = await Staff.findOne({
@@ -415,8 +425,9 @@ export async function resetPassword(req, res) {
             return res.status(400).json({ message: "Token and new password are required" });
         }
 
-        if (password.length < 6) {
-            return res.status(400).json({ message: "Password must be at least 6 characters long" });
+        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+        if (!passwordRegex.test(password)) {
+            return res.status(400).json({ message: "Password must be at least 8 characters long, and contain at least one uppercase letter, one lowercase letter, and one number." });
         }
 
         // Try to find the user with the valid token

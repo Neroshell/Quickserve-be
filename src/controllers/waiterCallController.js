@@ -131,8 +131,8 @@ export async function claimWaiterCall(req, res) {
     const waiterId = getWaiterId(req)
     if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
 
-    const staffName = req.header("X-WAITER-NAME") || "Staff Member"
-    const staffId = req.header("X-WAITER-STAFF-ID") || waiterId
+    const staffName = req.session?.user?.name || "Staff Member"
+    const staffId = req.session?.user?.staffId || req.session?.user?.id || waiterId
 
     const { id } = req.params
     const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
@@ -190,8 +190,8 @@ export async function resolveWaiterCall(req, res) {
     const waiterId = getWaiterId(req)
     if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
 
-    const staffName = req.header("X-WAITER-NAME") || "Staff Member"
-    const staffId = req.header("X-WAITER-STAFF-ID") || waiterId
+    const staffName = req.session?.user?.name || "Staff Member"
+    const staffId = req.session?.user?.staffId || req.session?.user?.id || waiterId
 
     const { id } = req.params
     const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId

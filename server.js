@@ -18,6 +18,7 @@ import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 import helmet from "helmet"
 import { sessionMiddleware } from "./src/config/session.js"
 import { connectSessionRedis } from "./src/config/sessionRedisClient.js"
+import rateLimit from "express-rate-limit"
 
 const app = express()
 app.set("trust proxy", 1) // required for secure cookies behind proxies like vercel
@@ -41,6 +42,14 @@ app.use("/webhook", webhookRoute)
 // Global middleware
 app.use(helmet())
 app.use(express.json())
+
+const globalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 100, // Limit each IP to 200 requests per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+app.use(globalLimiter)
 
 // For cors logic update later, ensure credentials:true is present if needed. Default is * which blocks credentials.
 // Let's modify cors to explicitly allow credentials for dashboard frontends
@@ -69,6 +78,12 @@ app.use("/admin", adminRoute)
 app.use("/auth", authRoute)
 app.use(sseRoute)
 
+// Global error handler to swallow 500 stack traces and prevent information leakage (CWE-209)
+app.use((err, req, res, next) => {
+  console.error("[Unhandled Error Captured]", err);
+  res.status(500).json({ error: "Internal Server Error" });
+});
+
 // Start server (DB first, then Redis bus, then HTTP)
 async function start() {
   await connectDB()
@@ -80,4 +95,7 @@ async function start() {
 }
 
 start()
+
+
+
 
