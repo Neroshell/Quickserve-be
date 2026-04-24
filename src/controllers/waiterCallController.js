@@ -1,4 +1,5 @@
 import WaiterCall from "../models/WaiterCall.js"
+import ServicePoint from "../models/ServicePoint.js"
 import { publishEvent } from "../utils/sseManager.js"
 
 /**
@@ -22,7 +23,7 @@ function getRelativeTime(date) {
 export async function createWaiterCall(req, res) {
   try {
     const waiterId = getWaiterId(req) // can be empty for customer calls (that’s fine)
-    const { tableNumber, reason = "", note = "" } = req.body || {}
+    const { tableNumber, tableLabel = "", tableCode = "", reason = "", note = "" } = req.body || {}
     const businessId = req.session?.user?.businessId || req.body?.businessId || req.body?.restaurantId
 
     if (!businessId) {
@@ -48,9 +49,31 @@ export async function createWaiterCall(req, res) {
       })
     }
 
+    // Resolve Service Point dynamically on creation to store labels statically
+    let finalTableLabel = String(tableLabel).trim()
+    let finalTableCode = String(tableCode).trim()
+    
+    if (!finalTableLabel || !finalTableCode) {
+      const spCondition = tableNumber.startsWith('sp_') 
+        ? { servicePointId: tableNumber } 
+        : { _id: tableNumber };
+
+      const sp = await ServicePoint.findOne({ 
+        businessId, 
+        ...spCondition
+      }).lean()
+      
+      if (sp) {
+        finalTableLabel = sp.label || finalTableLabel
+        finalTableCode = sp.code || finalTableCode
+      }
+    }
+
     const call = await WaiterCall.create({
       businessId,
       tableNumber: String(tableNumber).trim(),
+      tableLabel: finalTableLabel,
+      tableCode: finalTableCode,
       reason: String(reason || "").trim(),
       note: String(note || "").trim(),
       status: "pending",
@@ -108,6 +131,9 @@ export async function claimWaiterCall(req, res) {
     const waiterId = getWaiterId(req)
     if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
 
+    const staffName = req.header("X-WAITER-NAME") || "Staff Member"
+    const staffId = req.header("X-WAITER-STAFF-ID") || waiterId
+
     const { id } = req.params
     const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
 
@@ -129,6 +155,8 @@ export async function claimWaiterCall(req, res) {
           status: "acknowledged",
           claimedBy: waiterId,
           claimedAt: now,
+          acknowledgedByStaffId: staffId,
+          acknowledgedByName: staffName,
         },
       },
       { new: true },
@@ -162,6 +190,9 @@ export async function resolveWaiterCall(req, res) {
     const waiterId = getWaiterId(req)
     if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
 
+    const staffName = req.header("X-WAITER-NAME") || "Staff Member"
+    const staffId = req.header("X-WAITER-STAFF-ID") || waiterId
+
     const { id } = req.params
     const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
 
@@ -183,6 +214,8 @@ export async function resolveWaiterCall(req, res) {
         $set: {
           status: "resolved",
           resolvedBy: waiterId,
+          resolvedByStaffId: staffId,
+          resolvedByName: staffName,
           resolvedAt: now,
           // If it was pending and resolved directly, mark who handled it
           claimedBy: waiterId,

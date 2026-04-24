@@ -4,6 +4,8 @@ const WaiterCallSchema = new mongoose.Schema(
   {
     businessId: { type: String, required: true, index: true },
     tableNumber: { type: String, required: true, index: true },
+    tableLabel: { type: String, default: "" },
+    tableCode: { type: String, default: "" },
 
     // Optional metadata (future-proof)
     reason: { type: String, default: "" },
@@ -19,8 +21,13 @@ const WaiterCallSchema = new mongoose.Schema(
     // Multi-waiter ownership fields
     claimedBy: { type: String, default: null, index: true }, // waiter userId later, deviceId now
     claimedAt: { type: Date, default: null },
+    
+    acknowledgedByStaffId: { type: String, default: null },
+    acknowledgedByName: { type: String, default: null },
 
     resolvedBy: { type: String, default: null, index: true },
+    resolvedByStaffId: { type: String, default: null },
+    resolvedByName: { type: String, default: null },
     resolvedAt: { type: Date, default: null },
 
     // who created it (customer calls usually null)
