@@ -1,7 +1,7 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
 import TableSession from "../models/TableSession.js"
-
+import ServicePoint from "../models/ServicePoint.js"
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
 
@@ -230,11 +230,24 @@ export async function getTableSessionsOverview(req, res) {
             }
         ])
 
+        const tableIds = sessions.map(s => s._id)
+        
+        const servicePoints = await ServicePoint.find(
+            { servicePointId: { $in: tableIds } }, 
+            "servicePointId label"
+        ).lean()
+
+        const labelMap = {}
+        for (const sp of servicePoints) {
+            labelMap[sp.servicePointId] = sp.label
+        }
+
         const activeSessionsNow = sessions.reduce((acc, curr) => acc + curr.activeDevices, 0)
         const activeTablesNow = sessions.length
         
         const tables = sessions.map(s => ({
             tableNumber: s._id,
+            label: labelMap[s._id] || s._id,
             activeDevices: s.activeDevices
         }))
 
