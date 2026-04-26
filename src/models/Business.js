@@ -59,6 +59,7 @@ const BusinessSchema = new mongoose.Schema({
     currency: { type: String, default: "USD" },
     timezone: { type: String, default: "America/New_York" },
     logoUrl: { type: String, default: "" },
+    logoPublicId: { type: String, default: "" },
     country: { type: String, default: "" },
     taxRate: { type: Number, default: 0, min: 0 },
     businessType: {

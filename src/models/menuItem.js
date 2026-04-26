@@ -17,6 +17,7 @@ const MenuItemSchema = new mongoose.Schema({
     },
     description: { type: String, default: "", maxlength: 70 },
     imageUrl: { type: String, default: "" },
+    imagePublicId: { type: String, default: "" },
     isAvailable: { type: Boolean, default: true }
 }, { timestamps: true })
 

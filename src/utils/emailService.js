@@ -18,7 +18,7 @@ export async function sendReceiptEmail(order, email) {
        return false;
     }
 
-    const subject = `Your QuickServe Receipt - Order #${order.orderId.substring(0, 8).toUpperCase()}`;
+    const subject = `Your QuickServe Receipt - Order #${order.orderId}`;
     console.log(`[EmailService] Subject formed: ${subject}`);
 
     const formattedDate = new Date().toLocaleDateString("en-GB", {
@@ -95,7 +95,7 @@ export async function sendReceiptEmail(order, email) {
           Your receipt
         </h2>
         <p style="margin: 0 0 22px; font-size: 14px; line-height: 1.6; color: #64748b;">
-          Here is a summary of your QuickServe order.
+          Here is a summary of your order.
         </p>
 
         <!-- Order meta -->
@@ -106,7 +106,7 @@ export async function sendReceiptEmail(order, email) {
                 Order Number
               </td>
               <td style="padding: 4px 0; text-align: right; font-size: 14px; font-weight: 700; color: #0f172a;">
-                #${order.orderId.substring(0, 8).toUpperCase()}
+                #${order.orderId}
               </td>
             </tr>
             <tr>
@@ -117,14 +117,14 @@ export async function sendReceiptEmail(order, email) {
                 ${formattedDate}
               </td>
             </tr>
-            ${order.tableNumber
+            ${order.tableLabel || order.tableNumber
         ? `
             <tr>
               <td style="padding: 4px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8;">
-                Table
+                Service Point
               </td>
               <td style="padding: 4px 0; text-align: right; font-size: 14px; font-weight: 600; color: #0f172a;">
-                Table ${order.tableNumber}
+                ${order.tableLabel || order.tableNumber}
               </td>
             </tr>
             `
