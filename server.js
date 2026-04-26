@@ -12,6 +12,7 @@ import webhookRoute from "./src/routes/webhook-route.js"
 import ownerRoute from "./src/routes/owner-route.js"
 import restaurantRoute from "./src/routes/restaurant-route.js"
 import tableSessionRoute from "./src/routes/table-session-route.js"
+import barRoute from "./src/routes/bar-route.js"
 import adminRoute from "./src/routes/admin-route.js"
 import authRoute from "./src/routes/auth-route.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
@@ -69,6 +70,7 @@ app.use("/businesses/:businessId/orders", restaurantScopedRoute)
 app.use("/payments", paymentRoute)
 app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)
+app.use("/bar", barRoute)
 app.use("/waiter", waiterRoute)
 app.use("/owner", ownerRoute)
 app.use("/menu-items", menuRoute)

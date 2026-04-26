@@ -7,6 +7,8 @@ import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { sendReceiptEmail } from "../utils/emailService.js"
 import ServicePoint from "../models/ServicePoint.js"
+import Business from "../models/Business.js"
+import { isBusinessOpen } from "../utils/operatingHours.js"
 
 /** Resolve businessId from request — accepts businessId or legacy restaurantId */
 function resolveBusinessId(req) {
@@ -106,11 +108,28 @@ export async function createOrder(req, res) {
       return res.status(403).json({ message: "This table session is already in use on another device." })
     }
 
-    const now = new Date()
-    const orderId = generateOrderId(tableNumber, now)
-
     // Get businessId from req body — accept businessId or legacy restaurantId
     const businessId = resolveBusinessId(req) || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
+
+    // ✅ CRITICAL GATE: Business Open/Closed logic
+    const business = await Business.findOne({
+      $or: [{ businessId }, { restaurantId: businessId }],
+    }).lean()
+
+    const openStatus = isBusinessOpen(business)
+    if (!openStatus.isOpen) {
+      return res.status(403).json({
+        error: `We are closed now. You can't place orders. We will open ${openStatus.nextOpeningTime}.`
+      })
+    }
+
+    // Resolve human-friendly label for display (stored once, no need to look up later)
+    const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId }).lean()
+    const tableLabel = sp?.label || sp?.code || tableNumber
+    const tableCode = sp?.code || sp?.label || tableNumber
+
+    const now = new Date()
+    const orderId = generateOrderId(tableCode, now)
 
     // Enrich items with category and unitPrice from DB (authoritative)
     let calculatedTotal = 0
@@ -144,10 +163,6 @@ export async function createOrder(req, res) {
     // Use calculated total if possible, fallback to frontend total
     const finalTotal = calculatedTotal > 0 ? Number(calculatedTotal.toFixed(2)) : (Number(total) || 0)
 
-    // Resolve human-friendly label for display (stored once, no need to look up later)
-    const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId }).lean()
-    const tableLabel = sp?.label || sp?.code || tableNumber
-
     const saved = await Order.create({
       orderId,
       businessId,
@@ -169,6 +184,7 @@ export async function createOrder(req, res) {
 
     // --- SSE via Redis pub/sub ---
     const foodItems = saved.items.filter(i => i.type === "food")
+    const drinkItems = saved.items.filter(i => i.type === "drinks")
 
     // 1. Kitchen: food items only
     if (foodItems.length > 0) {
@@ -176,7 +192,13 @@ export async function createOrder(req, res) {
       await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO })
     }
 
-    // 2. Waiter + table: full order
+    // 2. Bar: drink items only
+    if (drinkItems.length > 0) {
+      const barDTO = { ...orderDTO, items: drinkItems }
+      await publishEvent("order_created", businessId, ["bar"], { order: barDTO })
+    }
+
+    // 3. Waiter + table: full order
     await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
 
     return res.status(201).json({ orderId: saved.orderId, businessId: saved.businessId, status: saved.status })
@@ -328,12 +350,20 @@ export async function markPaid(req, res) {
 
     const orderDTO = toOrderDTO(order)
 
-    // Broadcast via Redis — kitchen gets food-only, waiters get full order
+    // Broadcast via Redis — kitchen gets food-only, bar gets drinks-only, waiters get full order
     const foodItems2 = order.items.filter(i => i.type === "food")
+    const drinkItems2 = order.items.filter(i => i.type === "drinks")
+    
     if (foodItems2.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems2 }
       await publishEvent("order_updated", order.businessId, ["kitchen"], { order: kitchenDTO })
     }
+    
+    if (drinkItems2.length > 0) {
+      const barDTO = { ...orderDTO, items: drinkItems2 }
+      await publishEvent("order_updated", order.businessId, ["bar"], { order: barDTO })
+    }
+
     await publishEvent("order_updated", order.businessId, ["waiter", "table", "anon"], { order: orderDTO })
 
     // ✅ Step 3: Respond immediately — do NOT wait for email

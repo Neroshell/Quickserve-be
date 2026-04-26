@@ -147,11 +147,18 @@ export async function updateOrderStatus(req, res) {
 
     // --- SSE via Redis pub/sub ---
     const foodItems = order.items.filter(i => i.category === "food" || i.type === "food")
+    const drinkItems = order.items.filter(i => i.type === "drinks")
 
     // Kitchen: food items only
     if (foodItems.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems }
       await publishEvent("order_updated", order.businessId, ["kitchen"], { order: kitchenDTO })
+    }
+
+    // Bar: drink items only
+    if (drinkItems.length > 0) {
+      const barDTO = { ...orderDTO, items: drinkItems }
+      await publishEvent("order_updated", order.businessId, ["bar"], { order: barDTO })
     }
 
     // Waiter + table: full order

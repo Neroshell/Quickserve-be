@@ -2,7 +2,7 @@ import Staff from "../models/Staff.js"
 import crypto from "crypto"
 import { sendStaffInvitationEmail } from "../utils/emailService.js"
 
-const ALLOWED_ROLES = ["waiter", "kitchen", "manager"]
+const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -126,10 +126,10 @@ export async function createStaff(req, res) {
             staffId = staffId.trim().toUpperCase()
         }
 
-        // Validate staffId format (must start with STF, WTR, KIT, or MGR)
-        if (!/^(STF|WTR|KIT|MGR)-[A-Z0-9]{4,}$/i.test(staffId)) {
+        // Validate staffId format (must start with STF, WTR, KIT, BAR, or MGR)
+        if (!/^(STF|WTR|KIT|BAR|MGR)-[A-Z0-9]{4,}$/i.test(staffId)) {
             return res.status(400).json({
-                error: "staffId must follow the format WTR-XXXX, KIT-XXXX, MGR-XXXX, or STF-XXXX."
+                error: "staffId must follow the format WTR-XXXX, KIT-XXXX, BAR-XXXX, MGR-XXXX, or STF-XXXX."
             })
         }
 
