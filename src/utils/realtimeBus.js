@@ -37,18 +37,18 @@ export function startRealtimeBus() {
             return
         }
 
-        const { event, restaurantId, targets, payload } = msg
+        const { event, businessId, targets, payload } = msg
 
-        if (!event || !restaurantId || !payload) {
+        if (!event || !businessId || !payload) {
             console.warn("[RealtimeBus] ⚠️ Received malformed message — missing required fields:", msg)
             return
         }
 
         console.log(
-            `[RealtimeBus] 📨 Received event=${event} restaurantId=${restaurantId} targets=${JSON.stringify(targets ?? "all")}`
+            `[RealtimeBus] 📨 Received event=${event} businessId=${businessId} targets=${JSON.stringify(targets ?? "all")}`
         )
 
-        broadcastLocal({ event, restaurantId, targets: targets ?? null, payload })
+        broadcastLocal({ event, businessId, targets: targets ?? null, payload })
     })
 
     redisSub.on("error", (err) => {

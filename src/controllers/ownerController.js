@@ -1,7 +1,7 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
 import TableSession from "../models/TableSession.js"
-
+import ServicePoint from "../models/ServicePoint.js"
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
 
@@ -25,10 +25,11 @@ function getBusinessDayRange() {
 // GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...
 export async function ownerOrders(req, res) {
     try {
-        const { range = "today", from, to, status = "all", search = "", restaurantId } = req.query
+        const { range = "today", from, to, status = "all", search = "" } = req.query
+        const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "restaurantId is required" })
+        if (!businessId) {
+            return res.status(400).json({ error: "businessId is required" })
         }
 
         let startDateJS, endDateJS
@@ -77,7 +78,7 @@ export async function ownerOrders(req, res) {
 
         // 2. Build MongoDB Query
         const filter = {
-            restaurantId,
+            businessId,
             createdAt: { $gte: startDateJS, $lt: endDateJS },
         }
 
@@ -93,7 +94,8 @@ export async function ownerOrders(req, res) {
         // If we strictly want search DB-side we can implement it, OR we fetch the array and the frontend trims. 
         // Frontend search is generally fine for <1000 orders/day, but doing it backend scales better. (Regex on orderId/tableNumber).
         if (search) {
-            const searchRegex = new RegExp(search, "i")
+            const escapeRegex = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const searchRegex = new RegExp(escapeRegex(search), "i")
             filter.$or = [
                 { orderId: { $regex: searchRegex } },
                 { tableNumber: { $regex: searchRegex } }
@@ -108,6 +110,7 @@ export async function ownerOrders(req, res) {
                 _id: 0,
                 orderId: 1,
                 tableNumber: 1,
+                tableLabel: 1,
                 orderType: 1,
                 status: 1,
                 createdAt: 1,
@@ -120,6 +123,7 @@ export async function ownerOrders(req, res) {
                 paymentStatus: 1,
                 paidVia: 1,
                 receiptEmail: 1,
+                completedBy: 1,
             }
         )
             .sort({ updatedAt: -1, createdAt: -1 })
@@ -128,7 +132,7 @@ export async function ownerOrders(req, res) {
         // 4. Calculate Status Counts across the ACTIVE date range
         // Note: Counts ignore the current 'status' or 'search' filter so UI tabs show total accurate pool volume
         const countsFilter = {
-            restaurantId,
+            businessId,
             createdAt: { $gte: startDateJS, $lt: endDateJS },
             status: { $in: WAITER_STATUSES }
         }
@@ -161,7 +165,8 @@ export async function ownerOrders(req, res) {
 
             return {
                 orderId: o.orderId,
-                tableNumber: o.tableNumber,
+             
+                tableLabel: o.tableLabel,
                 orderType: o.orderType,
                 status: o.status,
                 createdAt: o.createdAt,
@@ -182,6 +187,7 @@ export async function ownerOrders(req, res) {
                 notes: specialRequest,
                 total: o.total,
                 currency: o.currency || "EUR",
+                completedBy: o.completedBy || null,
             }
         })
 
@@ -199,14 +205,14 @@ export async function ownerOrders(req, res) {
 
 export async function getTableSessionsOverview(req, res) {
     try {
-        const restaurantId = req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
+        const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
 
         const now = new Date()
 
         const sessions = await TableSession.aggregate([
             {
                 $match: {
-                    restaurantId,
+                    businessId,
                     expiresAt: { $gt: now }
                 }
             },
@@ -224,11 +230,24 @@ export async function getTableSessionsOverview(req, res) {
             }
         ])
 
+        const tableIds = sessions.map(s => s._id)
+        
+        const servicePoints = await ServicePoint.find(
+            { servicePointId: { $in: tableIds } }, 
+            "servicePointId label"
+        ).lean()
+
+        const labelMap = {}
+        for (const sp of servicePoints) {
+            labelMap[sp.servicePointId] = sp.label
+        }
+
         const activeSessionsNow = sessions.reduce((acc, curr) => acc + curr.activeDevices, 0)
         const activeTablesNow = sessions.length
         
         const tables = sessions.map(s => ({
             tableNumber: s._id,
+            label: labelMap[s._id] || s._id,
             activeDevices: s.activeDevices
         }))
 
@@ -246,10 +265,11 @@ export async function getTableSessionsOverview(req, res) {
 // GET /owner/analytics?range=today|yesterday|7days|thisMonth|custom&from=...&to=...
 export async function ownerAnalytics(req, res) {
     try {
-        const { range = "today", from, to, restaurantId } = req.query
+        const { range = "today", from, to } = req.query
+        const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
 
-        if (!restaurantId) {
-            return res.status(400).json({ error: "restaurantId is required" })
+        if (!businessId) {
+            return res.status(400).json({ error: "businessId is required" })
         }
 
         let startDateJS, endDateJS
@@ -296,7 +316,7 @@ export async function ownerAnalytics(req, res) {
 
         // 2. Fetch Base Orders
         const orders = await Order.find({
-            restaurantId,
+            businessId,
             createdAt: { $gte: startDateJS, $lt: endDateJS }
         }).lean()
 

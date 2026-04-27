@@ -25,7 +25,8 @@ export function toOrderDTO(orderDoc) {
 
     return {
         orderId: o.orderId,
-        tableNumber: o.tableNumber,
+        tableNumber: o.tableNumber, // kept for internal reference only
+        tableLabel: o.tableLabel || o.tableNumber, // display this — falls back to systemId for legacy orders
         orderType: o.orderType || "dine-in",
         status: o.status,
         createdAt: o.createdAt,
@@ -37,6 +38,7 @@ export function toOrderDTO(orderDoc) {
         paymentChannel: o.paymentChannel || "offline",
         paymentStatus: o.paymentStatus || "unpaid",
         paidVia: o.paidVia || null,
+        completedBy: o.completedBy || null,
         items: (o.items || []).map((it) => ({
             itemName: it.itemName,
             quantity: it.quantity,

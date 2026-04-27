@@ -23,7 +23,7 @@ const PendingItemSchema = new mongoose.Schema(
 
 const PendingCheckoutSchema = new mongoose.Schema(
     {
-        restaurantId: { type: String, required: true },
+        businessId: { type: String, required: true },
         orderId: { type: String, required: true },
         tableNumber: { type: String, required: true },
         orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in" },
@@ -36,6 +36,14 @@ const PendingCheckoutSchema = new mongoose.Schema(
         // Stripe reference
         stripeSessionId: { type: String, default: null },
 
+        // Stripe Connect split metadata — populated at checkout session creation
+        stripePaymentIntentId:    { type: String, default: null },
+        stripeConnectedAccountId: { type: String, default: null },
+        platformFeeAmount:        { type: Number, default: null }, // cents
+        platformFeePercent:       { type: Number, default: null }, // e.g. 2.0
+        grossAmount:              { type: Number, default: null }, // cents
+        netToBusinessAmount:      { type: Number, default: null }, // cents
+
         // TTL: auto-delete abandoned checkouts after 1 hour
         expiresAt: {
             type: Date,
@@ -47,4 +55,4 @@ const PendingCheckoutSchema = new mongoose.Schema(
 
 PendingCheckoutSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
 
-export default mongoose.model("PendingCheckout", PendingCheckoutSchema)
+export default mongoose.models.PendingCheckout || mongoose.model("PendingCheckout", PendingCheckoutSchema)

@@ -2,7 +2,7 @@ import mongoose from "mongoose"
 
 const TableSessionSchema = new mongoose.Schema(
   {
-    restaurantId: { type: String, required: true, index: true },
+    businessId: { type: String, required: true, index: true },
     tableId: { type: String, required: true, index: true },
     token: { type: String, required: true, unique: true, index: true },
 
@@ -18,4 +18,4 @@ const TableSessionSchema = new mongoose.Schema(
 // TTL index (Mongo deletes docs when expiresAt < now)
 TableSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
 
-export default mongoose.model("TableSession", TableSessionSchema)
+export default mongoose.models.TableSession || mongoose.model("TableSession", TableSessionSchema)

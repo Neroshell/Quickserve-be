@@ -1,7 +1,7 @@
 import mongoose from "mongoose"
 
 const MenuItemSchema = new mongoose.Schema({
-    restaurantId: { type: String, required: true, index: true },
+    businessId: { type: String, required: true, index: true },
     name: { type: String, required: true, maxlength: 30 },
     price: { type: Number, required: true },
     category: {
@@ -17,7 +17,8 @@ const MenuItemSchema = new mongoose.Schema({
     },
     description: { type: String, default: "", maxlength: 70 },
     imageUrl: { type: String, default: "" },
+    imagePublicId: { type: String, default: "" },
     isAvailable: { type: Boolean, default: true }
 }, { timestamps: true })
 
-export default mongoose.model("MenuItem", MenuItemSchema)
+export default mongoose.models.MenuItem || mongoose.model("MenuItem", MenuItemSchema)

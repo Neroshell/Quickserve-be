@@ -5,7 +5,7 @@ import { getOrderById, updateOrderStatus, markPaid, sendReceipt, saveReceiptEmai
 const router = express.Router({ mergeParams: true })
 
 /**
- * Scoped Routes: /restaurants/:restaurantId/orders/...
+ * Scoped Routes: /businesses/:businessId/orders/...
  */
 
 router.get("/:orderId", getOrderById)

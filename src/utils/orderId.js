@@ -20,6 +20,7 @@ function rand4() {
   return String(num).padStart(4, "0")
 }
 
-export function generateOrderId(tableNumber, now = new Date()) {
-  return `QS-${ddmmyy(now)}-T${tableNumber}-${hhmmss(now)}-${rand4()}`
+export function generateOrderId(tableRef, now = new Date()) {
+  const cleanId = String(tableRef || "00").replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
+  return `QS-${ddmmyy(now)}-${cleanId}-${hhmmss(now)}-${rand4()}`
 }

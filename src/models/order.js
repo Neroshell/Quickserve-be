@@ -24,8 +24,9 @@ const OrderItemSchema = new mongoose.Schema(
 const OrderSchema = new mongoose.Schema(
   {
     orderId: { type: String, required: true, unique: true, index: true },
-    restaurantId: { type: String, required: true, index: true },
-    tableNumber: { type: String, required: true, index: true },
+    businessId: { type: String, required: true, index: true },
+    tableNumber: { type: String, required: true, index: true }, // internal servicePointId — for routing/lookups only
+    tableLabel: { type: String, default: "" }, // human-friendly display label, e.g. "Table 12"
     orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in", index: true },
     sessionId: { type: String, index: true },
     status: { type: String, enum: ["placed", "in_progress", "ready", "completed"], default: "placed", index: true },
@@ -59,13 +60,25 @@ const OrderSchema = new mongoose.Schema(
     stripeSessionId: { type: String, default: null },
     stripeCheckoutUrl: { type: String, default: null },
 
+    // Stripe Connect split metadata — copied from PendingCheckout via webhook
+    stripePaymentIntentId:    { type: String, default: null },
+    stripeConnectedAccountId: { type: String, default: null },
+    platformFeeAmount:        { type: Number, default: null }, // cents
+    platformFeePercent:       { type: Number, default: null }, // e.g. 2.0
+    grossAmount:              { type: Number, default: null }, // cents
+    netToBusinessAmount:      { type: Number, default: null }, // cents
+
     // Receipt details
     receiptEmail: { type: String, default: null },
+    receiptSent:  { type: Boolean, default: false },
+
+    // Staff attribution
+    completedBy: { type: String, default: null },
   },
   { timestamps: true },
 )
 
-OrderSchema.index({ restaurantId: 1, orderId: 1 }, { unique: true })
+OrderSchema.index({ businessId: 1, orderId: 1 }, { unique: true })
 
 
-export default mongoose.model("Order", OrderSchema)
+export default mongoose.models.Order || mongoose.model("Order", OrderSchema)

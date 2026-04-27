@@ -1,40 +1,69 @@
 import express from "express"
 import crypto from "crypto"
 import TableSession from "../models/TableSession.js"
-import Restaurant from "../models/Restaurant.js"
+import Business from "../models/Business.js"
+import ServicePoint from "../models/ServicePoint.js"
 
 const router = express.Router()
 
 function randomToken() {
-  // URL-safe token
   return crypto.randomBytes(24).toString("base64url")
 }
 
-// POST /table-session/start
+/**
+ * POST /table-session/start
+ *
+ * Called by the frontend QR intercept page after scan.
+ * Accepts both servicePointId (new) and tableId (legacy) for backward compat.
+ */
 router.post("/start", async (req, res) => {
   try {
-    const { restaurantId, tableId } = req.body
+    // Accept servicePointId as the preferred field; fall back to tableId or restaurantId patterns
+    const businessId = req.body.businessId || req.body.restaurantId
+    const tableId = req.body.servicePointId || req.body.tableId
+
+    if (!businessId || !tableId) {
+      return res.status(400).json({ error: "Missing businessId or servicePointId" })
+    }
+
+    // 1. Validate business exists
+    const business = await Business.findOne({
+      $or: [{ businessId }, { restaurantId: businessId }],
+    })
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+
+    let label = null
+    let code = null
     
-    if (!restaurantId || !tableId) {
-      return res.status(400).json({ error: "Missing restaurantId or tableId" })
+    // 2. If this is a managed service point (sp_* prefix), validate it
+    if (tableId.startsWith("sp_")) {
+      const sp = await ServicePoint.findOne({ servicePointId: tableId, businessId })
+      if (!sp) {
+        return res.status(404).json({ error: "Service point not found" })
+      }
+      if (!sp.isActive) {
+        return res.status(400).json({
+          error: `This ${sp.servicePointType === "room" ? "room" : "table"} is currently not in service.`,
+        })
+      }
+      label = sp.label
+      code = sp.code
     }
 
-    // Validate that the restaurant actually exists
-    const restaurant = await Restaurant.findOne({ restaurantId })
-    if (!restaurant) {
-      return res.status(404).json({ error: "Restaurant not found" })
-    }
-
+    // 3. Create session
     const token = randomToken()
-    // Session length ideally comes from restaurant settings (e.g. `restaurant.settings.service.sessionExpiryMinutes`).
-    // Using a default fallback of 120 minutes for now to match old behavior.
     const fallbackMinutes = 120
-    const expiryMinutes = restaurant?.settings?.service?.sessionExpiryMinutes || fallbackMinutes
+    const expiryMinutes =
+      business?.tablePreferences?.sessionExpiryMinutes ||
+      business?.settings?.service?.sessionExpiryMinutes ||
+      fallbackMinutes
     const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000)
 
     await TableSession.create({
-      restaurantId,
-      tableId,
+      businessId,
+      tableId,   // stores servicePointId — backward compat field name
       token,
       expiresAt,
       boundSessionId: null,
@@ -43,8 +72,11 @@ router.post("/start", async (req, res) => {
     return res.json({
       token,
       expiresAt,
-      restaurantId,
-      tableId
+      businessId,
+      tableId,          // kept for legacy consumers
+      servicePointId: tableId,  // also expose as servicePointId
+      label,
+      code,
     })
   } catch (err) {
     console.error("Table session start error:", err)

@@ -1,24 +1,24 @@
-import Restaurant from "../models/Restaurant.js"
+import Business from "../models/Business.js"
 import Order from "../models/order.js"
 import Plan from "../models/Plan.js"
 import crypto from "crypto"
 import { sendInvitationEmail } from "../utils/emailService.js"
 
 function generateBusinessId() {
-    return `rest_${crypto.randomBytes(4).toString("hex")}`
+    return `rest_${crypto.randomBytes(7).toString("hex")}`
 }
 
 export async function getSettings(req, res) {
     try {
         const businessId = req.query.businessId || req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
 
-        let restaurant = await Restaurant.findOne({ businessId })
+        const business = await Business.findOne({ businessId })
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json(restaurant)
+        return res.json(business)
     } catch (err) {
         console.error("Get settings error:", err)
         return res.status(500).json({ message: "Server error" })
@@ -53,23 +53,23 @@ export async function updateSettings(req, res) {
                 return res.status(400).json({ message: "Slug must be between 3 and 40 characters" })
             }
 
-            const existing = await Restaurant.findOne({ slug: updates.slug, businessId: { $ne: businessId } })
+            const existing = await Business.findOne({ slug: updates.slug, businessId: { $ne: businessId } })
             if (existing) {
                 return res.status(400).json({ message: "Slug already in use" })
             }
         }
 
-        const restaurant = await Restaurant.findOneAndUpdate(
+        const business = await Business.findOneAndUpdate(
             { businessId },
             { $set: updateObj },
             { new: true, runValidators: true }
         )
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json(restaurant)
+        return res.json(business)
     } catch (err) {
         console.error("Update settings error:", err)
         return res.status(500).json({ message: "Server error" })
@@ -85,17 +85,17 @@ export async function updateOperatingHours(req, res) {
             return res.status(400).json({ message: "businessId and operatingHours are required" })
         }
 
-        const restaurant = await Restaurant.findOneAndUpdate(
+        const business = await Business.findOneAndUpdate(
             { businessId },
             { $set: { operatingHours } },
             { new: true, runValidators: true }
         )
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json(restaurant)
+        return res.json(business)
     } catch (err) {
         console.error("Update operating hours error:", err)
         return res.status(500).json({ message: "Server error" })
@@ -120,17 +120,17 @@ export async function updateOrderingPreferences(req, res) {
         if (typeof hideOutOfStockItems === "boolean") safePrefs["orderingPreferences.hideOutOfStockItems"] = hideOutOfStockItems
         if (typeof qrOrderingEnabled === "boolean") safePrefs["orderingPreferences.qrOrderingEnabled"] = qrOrderingEnabled
 
-        const restaurant = await Restaurant.findOneAndUpdate(
+        const business = await Business.findOneAndUpdate(
             { businessId },
             { $set: safePrefs },
             { new: true, runValidators: true }
         )
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json({ orderingPreferences: restaurant.orderingPreferences })
+        return res.json({ orderingPreferences: business.orderingPreferences })
     } catch (err) {
         console.error("Update ordering preferences error:", err)
         return res.status(500).json({ message: "Server error" })
@@ -153,17 +153,17 @@ export async function updatePaymentPreferences(req, res) {
         if (typeof acceptCash === "boolean") safePrefs["paymentPreferences.acceptCash"] = acceptCash
         if (typeof acceptPosCard === "boolean") safePrefs["paymentPreferences.acceptPosCard"] = acceptPosCard
 
-        const restaurant = await Restaurant.findOneAndUpdate(
+        const business = await Business.findOneAndUpdate(
             { businessId },
             { $set: safePrefs },
             { new: true, runValidators: true }
         )
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json({ paymentPreferences: restaurant.paymentPreferences })
+        return res.json({ paymentPreferences: business.paymentPreferences })
     } catch (err) {
         console.error("Update payment preferences error:", err)
         return res.status(500).json({ message: "Server error" })
@@ -194,17 +194,17 @@ export async function updateTablePreferences(req, res) {
              return res.status(400).json({ message: "maxActiveSessionsPerTable must be a positive number" })
         }
 
-        const restaurant = await Restaurant.findOneAndUpdate(
+        const business = await Business.findOneAndUpdate(
             { businessId },
             { $set: safePrefs },
             { new: true, runValidators: true }
         )
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json({ tablePreferences: restaurant.tablePreferences })
+        return res.json({ tablePreferences: business.tablePreferences })
     } catch (err) {
         console.error("Update table preferences error:", err)
         return res.status(500).json({ message: "Server error" })
@@ -214,7 +214,7 @@ export async function updateTablePreferences(req, res) {
 const VALID_BUSINESS_TYPES = ["restaurant", "bar_lounge", "hotel_apartment"]
 const VALID_PLANS = ["basic", "starter", "growth", "enterprise"]
 
-export async function createRestaurant(req, res) {
+export async function createBusiness(req, res) {
     try {
         const {
             name,
@@ -255,14 +255,14 @@ export async function createRestaurant(req, res) {
             return res.status(400).json({ message: "Slug: lowercase, letters, numbers, hyphens only" })
         }
 
-        const existingSlug = await Restaurant.findOne({ slug })
+        const existingSlug = await Business.findOne({ slug })
         if (existingSlug) {
             return res.status(400).json({ message: "Slug already in use" })
         }
 
         const businessId = generateBusinessId()
 
-        const restaurant = await Restaurant.create({
+        const business = await Business.create({
             businessId,
             restaurantId: businessId, // legacy alias stored in DB for existing integrations
             name,
@@ -291,17 +291,17 @@ export async function createRestaurant(req, res) {
             status: "draft"
         })
 
-        return res.status(201).json(restaurant)
+        return res.status(201).json(business)
     } catch (err) {
         if (err.code === 11000) {
             const field = Object.keys(err.keyPattern || {})[0]
             if (field === "slug") {
-                return res.status(400).json({ message: "A restaurant with this slug already exists. Please choose a different slug." })
+                return res.status(400).json({ message: "A business with this slug already exists. Please choose a different slug." })
             }
             return res.status(400).json({ message: "Duplicate entry error" })
         }
-        console.error("Create restaurant error:", err)
-        return res.status(500).json({ message: "Server error creating restaurant" })
+        console.error("Create business error:", err)
+        return res.status(500).json({ message: "Server error creating business" })
     }
 }
 
@@ -314,18 +314,18 @@ export async function createAdminOwner(req, res) {
             return res.status(400).json({ message: "Missing required fields (businessId, ownerName, ownerEmail)" })
         }
 
-        const restaurant = await Restaurant.findOne({ businessId })
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        const business = await Business.findOne({ businessId })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        if (restaurant.ownerEmail) {
-            return res.status(400).json({ message: "This restaurant already has an owner assigned" })
+        if (business.ownerEmail) {
+            return res.status(400).json({ message: "This business already has an owner assigned" })
         }
 
-        // Check for existing owner account across all restaurants
+        // Check for existing owner account across all businesses
         const normalizedOwnerEmail = ownerEmail.trim().toLowerCase()
-        const existingOwner = await Restaurant.findOne({ ownerEmail: normalizedOwnerEmail })
+        const existingOwner = await Business.findOne({ ownerEmail: normalizedOwnerEmail })
         if (existingOwner) {
             return res.status(409).json({ message: "An owner account with this email already exists." })
         }
@@ -333,7 +333,7 @@ export async function createAdminOwner(req, res) {
         const inviteToken = crypto.randomBytes(32).toString("hex")
         const inviteTokenExpires = new Date(Date.now() + 48 * 60 * 60 * 1000) // 48 hours
 
-        const updatedRestaurant = await Restaurant.findOneAndUpdate(
+        const updatedBusiness = await Business.findOneAndUpdate(
             { businessId },
             { 
                 $set: { 
@@ -349,27 +349,27 @@ export async function createAdminOwner(req, res) {
 
         // Send invitation email in background
         const inviteLink = `${process.env.FRONTEND_BASE_URL || 'http://localhost:3000'}/setup-account?token=${inviteToken}`
-        sendInvitationEmail(updatedRestaurant, inviteLink).catch(err => {
+        sendInvitationEmail(updatedBusiness, inviteLink).catch(err => {
             console.error(`[createAdminOwner] Failed to send invitation email to ${ownerEmail}:`, err)
         })
 
-        return res.status(201).json(updatedRestaurant)
+        return res.status(201).json(updatedBusiness)
     } catch (err) {
         console.error("Create admin owner error:", err)
         return res.status(500).json({ message: "Server error creating owner" })
     }
 }
 
-export async function getAdminRestaurants(req, res) {
+export async function getAdminBusinesses(req, res) {
     try {
-        const restaurants = await Restaurant.find().populate("planId").lean()
+        const businesses = await Business.find().populate("planId").lean()
 
-        const enrichedRestaurants = await Promise.all(restaurants.map(async (rest) => {
+        const enrichedBusinesses = await Promise.all(businesses.map(async (biz) => {
             // Aggregate metrics from orders
             const stats = await Order.aggregate([
                 { 
                     $match: { 
-                        $or: [{ businessId: rest.businessId }, { restaurantId: rest.restaurantId }],
+                        $or: [{ businessId: biz.businessId }, { restaurantId: biz.restaurantId }],
                         paymentStatus: "paid"
                     } 
                 },
@@ -383,20 +383,20 @@ export async function getAdminRestaurants(req, res) {
                 }
             ])
 
-            const metrics = stats[0] || { totalSales: 0, lastOrderDate: rest.createdAt, count: 0 }
+            const metrics = stats[0] || { totalSales: 0, lastOrderDate: biz.createdAt, count: 0 }
             
             // Calculate commission based on assigned plan or default to 10%
-            const commissionRate = rest.planId?.commissionPercentage ?? 10
+            const commissionRate = biz.planId?.commissionPercentage ?? 10
             const commission = metrics.totalSales * (commissionRate / 100)
 
             return {
-                ...rest,
+                ...biz,
                 owner: {
-                    id: rest._id,
-                    name: rest.ownerName || "Unknown",
-                    email: rest.ownerEmail || "Unknown",
+                    id: biz._id,
+                    name: biz.ownerName || "Unknown",
+                    email: biz.ownerEmail || "Unknown",
                     status: "active",
-                    createdAt: rest.createdAt
+                    createdAt: biz.createdAt
                 },
                 businessMetrics: {
                     totalSales: metrics.totalSales,
@@ -406,27 +406,26 @@ export async function getAdminRestaurants(req, res) {
             }
         }))
 
-        return res.json(enrichedRestaurants)
+        return res.json(enrichedBusinesses)
     } catch (err) {
-        console.error("Get admin restaurants error:", err)
-        return res.status(500).json({ message: "Server error fetching restaurants" })
+        console.error("Get admin businesses error:", err)
+        return res.status(500).json({ message: "Server error fetching businesses" })
     }
 }
 
 export async function getAdminOwners(req, res) {
     try {
-        const restaurants = await Restaurant.find().lean()
+        const businesses = await Business.find().lean()
 
-        // Extract owners from restaurants
-        // In the current schema, each restaurant has one owner (ownerName, ownerEmail)
-        const owners = restaurants.map(rest => ({
-            id: rest._id,
-            name: rest.ownerName || "Unknown",
-            email: rest.ownerEmail || "Unknown",
+        // Each business has one owner (ownerName, ownerEmail)
+        const owners = businesses.map(biz => ({
+            id: biz._id,
+            name: biz.ownerName || "Unknown",
+            email: biz.ownerEmail || "Unknown",
             status: "active",
-            createdAt: rest.createdAt,
-            businessId: rest.businessId,
-            restaurantName: rest.displayName
+            createdAt: biz.createdAt,
+            businessId: biz.businessId,
+            businessName: biz.displayName
         }))
 
         return res.json(owners)
@@ -436,20 +435,20 @@ export async function getAdminOwners(req, res) {
     }
 }
 
-export async function getAdminRestaurantById(req, res) {
+export async function getAdminBusinessById(req, res) {
     try {
         const { businessId: paramId } = req.params
-        const restaurant = await Restaurant.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] }).populate("planId").lean()
+        const business = await Business.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] }).populate("planId").lean()
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
         // Aggregate metrics from orders
         const stats = await Order.aggregate([
             { 
                 $match: { 
-                    $or: [{ businessId: restaurant.businessId }, { restaurantId: restaurant.restaurantId }],
+                    $or: [{ businessId: business.businessId }, { restaurantId: business.restaurantId }],
                     paymentStatus: "paid"
                 } 
             },
@@ -463,20 +462,20 @@ export async function getAdminRestaurantById(req, res) {
             }
         ])
 
-        const metrics = stats[0] || { totalSales: 0, lastOrderDate: restaurant.createdAt, count: 0 }
+        const metrics = stats[0] || { totalSales: 0, lastOrderDate: business.createdAt, count: 0 }
         
         // Calculate commission based on assigned plan or default to 10%
-        const commissionRate = restaurant.planId?.commissionPercentage ?? 10
+        const commissionRate = business.planId?.commissionPercentage ?? 10
         const commission = metrics.totalSales * (commissionRate / 100)
 
-        const enrichedRestaurant = {
-            ...restaurant,
+        const enrichedBusiness = {
+            ...business,
             owner: {
-                id: restaurant._id,
-                name: restaurant.ownerName || "Unknown",
-                email: restaurant.ownerEmail || "Unknown",
+                id: business._id,
+                name: business.ownerName || "Unknown",
+                email: business.ownerEmail || "Unknown",
                 status: "active",
-                createdAt: restaurant.createdAt
+                createdAt: business.createdAt
             },
             businessMetrics: {
                 totalSales: metrics.totalSales,
@@ -485,43 +484,43 @@ export async function getAdminRestaurantById(req, res) {
             }
         }
 
-        return res.json(enrichedRestaurant)
+        return res.json(enrichedBusiness)
     } catch (err) {
-        console.error("Get restaurant by ID error:", err)
-        return res.status(500).json({ message: "Server error fetching restaurant" })
+        console.error("Get business by ID error:", err)
+        return res.status(500).json({ message: "Server error fetching business" })
     }
 }
 
-export async function updateAdminRestaurant(req, res) {
+export async function updateAdminBusiness(req, res) {
     try {
         const { businessId: paramId } = req.params
         const updateData = req.body
 
-        const restaurant = await Restaurant.findOneAndUpdate(
+        const business = await Business.findOneAndUpdate(
             { $or: [{ businessId: paramId }, { restaurantId: paramId }] },
             { $set: updateData },
             { new: true }
         )
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json(restaurant)
+        return res.json(business)
     } catch (err) {
-        console.error("Update restaurant error:", err)
-        return res.status(500).json({ message: "Server error updating restaurant" })
+        console.error("Update business error:", err)
+        return res.status(500).json({ message: "Server error updating business" })
     }
 }
 
 export async function getAdminDashboardStats(req, res) {
     try {
-        // 1. Restaurant Status & Plan Distribution
-        const [restaurants, plans] = await Promise.all([
-            Restaurant.find().lean(),
+        // 1. Business Status & Plan Distribution
+        const [businesses, plans] = await Promise.all([
+            Business.find().lean(),
             Plan.find({ isActive: true }).lean()
         ])
-        const totalRestaurants = restaurants.length
+        const totalBusinesses = businesses.length
         
         const statsByStatus = {
             active: 0,
@@ -539,13 +538,13 @@ export async function getAdminDashboardStats(req, res) {
         const thirtyDaysAgo = new Date()
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
         
-        let newRestaurants = 0
+        let newBusinesses = 0
         
-        restaurants.forEach(r => {
-            if (statsByStatus.hasOwnProperty(r.status)) statsByStatus[r.status]++
+        businesses.forEach(b => {
+            if (statsByStatus.hasOwnProperty(b.status)) statsByStatus[b.status]++
             
-            // Increment plan stat - handle both string plan name and potential missing plans
-            const planKey = r.plan?.toLowerCase() || "basic"
+            // Increment plan stat
+            const planKey = b.plan?.toLowerCase() || "basic"
             if (statsByPlan.hasOwnProperty(planKey)) {
                 statsByPlan[planKey]++
             } else if (!statsByPlan[planKey] && plans.length > 0) {
@@ -554,11 +553,10 @@ export async function getAdminDashboardStats(req, res) {
                 statsByPlan["other"]++
             }
             
-            if (new Date(r.createdAt) > thirtyDaysAgo) newRestaurants++
+            if (new Date(b.createdAt) > thirtyDaysAgo) newBusinesses++
         })
 
         // 2. Executive KPIs & Platform Performance
-        // Aggregate all paid orders for revenue
         const orderStats = await Order.aggregate([
             { 
                 $facet: {
@@ -600,11 +598,11 @@ export async function getAdminDashboardStats(req, res) {
         
         // Enrich top businesses with display names
         const topByRevenueData = orderStats[0].byBusiness
-        const businessIds = topByRevenueData.map(item => item._id)
-        const topRestaurantDocs = await Restaurant.find({ businessId: { $in: businessIds } }).lean()
+        const topBusinessIds = topByRevenueData.map(item => item._id)
+        const topBusinessDocs = await Business.find({ businessId: { $in: topBusinessIds } }).lean()
         
         const enrichedTopByRevenue = topByRevenueData.map(item => {
-            const doc = topRestaurantDocs.find(d => d.businessId === item._id)
+            const doc = topBusinessDocs.find(d => d.businessId === item._id)
             return {
                 businessId: item._id,
                 displayName: doc?.displayName || "Unknown",
@@ -617,22 +615,26 @@ export async function getAdminDashboardStats(req, res) {
         const topByOrders = [...enrichedTopByRevenue].sort((a, b) => b.orders - a.orders).slice(0, 5)
         const topByRevenue = enrichedTopByRevenue.slice(0, 5)
 
-        // Calculate zero orders in last 30 days
+        // Calculate businesses with zero orders in last 30 days
         const activeBusinessIdsWithOrders = new Set(orderStats[0].zeroOrders30d.map(item => item._id))
-        const zeroOrders30dCount = restaurants.filter(r => 
-            r.status === "active" && !activeBusinessIdsWithOrders.has(r.businessId)
+        const zeroOrders30dCount = businesses.filter(b => 
+            b.status === "active" && !activeBusinessIdsWithOrders.has(b.businessId)
         ).length
 
         const dashboardData = {
             totalRevenue: totals.totalRevenue,
             totalOrders: totalOrders,
             totalTransactions: totals.totalTransactions,
-            activeRestaurants: statsByStatus.active,
-            newRestaurants: newRestaurants,
-            totalRestaurants: totalRestaurants,
+            activeRestaurants: statsByStatus.active,   // kept for admin frontend compat
+            newRestaurants: newBusinesses,              // kept for admin frontend compat
+            totalRestaurants: totalBusinesses,          // kept for admin frontend compat
             draftRestaurants: statsByStatus.draft,
             suspendedRestaurants: statsByStatus.suspended,
             archivedRestaurants: statsByStatus.archived,
+            // Also expose with businessId-canonical names
+            activeBusinesses: statsByStatus.active,
+            newBusinesses: newBusinesses,
+            totalBusinesses: totalBusinesses,
             byPlan: statsByPlan,
             topByRevenue: topByRevenue,
             topByOrders: topByOrders,
@@ -653,14 +655,14 @@ export async function getCategories(req, res) {
             return res.status(400).json({ message: "businessId is required" })
         }
 
-        const restaurant = await Restaurant.findOne({ businessId })
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        const business = await Business.findOne({ businessId })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
         // Return menuCategories array or default if not set
-        return res.json(restaurant.menuCategories && restaurant.menuCategories.length > 0 
-            ? restaurant.menuCategories 
+        return res.json(business.menuCategories && business.menuCategories.length > 0 
+            ? business.menuCategories 
             : ["appetizers", "mains", "desserts", "beverages"])
     } catch (err) {
         console.error("Get categories error:", err)
@@ -682,17 +684,17 @@ export async function addCategory(req, res) {
             return res.status(400).json({ message: "Invalid category" })
         }
 
-        const restaurant = await Restaurant.findOneAndUpdate(
+        const business = await Business.findOneAndUpdate(
             { businessId },
             { $addToSet: { menuCategories: trimmedCategory } },
             { new: true }
         )
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json(restaurant.menuCategories)
+        return res.json(business.menuCategories)
     } catch (err) {
         console.error("Add category error:", err)
         return res.status(500).json({ message: "Server error adding category" })
@@ -715,24 +717,24 @@ export async function removeCategory(req, res) {
             return res.status(400).json({ message: "Cannot delete default categories" })
         }
 
-        const restaurant = await Restaurant.findOneAndUpdate(
+        const business = await Business.findOneAndUpdate(
             { businessId },
             { $pull: { menuCategories: trimmedCategory } },
             { new: true }
         )
 
-        if (!restaurant) {
-            return res.status(404).json({ message: "Restaurant not found" })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json(restaurant.menuCategories)
+        return res.json(business.menuCategories)
     } catch (err) {
         console.error("Remove category error:", err)
         return res.status(500).json({ message: "Server error removing category" })
     }
 }
 
-export async function deleteAdminRestaurant(req, res) {
+export async function deleteAdminBusiness(req, res) {
     try {
         const { businessId: paramId } = req.params;
 
@@ -740,15 +742,15 @@ export async function deleteAdminRestaurant(req, res) {
             return res.status(400).json({ message: "Business ID is required" });
         }
 
-        const deletedRestaurant = await Restaurant.findOneAndDelete({ $or: [{ businessId: paramId }, { restaurantId: paramId }] });
+        const deletedBusiness = await Business.findOneAndDelete({ $or: [{ businessId: paramId }, { restaurantId: paramId }] });
 
-        if (!deletedRestaurant) {
-            return res.status(404).json({ message: "Restaurant not found" });
+        if (!deletedBusiness) {
+            return res.status(404).json({ message: "Business not found" });
         }
 
-        return res.json({ message: "Restaurant successfully deleted", businessId: paramId });
+        return res.json({ message: "Business successfully deleted", businessId: paramId });
     } catch (err) {
-        console.error("Delete administration restaurant error:", err);
-        return res.status(500).json({ message: "Server error deleting restaurant" });
+        console.error("Delete business error:", err);
+        return res.status(500).json({ message: "Server error deleting business" });
     }
 }

@@ -1,5 +1,6 @@
 import express from "express"
 import { waiterOrders } from "../controllers/waiterOrdersController.js"
+import { updateOrderStatus } from "../controllers/kitchenController.js"
 import {
     createWaiterCall,
     listWaiterCalls,
@@ -7,17 +8,30 @@ import {
     resolveWaiterCall,
 } from "../controllers/waiterCallController.js"
 
+import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+
 const router = express.Router()
 
-// Orders: GET /waiter?status=ready|placed|in_progress|all
+// ==========================================
+// OPEN ROUTES (used by table/customer devices)
+// ==========================================
+
+// Calls access
+router.get("/calls", listWaiterCalls)   // Polled by customer table app
+router.post("/calls", createWaiterCall) // Created by customer table app
+
+
+// ==========================================
+// PROTECTED ROUTES (waiter role required)
+// ==========================================
+router.use(requireAuth, requireRole("waiter"))
+
+// Orders
 router.get("/", waiterOrders)
+router.patch("/orders/:orderId/status", updateOrderStatus)
 
-// router.get("/ready", waiterReadyOrders)
-
-// Calls
-router.get("/calls", listWaiterCalls) // /waiter/calls?status=active|pending|acknowledged|resolved
-router.post("/calls", createWaiterCall) // customer/table hits this
-router.patch("/calls/:id/claim", claimWaiterCall) // waiter
-router.patch("/calls/:id/resolve", resolveWaiterCall) // waiter
+// Calls actions
+router.patch("/calls/:id/claim", claimWaiterCall)
+router.patch("/calls/:id/resolve", resolveWaiterCall)
 
 export default router
