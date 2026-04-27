@@ -27,7 +27,6 @@ export async function handleStripeWebhook(req, res) {
 
     try {
         if (event.type === "account.updated") {
-            // Stripe Connect: keep business Stripe status fields in sync
             const account = event.data.object;
             const chargesEnabled = account.charges_enabled === true;
             const payoutsEnabled = account.payouts_enabled === true;
@@ -41,88 +40,56 @@ export async function handleStripeWebhook(req, res) {
                 }
             );
 
-            console.log(
-                `[stripeWebhook] account.updated — id=${account.id}, charges=${chargesEnabled}, payouts=${payoutsEnabled}`
-            );
             return res.status(200).send();
         }
 
         if (event.type !== "checkout.session.completed") {
-            console.log(`[stripeWebhook] Ignoring event type: ${event.type}`);
             return res.status(200).send();
         }
 
         const session = event.data.object;
-        console.log("[stripeWebhook] Session ID:", session.id);
-        console.log("[stripeWebhook] Metadata:", JSON.stringify(session.metadata || {}));
-
         const { pendingCheckoutId } = session.metadata || {};
 
         if (!pendingCheckoutId) {
-            console.error("[stripeWebhook] No pendingCheckoutId in metadata");
+            console.error("[webhook] checkout.session.completed missing pendingCheckoutId in metadata");
             return res.status(200).send();
         }
 
         const pending = await PendingCheckout.findById(pendingCheckoutId);
 
         if (!pending) {
-            console.error(`[stripeWebhook] PendingCheckout not found: ${pendingCheckoutId}`);
+            console.error(`[webhook] PendingCheckout not found: ${pendingCheckoutId}`);
             return res.status(200).send();
         }
 
         if (!pending.businessId) {
-            console.error(`[stripeWebhook] PendingCheckout missing businessId: ${pendingCheckoutId}`);
+            console.error(`[webhook] PendingCheckout missing businessId: ${pendingCheckoutId}`);
             return res.status(200).send();
         }
-
-        console.log(
-            `[stripeWebhook] PendingCheckout found — businessId=${pending.businessId}, table=${pending.tableNumber}, items=${pending.items.length}`
-        );
 
         const businessId = pending.businessId;
         const orderId = pending.orderId || generateOrderId(pending.tableNumber);
 
-        // Idempotency guard:
-        // if Stripe retries the webhook, do not create duplicate orders
+        // Idempotency guard — do not create duplicate orders on Stripe retry
         let order = await Order.findOne({ businessId, orderId });
 
         if (order) {
-            console.log(
-                `[stripeWebhook] Order already exists for businessId=${businessId}, orderId=${orderId}`
-            );
-
-            // Retry receipt email if it wasn't sent yet
+            // Re-attempt receipt email if not yet sent
             const customerEmail = pending.receiptEmail || session.customer_details?.email || null;
             if (customerEmail && !order.receiptSent) {
-                console.log(`[stripeWebhook] Retrying receipt email to ${customerEmail} (idempotency fallback)`);
                 try {
                     const emailSent = await sendReceiptEmail(order, customerEmail);
                     if (emailSent) {
-                        await Order.findOneAndUpdate(
-                            { businessId, orderId },
-                            { receiptSent: true }
-                        );
-                        console.log(`[stripeWebhook] Receipt sent to ${customerEmail}`);
+                        await Order.findOneAndUpdate({ businessId, orderId }, { receiptSent: true });
                     }
                 } catch (err) {
-                    console.error("[stripeWebhook] Error sending receipt (fallback):", err);
+                    console.error("[webhook] Receipt retry error:", err.message);
                 }
             }
         } else {
-            const hasFood = pending.items.some(
-                (i) => i.category === "food" || i.type === "food"
-            );
+            const hasFood = pending.items.some((i) => i.category === "food" || i.type === "food");
             const initialStatus = hasFood ? "placed" : "ready";
-            
-            console.log(`[stripeWebhook] Resolving customerEmail...`);
-            console.log(`[stripeWebhook] pending.receiptEmail:`, pending.receiptEmail);
-            console.log(`[stripeWebhook] session.customer_details?.email:`, session.customer_details?.email);
-            console.log(`[stripeWebhook] session.customer_email:`, session.customer_email);
-            
-            const customerEmail =
-                pending.receiptEmail || session.customer_details?.email || null;
-            
-            console.log(`[stripeWebhook] Final customerEmail resolved to:`, customerEmail);
+            const customerEmail = pending.receiptEmail || session.customer_details?.email || null;
 
             order = await Order.create({
                 businessId,
@@ -139,8 +106,7 @@ export async function handleStripeWebhook(req, res) {
                 paidVia: "online_card",
                 stripeSessionId: pending.stripeSessionId || session.id,
 
-                // Stripe Connect split metadata — resolve intent ID from pending (set at
-                // checkout creation) or fall back to the live session field
+                // Stripe Connect split metadata
                 stripePaymentIntentId:    pending.stripePaymentIntentId || session.payment_intent || null,
                 stripeConnectedAccountId: pending.stripeConnectedAccountId || null,
                 platformFeeAmount:        pending.platformFeeAmount   ?? null,
@@ -152,52 +118,33 @@ export async function handleStripeWebhook(req, res) {
                 receiptSent: false,
             });
 
-            console.log(
-                `[stripeWebhook] Order created: ${orderId} for businessId=${businessId}`
-            );
-            console.log(`[stripeWebhook] Created order receiptEmail: ${order.receiptEmail}, receiptSent: ${order.receiptSent}`);
+            console.log(`[webhook] Order created: orderId=${orderId}, businessId=${businessId}`);
 
             if (customerEmail) {
-                console.log(`[stripeWebhook] Calling sendReceiptEmail for ${customerEmail} on order ${order.orderId}`);
                 try {
                     const emailSent = await sendReceiptEmail(order, customerEmail);
-                    console.log(`[stripeWebhook] sendReceiptEmail resolved with: ${emailSent}`);
                     if (emailSent) {
-                        await Order.findOneAndUpdate(
-                            { businessId, orderId },
-                            { receiptSent: true }
-                        );
-                        console.log(`[stripeWebhook] Document updated: receiptSent set to true for ${order.orderId}`);
+                        await Order.findOneAndUpdate({ businessId, orderId }, { receiptSent: true });
                     } else {
-                        console.error(`[stripeWebhook] sendReceiptEmail returned false for ${order.orderId}. Not updating receiptSent.`);
+                        console.error(`[webhook] Receipt email failed for orderId=${orderId}`);
                     }
                 } catch (err) {
-                    console.error("[stripeWebhook] Error in sendReceiptEmail execution block:", err);
+                    console.error("[webhook] Receipt email error:", err.message);
                 }
-            } else {
-                console.log(`[stripeWebhook] Skipping sendReceiptEmail because customerEmail is falsy`);
             }
 
             const orderDTO = toOrderDTO(order);
+            const foodItems = order.items.filter((i) => i.category === "food" || i.type === "food");
 
-            const foodItems = order.items.filter(
-                (i) => i.category === "food" || i.type === "food"
-            );
-
-            // Publish via Redis so ALL instances deliver to their connected SSE clients
             if (foodItems.length > 0) {
                 const kitchenDTO = { ...orderDTO, items: foodItems };
                 await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO });
-                console.log(`[stripeWebhook] Published order_created to kitchen for businessId=${businessId}`);
             }
 
-            // Full order to waiter + table roles
             await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO });
-            console.log(`[stripeWebhook] Published order_created to waiter/table for businessId=${businessId}`);
         }
 
         await PendingCheckout.findByIdAndDelete(pendingCheckoutId);
-        console.log(`[stripeWebhook] Cleaned up PendingCheckout: ${pendingCheckoutId}`);
 
         return res.status(200).send();
     } catch (error) {

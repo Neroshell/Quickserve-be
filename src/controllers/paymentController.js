@@ -167,22 +167,18 @@ export async function createCheckoutSession(req, res) {
 
         const stripeSession = await stripe.checkout.sessions.create(stripeSessionConfig);
 
-        console.log(`[createCheckoutSession] ✅ Stripe session created — id=${stripeSession.id}, metadata=${JSON.stringify(stripeSession.metadata)}`);
+        console.log(`[checkout] Stripe session created — sessionId=${stripeSession.id}`);
 
         // Save Stripe session ID + full split metadata on the pending record
         const feeRate = getFeeRate(business.plan);
         pending.stripeSessionId          = stripeSession.id;
         pending.stripePaymentIntentId    = stripeSession.payment_intent || null;
         pending.stripeConnectedAccountId = business.stripeAccountId;
-        pending.platformFeeAmount        = applicationFeeAmount;           // cents
-        pending.platformFeePercent       = Number((feeRate * 100).toFixed(4)); // e.g. 3.0
-        pending.grossAmount              = totalInCents;                    // cents
-        pending.netToBusinessAmount      = totalInCents - applicationFeeAmount; // cents
+        pending.platformFeeAmount        = applicationFeeAmount;
+        pending.platformFeePercent       = Number((feeRate * 100).toFixed(4));
+        pending.grossAmount              = totalInCents;
+        pending.netToBusinessAmount      = totalInCents - applicationFeeAmount;
         await pending.save();
-
-        console.log(
-            `[createCheckoutSession] Split snapshot — gross=${totalInCents}c, fee=${applicationFeeAmount}c (${(feeRate * 100).toFixed(2)}%), net=${totalInCents - applicationFeeAmount}c, intentId=${stripeSession.payment_intent}`
-        );
 
         return res.status(201).json({
             sessionUrl: stripeSession.url,

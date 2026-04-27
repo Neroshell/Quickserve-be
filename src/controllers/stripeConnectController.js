@@ -113,10 +113,6 @@ export async function getStripeStatus(req, res) {
     business.stripeOnboardingComplete = onboardingComplete
     await business.save()
 
-    console.log(
-      `[stripeConnect] Status sync for ${businessId}: charges=${chargesEnabled}, payouts=${payoutsEnabled}`
-    )
-
     return res.json({
       connected: true,
       stripeAccountId: business.stripeAccountId,
@@ -161,10 +157,6 @@ export async function getStripeDashboardLink(req, res) {
     }
 
     const loginLink = await stripe.accounts.createLoginLink(business.stripeAccountId)
-
-    console.log(
-      `[getStripeDashboardLink] Login link created for businessId=${businessId}, accountId=${business.stripeAccountId}`
-    )
 
     return res.json({ url: loginLink.url })
   } catch (err) {

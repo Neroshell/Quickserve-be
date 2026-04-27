@@ -346,7 +346,6 @@ export async function markPaid(req, res) {
     order.paymentStatus = "paid"
     order.paidVia = paidVia
     await order.save()
-    console.log(`[markPaid] ✅ Payment saved for order ${orderId} via ${paidVia}`)
 
     const orderDTO = toOrderDTO(order)
 
@@ -355,29 +354,26 @@ export async function markPaid(req, res) {
     const drinkItems2 = order.items.filter(i => i.type === "drinks")
     
     if (foodItems2.length > 0) {
-      const kitchenDTO = { ...orderDTO, items: foodItems2 }
-      await publishEvent("order_updated", order.businessId, ["kitchen"], { order: kitchenDTO })
+        const kitchenDTO = { ...orderDTO, items: foodItems2 }
+        await publishEvent("order_updated", order.businessId, ["kitchen"], { order: kitchenDTO })
     }
     
     if (drinkItems2.length > 0) {
-      const barDTO = { ...orderDTO, items: drinkItems2 }
-      await publishEvent("order_updated", order.businessId, ["bar"], { order: barDTO })
+        const barDTO = { ...orderDTO, items: drinkItems2 }
+        await publishEvent("order_updated", order.businessId, ["bar"], { order: barDTO })
     }
 
     await publishEvent("order_updated", order.businessId, ["waiter", "table", "anon"], { order: orderDTO })
 
     // ✅ Step 3: Respond immediately — do NOT wait for email
-    console.log(`[markPaid] ✅ Sending response for order ${orderId}`)
 
  if (order.receiptEmail && !order.receiptSent) {
-      console.log(`[markPaid] 📧 Starting background receipt email for order ${orderId} → ${order.receiptEmail}`)
       ;(async () => {
         try {
           const emailSent = await sendReceiptEmail(order, order.receiptEmail)
           if (emailSent) {
             order.receiptSent = true
             await order.save()
-            console.log(`[markPaid] ✅ Receipt email sent and receiptSent=true saved for order ${orderId}`)
           } else {
             console.warn(`[markPaid] ⚠️ sendReceiptEmail returned false for order ${orderId} — email not sent`)
           }
@@ -385,10 +381,6 @@ export async function markPaid(req, res) {
           console.error(`[markPaid] ❌ Background receipt email failed for order ${orderId}:`, emailErr)
         }
       })()
-    } else if (order.receiptSent) {
-      console.log(`[markPaid] ℹ️ Receipt already sent for order ${orderId}, skipping`)
-    } else {
-      console.log(`[markPaid] ℹ️ No receiptEmail on order ${orderId}, skipping email`)
     }
 
     res.json({

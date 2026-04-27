@@ -177,7 +177,6 @@ export async function setupStaffPassword(req, res) {
  */
 export async function loginUser(req, res) {
     try {
-        console.log("req.session exists?", !!req.session)
         const { email, password } = req.body;
 
         if (!email || !password) {
@@ -196,7 +195,6 @@ export async function loginUser(req, res) {
                 return res.status(401).json({ message: "Invalid credentials" });
             }
 
-            console.log(`[Login] Owner login attempt for: ${email}`);
             const userObj = {
                 userId: business._id.toString(),
                 email: business.ownerEmail,
@@ -205,20 +203,17 @@ export async function loginUser(req, res) {
             };
 
             return new Promise((resolve, reject) => {
-                console.log(`[Login] Regenerating session for owner: ${email}`);
                 req.session.regenerate((err) => {
                     if (err) {
-                        console.error("[Login] Session regenerate error:", err);
+                        console.error("[login] Session regenerate error:", err.message);
                         return reject(err);
                     }
-                    console.log(`[Login] Session regenerated, saving user data: ${email}`);
                     req.session.user = userObj;
                     req.session.save((err) => {
                         if (err) {
-                            console.error("[Login] Session save error:", err);
+                            console.error("[login] Session save error:", err.message);
                             return reject(err);
                         }
-                        console.log(`[Login] Session saved successfully: ${email}`);
                         resolve(res.json({
                             message: "Login successful",
                             type: "owner",

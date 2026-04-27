@@ -30,15 +30,6 @@ const PORT = process.env.PORT || 5000
 // because Stripe signature verification requires the raw body buffer.
 // The express.raw() middleware is applied inside webhook-route.js for this specific path only.
 
-// DEBUG: log ANY request hitting /webhook/*
-app.use("/webhook", (req, res, next) => {
-  console.log(`[server.js] 🔔 /webhook${req.url} — method=${req.method}`)
-  next()
-})
-
-// Quick test endpoint so you can verify reachability with a browser
-app.get("/webhook/test", (req, res) => res.send("webhook endpoint reachable"))
-
 app.use("/webhook", webhookRoute)
 
 // Global middleware
