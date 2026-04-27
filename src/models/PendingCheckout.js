@@ -36,6 +36,14 @@ const PendingCheckoutSchema = new mongoose.Schema(
         // Stripe reference
         stripeSessionId: { type: String, default: null },
 
+        // Stripe Connect split metadata — populated at checkout session creation
+        stripePaymentIntentId:    { type: String, default: null },
+        stripeConnectedAccountId: { type: String, default: null },
+        platformFeeAmount:        { type: Number, default: null }, // cents
+        platformFeePercent:       { type: Number, default: null }, // e.g. 2.0
+        grossAmount:              { type: Number, default: null }, // cents
+        netToBusinessAmount:      { type: Number, default: null }, // cents
+
         // TTL: auto-delete abandoned checkouts after 1 hour
         expiresAt: {
             type: Date,

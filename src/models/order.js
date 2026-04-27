@@ -60,8 +60,17 @@ const OrderSchema = new mongoose.Schema(
     stripeSessionId: { type: String, default: null },
     stripeCheckoutUrl: { type: String, default: null },
 
+    // Stripe Connect split metadata — copied from PendingCheckout via webhook
+    stripePaymentIntentId:    { type: String, default: null },
+    stripeConnectedAccountId: { type: String, default: null },
+    platformFeeAmount:        { type: Number, default: null }, // cents
+    platformFeePercent:       { type: Number, default: null }, // e.g. 2.0
+    grossAmount:              { type: Number, default: null }, // cents
+    netToBusinessAmount:      { type: Number, default: null }, // cents
+
     // Receipt details
     receiptEmail: { type: String, default: null },
+    receiptSent:  { type: Boolean, default: false },
 
     // Staff attribution
     completedBy: { type: String, default: null },

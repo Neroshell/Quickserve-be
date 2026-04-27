@@ -19,6 +19,7 @@ import {
 } from "../controllers/servicePointController.js"
 
 import { requireAuth, requireOwner } from "../middleware/authMiddleware.js"
+import { connectAccount, getStripeStatus, getStripeDashboardLink } from "../controllers/stripeConnectController.js"
 
 const router = express.Router()
 router.use(requireAuth, requireOwner)
@@ -76,5 +77,19 @@ router.patch("/service-points/:servicePointId", updateServicePoint)
 
 // PATCH  /owner/service-points/:servicePointId/toggle  — flip isActive
 router.patch("/service-points/:servicePointId/toggle", toggleServicePoint)
+
+// ─── Stripe Connect ───────────────────────────────────────────────────────────
+
+// POST /owner/stripe/connect-account
+// Creates or retrieves an Express connected account and returns an onboarding link.
+router.post("/stripe/connect-account", connectAccount)
+
+// GET /owner/stripe/status
+// Fetches live status from Stripe and syncs it to the Business document.
+router.get("/stripe/status", getStripeStatus)
+
+// GET /owner/stripe/dashboard-link
+// Creates a single-use Stripe Express dashboard login link for the connected account.
+router.get("/stripe/dashboard-link", getStripeDashboardLink)
 
 export default router

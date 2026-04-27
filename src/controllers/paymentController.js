@@ -1,7 +1,9 @@
 import Stripe from "stripe";
 import TableSession from "../models/TableSession.js";
 import PendingCheckout from "../models/PendingCheckout.js";
+import Business from "../models/Business.js";
 import { generateOrderId } from "../utils/orderId.js";
+import { calculatePlatformFee, getFeeRate } from "../utils/platformFee.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
@@ -90,6 +92,25 @@ export async function createCheckoutSession(req, res) {
             });
         }
 
+        // --- Resolve business and check Stripe Connect readiness ---
+        const business = await Business.findOne({
+            $or: [{ businessId: ts.businessId }, { restaurantId: ts.businessId }],
+        }).lean();
+
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" });
+        }
+
+        if (
+            !business.stripeAccountId ||
+            business.stripeChargesEnabled !== true ||
+            business.stripePayoutsEnabled !== true
+        ) {
+            return res.status(400).json({
+                message: "Online payments are not available for this business yet. Please ask staff for assistance.",
+            });
+        }
+
         // --- Save cart data temporarily (not an Order yet) ---
         const now = new Date();
         const orderId = generateOrderId(tableNumber, now);
@@ -106,9 +127,15 @@ export async function createCheckoutSession(req, res) {
             receiptEmail: receiptEmail || null,
         });
 
-        console.log(`[createCheckoutSession] ✅ PendingCheckout created — _id=${pending._id}, orderId=${orderId}, table=${tableNumber}, items=${enrichedItems.length}`);
+        // --- Compute platform fee (plan-based rate) ---
+        const totalInCents = Math.round(serverTotal * 100);
+        const applicationFeeAmount = calculatePlatformFee(totalInCents, business.plan);
 
-        // --- Create Stripe Checkout Session ---
+        console.log(
+            `[createCheckoutSession] Plan=${business.plan}, total=${totalInCents}c, fee=${applicationFeeAmount}c (${((applicationFeeAmount / totalInCents) * 100).toFixed(2)}%)`
+        );
+
+        // --- Create Stripe Checkout Session (Connect destination charge) ---
         const stripeSessionConfig = {
             payment_method_types: ["card"],
             mode: "payment",
@@ -118,6 +145,17 @@ export async function createCheckoutSession(req, res) {
                 orderId,
                 tableNumber,
                 businessId: ts.businessId,
+            },
+            // Route payment to connected account; platform fee stays with QuickServe
+            payment_intent_data: {
+                application_fee_amount: applicationFeeAmount,
+                transfer_data: {
+                    destination: business.stripeAccountId,
+                },
+                metadata: {
+                    orderId,
+                    businessId: ts.businessId,
+                },
             },
             success_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/confirmation?payment=success&orderId=${orderId}&businessId=${ts.businessId}`,
             cancel_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/order?payment=cancelled&businessId=${ts.businessId}`,
@@ -131,9 +169,20 @@ export async function createCheckoutSession(req, res) {
 
         console.log(`[createCheckoutSession] ✅ Stripe session created — id=${stripeSession.id}, metadata=${JSON.stringify(stripeSession.metadata)}`);
 
-        // Save Stripe session ID on the pending record for reference
-        pending.stripeSessionId = stripeSession.id;
+        // Save Stripe session ID + full split metadata on the pending record
+        const feeRate = getFeeRate(business.plan);
+        pending.stripeSessionId          = stripeSession.id;
+        pending.stripePaymentIntentId    = stripeSession.payment_intent || null;
+        pending.stripeConnectedAccountId = business.stripeAccountId;
+        pending.platformFeeAmount        = applicationFeeAmount;           // cents
+        pending.platformFeePercent       = Number((feeRate * 100).toFixed(4)); // e.g. 3.0
+        pending.grossAmount              = totalInCents;                    // cents
+        pending.netToBusinessAmount      = totalInCents - applicationFeeAmount; // cents
         await pending.save();
+
+        console.log(
+            `[createCheckoutSession] Split snapshot — gross=${totalInCents}c, fee=${applicationFeeAmount}c (${(feeRate * 100).toFixed(2)}%), net=${totalInCents - applicationFeeAmount}c, intentId=${stripeSession.payment_intent}`
+        );
 
         return res.status(201).json({
             sessionUrl: stripeSession.url,

@@ -60,6 +60,11 @@ const BusinessSchema = new mongoose.Schema({
     timezone: { type: String, default: "America/New_York" },
     logoUrl: { type: String, default: "" },
     logoPublicId: { type: String, default: "" },
+    // Stripe Connect — linked Express account for this business
+    stripeAccountId: { type: String, default: null },
+    stripeOnboardingComplete: { type: Boolean, default: false },
+    stripeChargesEnabled: { type: Boolean, default: false },
+    stripePayoutsEnabled: { type: Boolean, default: false },
     country: { type: String, default: "" },
     taxRate: { type: Number, default: 0, min: 0 },
     businessType: {

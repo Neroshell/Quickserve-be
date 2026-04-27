@@ -1,5 +1,6 @@
 import Stripe from "stripe";
 import PendingCheckout from "../models/PendingCheckout.js";
+import Business from "../models/Business.js";
 import Order from "../models/order.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
@@ -25,6 +26,27 @@ export async function handleStripeWebhook(req, res) {
     }
 
     try {
+        if (event.type === "account.updated") {
+            // Stripe Connect: keep business Stripe status fields in sync
+            const account = event.data.object;
+            const chargesEnabled = account.charges_enabled === true;
+            const payoutsEnabled = account.payouts_enabled === true;
+
+            await Business.findOneAndUpdate(
+                { stripeAccountId: account.id },
+                {
+                    stripeChargesEnabled: chargesEnabled,
+                    stripePayoutsEnabled: payoutsEnabled,
+                    stripeOnboardingComplete: chargesEnabled && payoutsEnabled,
+                }
+            );
+
+            console.log(
+                `[stripeWebhook] account.updated — id=${account.id}, charges=${chargesEnabled}, payouts=${payoutsEnabled}`
+            );
+            return res.status(200).send();
+        }
+
         if (event.type !== "checkout.session.completed") {
             console.log(`[stripeWebhook] Ignoring event type: ${event.type}`);
             return res.status(200).send();
@@ -116,6 +138,16 @@ export async function handleStripeWebhook(req, res) {
                 paymentStatus: "paid",
                 paidVia: "online_card",
                 stripeSessionId: pending.stripeSessionId || session.id,
+
+                // Stripe Connect split metadata — resolve intent ID from pending (set at
+                // checkout creation) or fall back to the live session field
+                stripePaymentIntentId:    pending.stripePaymentIntentId || session.payment_intent || null,
+                stripeConnectedAccountId: pending.stripeConnectedAccountId || null,
+                platformFeeAmount:        pending.platformFeeAmount   ?? null,
+                platformFeePercent:       pending.platformFeePercent  ?? null,
+                grossAmount:              pending.grossAmount          ?? null,
+                netToBusinessAmount:      pending.netToBusinessAmount  ?? null,
+
                 receiptEmail: customerEmail,
                 receiptSent: false,
             });
