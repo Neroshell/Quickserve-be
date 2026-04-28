@@ -2,6 +2,7 @@ import Stripe from "stripe";
 import TableSession from "../models/TableSession.js";
 import PendingCheckout from "../models/PendingCheckout.js";
 import Business from "../models/Business.js";
+import ServicePoint from "../models/ServicePoint.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { calculatePlatformFee, getFeeRate } from "../utils/platformFee.js";
 
@@ -111,14 +112,22 @@ export async function createCheckoutSession(req, res) {
             });
         }
 
+        // --- Resolve service point label for display ---
+        // tableNumber is the internal servicePointId (e.g. sp_xxxx); we resolve the
+        // human-friendly label once here so the webhook can copy it without a second lookup.
+        const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId: ts.businessId }).lean();
+        const tableLabel = sp?.label || sp?.code || tableNumber;
+        const tableCode  = sp?.code  || sp?.label || tableNumber;
+
         // --- Save cart data temporarily (not an Order yet) ---
         const now = new Date();
-        const orderId = generateOrderId(tableNumber, now);
+        const orderId = generateOrderId(tableCode, now);
 
         const pending = await PendingCheckout.create({
             businessId: ts.businessId,
             orderId,
-            tableNumber,
+            tableNumber,   // internal servicePointId — preserved for routing
+            tableLabel,    // human-friendly — copied to Order by webhook
             orderType: finalOrderType,
             sessionId,
             items: enrichedItems,

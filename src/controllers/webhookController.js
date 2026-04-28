@@ -2,6 +2,7 @@ import Stripe from "stripe";
 import PendingCheckout from "../models/PendingCheckout.js";
 import Business from "../models/Business.js";
 import Order from "../models/order.js";
+import ServicePoint from "../models/ServicePoint.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
 import { publishEvent } from "../utils/sseManager.js";
@@ -91,10 +92,19 @@ export async function handleStripeWebhook(req, res) {
             const initialStatus = hasFood ? "placed" : "ready";
             const customerEmail = pending.receiptEmail || session.customer_details?.email || null;
 
+            // Prefer the label already cached on PendingCheckout (stored at checkout creation).
+            // Fall back to a live ServicePoint lookup for older pending docs missing it.
+            let tableLabel = pending.tableLabel || "";
+            if (!tableLabel) {
+                const sp = await ServicePoint.findOne({ servicePointId: pending.tableNumber, businessId }).lean();
+                tableLabel = sp?.label || sp?.code || pending.tableNumber;
+            }
+
             order = await Order.create({
                 businessId,
                 orderId,
                 tableNumber: pending.tableNumber,
+                tableLabel,
                 orderType: pending.orderType,
                 sessionId: pending.sessionId,
                 items: pending.items,

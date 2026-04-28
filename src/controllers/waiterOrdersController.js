@@ -52,17 +52,13 @@ export async function waiterOrders(req, res) {
                 _id: 0,
                 orderId: 1,
                 tableNumber: 1,
+                tableLabel: 1,
                 orderType: 1,
                 status: 1,
                 createdAt: 1,
                 updatedAt: 1,
                 readyAt: 1,
                 items: 1,
-
-                // ✅ totals only for waiter
-                // subtotalCents: 1,
-                // taxCents: 1,
-                // totalCents: 1,
                 total: 1,
                 currency: 1,
                 paymentChannel: 1,

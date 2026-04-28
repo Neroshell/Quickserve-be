@@ -129,6 +129,24 @@ export async function ownerOrders(req, res) {
             .sort({ updatedAt: -1, createdAt: -1 })
             .lean()
 
+        // // Batch-hydrate tableLabel for any order that is missing it.
+        // // This covers online orders created before the fix was deployed.
+        // const unlabelled = rawOrders.filter(o => !o.tableLabel && o.tableNumber?.startsWith("sp_"));
+        // if (unlabelled.length > 0) {
+        //     const uniqueSpIds = [...new Set(unlabelled.map(o => o.tableNumber))];
+        //     const sps = await ServicePoint.find(
+        //         { servicePointId: { $in: uniqueSpIds }, businessId },
+        //         "servicePointId label code"
+        //     ).lean();
+        //     const spMap = {};
+        //     for (const sp of sps) {
+        //         spMap[sp.servicePointId] = sp.label || sp.code || sp.servicePointId;
+        //     }
+        //     for (const o of unlabelled) {
+        //         o.tableLabel = spMap[o.tableNumber] || o.tableNumber;
+        //     }
+        // }
+
         // 4. Calculate Status Counts across the ACTIVE date range
         // Note: Counts ignore the current 'status' or 'search' filter so UI tabs show total accurate pool volume
         const countsFilter = {
@@ -165,8 +183,8 @@ export async function ownerOrders(req, res) {
 
             return {
                 orderId: o.orderId,
-             
-                tableLabel: o.tableLabel,
+                tableNumber: o.tableNumber,
+                tableLabel: o.tableLabel || o.tableNumber || "",
                 orderType: o.orderType,
                 status: o.status,
                 createdAt: o.createdAt,
