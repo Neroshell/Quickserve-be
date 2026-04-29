@@ -337,11 +337,30 @@ export async function getMe(req, res) {
         if (role === 'owner' || role === 'admin') {
             const business = await Business.findOne({ ownerEmail: email, ownerStatus: "active" }).select('-ownerPasswordHash');
             if (!business) return res.status(401).json({ message: "Account disabled or not found." });
-            return res.json({ ...req.session.user, displayName: business.displayName, name: business.ownerName });
+            return res.json({ 
+                ...req.session.user, 
+                displayName: business.displayName, 
+                name: business.ownerName,
+                businessType: business.businessType || "restaurant"
+            });
         } else {
             const staff = await Staff.findOne({ email, accountStatus: "active" }).select('-passwordHash');
             if (!staff) return res.status(401).json({ message: "Account disabled or not found." });
-            return res.json({ ...req.session.user, name: staff.name, waiterId: staff.waiterId });
+            
+            // Also fetch business to get businessType
+            const business = await Business.findOne({ 
+                $or: [
+                    { businessId: staff.businessId },
+                    { restaurantId: staff.businessId }
+                ]
+            }).select('businessType').lean();
+
+            return res.json({ 
+                ...req.session.user, 
+                name: staff.name, 
+                waiterId: staff.waiterId,
+                businessType: business?.businessType || "restaurant"
+            });
         }
     } catch (err) {
         console.error("GetMe error:", err);
