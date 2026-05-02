@@ -15,6 +15,7 @@ const OrderItemSchema = new mongoose.Schema(
       default: "mains"
     },
     notes: { type: String, default: "" },
+    image: { type: String, default: "" },
     lineTotal: { type: Number, required: true },
     allergies: { type: [String], default: [] },
   },

@@ -1,6 +1,6 @@
 import Staff from "../models/Staff.js"
 import crypto from "crypto"
-import { sendStaffInvitationEmail } from "../utils/emailService.js"
+import { sendOnboardingEmail } from "../utils/emailService.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
 
@@ -170,7 +170,7 @@ export async function createStaff(req, res) {
         const frontendUrl = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
         const inviteLink = `${frontendUrl}/staff/setup-account?token=${inviteToken}`
 
-        sendStaffInvitationEmail(staff, inviteLink).catch((err) => {
+        sendOnboardingEmail({ to: staff.email, userName: staff.name, inviteLink, role: "staff" }).catch((err) => {
             console.error("[createStaff] Email failed:", err)
         })
 

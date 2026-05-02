@@ -2,7 +2,7 @@ import Business from "../models/Business.js"
 import Order from "../models/order.js"
 import Plan from "../models/Plan.js"
 import crypto from "crypto"
-import { sendInvitationEmail } from "../utils/emailService.js"
+import { sendOnboardingEmail } from "../utils/emailService.js"
 
 function generateBusinessId() {
     return `rest_${crypto.randomBytes(7).toString("hex")}`
@@ -349,7 +349,8 @@ export async function createAdminOwner(req, res) {
 
         // Send invitation email in background
         const inviteLink = `${process.env.FRONTEND_BASE_URL || 'http://localhost:3000'}/setup-account?token=${inviteToken}`
-        sendInvitationEmail(updatedBusiness, inviteLink).catch(err => {
+        
+        sendOnboardingEmail({ to: ownerEmail, userName: ownerName, businessName: updatedBusiness.displayName, inviteLink, role: "owner" }).catch(err => {
             console.error(`[createAdminOwner] Failed to send invitation email to ${ownerEmail}:`, err)
         })
 

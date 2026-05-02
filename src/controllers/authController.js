@@ -2,7 +2,7 @@ import Business from "../models/Business.js";
 import Staff from "../models/Staff.js";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
-import { sendPasswordResetEmail } from "../utils/emailService.js";
+import { sendAuthEmail } from "../utils/emailService.js";
 
 /**
  * Validate an invitation token
@@ -416,7 +416,7 @@ export async function requestPasswordReset(req, res) {
 
         // Send Email
         const resetLink = `${process.env.FRONTEND_BASE_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
-        await sendPasswordResetEmail(normalizedEmail, userName, resetLink);
+        await sendAuthEmail({ to: normalizedEmail, userName: userName || undefined, resetLink });
 
     } catch (err) {
         console.error("Forgot password error:", err);

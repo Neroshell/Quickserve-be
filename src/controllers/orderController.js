@@ -140,6 +140,7 @@ export async function createOrder(req, res) {
         const unitPrice = menuItem?.price || item.unitPrice || 0
         const itemType = menuItem?.type || (item.orderCategory === "drinks" ? "drinks" : "food")
         const displayCategory = menuItem?.category || "mains"
+        const itemImage = menuItem?.imageUrl || item.image || ""
 
         const itemLineTotal = Number((unitPrice * item.quantity).toFixed(2))
         calculatedTotal += itemLineTotal
@@ -151,7 +152,8 @@ export async function createOrder(req, res) {
           type: itemType,
           category: displayCategory,
           notes: item.notes || "",
-          allergies: item.allergies || []
+          allergies: item.allergies || [],
+          image: itemImage
         }
       })
     )
