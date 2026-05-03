@@ -123,16 +123,16 @@ export async function updateOrderStatus(req, res) {
     }
 
     if (nextStatus === "completed") {
-      const waiterId = req.headers["x-waiter-id"]
-      const waiterName = req.headers["x-waiter-name"]
+      const staffName = req.session?.user?.name
+      const staffId = req.session?.user?.staffId || req.session?.user?.id
 
-      if (waiterName) {
-        order.completedBy = waiterName
-      } else if (waiterId) {
-        // Fallback: look up name from DB using either staffId or legacy waiterId
+      if (staffName) {
+        order.completedBy = staffName
+      } else if (staffId) {
+        // Fallback: look up name from DB using staffId
         const staff = await Staff.findOne({ 
           businessId, 
-          $or: [{ staffId: waiterId }, { waiterId }] 
+          staffId
         })
         if (staff) order.completedBy = staff.name
       }

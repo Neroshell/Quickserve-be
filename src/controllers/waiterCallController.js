@@ -128,11 +128,12 @@ export async function listWaiterCalls(req, res) {
  */
 export async function claimWaiterCall(req, res) {
   try {
-    const waiterId = getWaiterId(req)
-    if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
-
     const staffName = req.session?.user?.name || "Staff Member"
-    const staffId = req.session?.user?.staffId || req.session?.user?.id || waiterId
+    const staffId = req.session?.user?.staffId || req.session?.user?.id
+
+    if (!staffId) {
+      return res.status(401).json({ error: "Unauthorized: Missing staff session" })
+    }
 
     const { id } = req.params
     const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
@@ -153,7 +154,7 @@ export async function claimWaiterCall(req, res) {
       {
         $set: {
           status: "acknowledged",
-          claimedBy: waiterId,
+          claimedBy: staffId, // using staffId instead of device header
           claimedAt: now,
           acknowledgedByStaffId: staffId,
           acknowledgedByName: staffName,
@@ -187,11 +188,12 @@ export async function claimWaiterCall(req, res) {
  */
 export async function resolveWaiterCall(req, res) {
   try {
-    const waiterId = getWaiterId(req)
-    if (!waiterId) return res.status(400).json({ error: "Missing X-WAITER-ID header" })
-
     const staffName = req.session?.user?.name || "Staff Member"
-    const staffId = req.session?.user?.staffId || req.session?.user?.id || waiterId
+    const staffId = req.session?.user?.staffId || req.session?.user?.id
+
+    if (!staffId) {
+      return res.status(401).json({ error: "Unauthorized: Missing staff session" })
+    }
 
     const { id } = req.params
     const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
@@ -208,17 +210,17 @@ export async function resolveWaiterCall(req, res) {
         businessId,
         status: { $in: ["pending", "acknowledged"] },
         // Only claimer can resolve; if still pending, allow resolver to resolve only if they claim first
-        $or: [{ claimedBy: waiterId }, { claimedBy: null, status: "pending" }],
+        $or: [{ claimedBy: staffId }, { claimedBy: null, status: "pending" }],
       },
       {
         $set: {
           status: "resolved",
-          resolvedBy: waiterId,
+          resolvedBy: staffId, // using staffId instead of device header
           resolvedByStaffId: staffId,
           resolvedByName: staffName,
           resolvedAt: now,
           // If it was pending and resolved directly, mark who handled it
-          claimedBy: waiterId,
+          claimedBy: staffId,
           claimedAt: now,
         },
       },

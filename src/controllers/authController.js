@@ -196,7 +196,9 @@ export async function loginUser(req, res) {
             }
 
             const userObj = {
+                type: "owner",
                 userId: business._id.toString(),
+                name: business.ownerName,
                 email: business.ownerEmail,
                 role: "owner",
                 businessId: business.businessId || business.restaurantId
@@ -246,9 +248,11 @@ export async function loginUser(req, res) {
             await staff.save();
 
             const userObj = {
-                staffId: staff.staffId,
-                email: staff.email,
+                type: "staff",
                 role: staff.role || "waiter",
+                staffId: staff.staffId,
+                name: staff.name,
+                email: staff.email,
                 businessId: staff.businessId || staff.restaurantId
             };
 
