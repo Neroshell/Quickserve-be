@@ -39,6 +39,14 @@ export async function createMenuItem(req, res) {
             return res.status(400).json({ error: "Missing required fields (businessId, name, price, category, type)" })
         }
 
+        // Validate description word count
+        if (description) {
+            const wordCount = description.trim().split(/\s+/).filter(Boolean).length
+            if (wordCount > 100) {
+                return res.status(400).json({ error: "Description must be 100 words or less." })
+            }
+        }
+
         const newItem = new MenuItem({
             businessId,
             name,
@@ -69,7 +77,14 @@ export async function updateMenuItem(req, res) {
             return res.status(400).json({ error: "Missing businessId" })
         }
 
-        // Validate that the request provides correct tracking reference
+        // Validate description word count if provided
+        if (req.body.description) {
+            const wordCount = req.body.description.trim().split(/\s+/).filter(Boolean).length
+            if (wordCount > 100) {
+                return res.status(400).json({ error: "Description must be 100 words or less." })
+            }
+        }
+
         const item = await MenuItem.findOneAndUpdate(
             { _id: id, businessId },
             { $set: req.body },
