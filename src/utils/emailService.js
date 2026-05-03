@@ -2,9 +2,9 @@ import { Resend } from "resend";
 import dotenv from "dotenv";
 import React from "react";
 import { render } from "@react-email/render";
-import ReceiptEmail from "../../emails/ReceiptEmail.js";
-import AuthEmail from "../../emails/AuthEmail.js";
-import OnboardingEmail from "../../emails/OnboardingEmail.js";
+import ReceiptEmail from "../../emails/ReceiptEmail.tsx";
+import AuthEmail from "../../emails/AuthEmail.tsx";
+import OnboardingEmail from "../../emails/OnboardingEmail.tsx";
 import Business from "../models/Business.js";
 
 dotenv.config();
