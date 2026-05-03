@@ -21,14 +21,14 @@ export async function sendEmail({ to, subject, html, from }) {
     });
 
     if (error) {
-      console.error("[EmailService] ❌ Error sending email:", error);
+      console.error("[EmailService]  Error sending email:", error);
       return false;
     }
 
-    console.log(`[EmailService] ✅ Email sent to ${to} (Message ID: ${data?.id})`);
+    console.log(`[EmailService]  Email sent to ${to} (Message ID: ${data?.id})`);
     return true;
   } catch (error) {
-    console.error("[EmailService] ❌ Transport/Execution Error sending email:", error);
+    console.error("[EmailService]  Transport/Execution Error sending email:", error);
     return false;
   }
 }
@@ -38,7 +38,7 @@ export async function sendReceiptEmail(order, toEmail) {
     console.log(`[EmailService] Initiating sendReceiptEmail for order: ${order.orderId}, email: ${toEmail}`);
     
     if (!order.items || !Array.isArray(order.items)) {
-       console.error(`[EmailService] ❌ order.items is invalid:`, order.items);
+       console.error(`[EmailService]  order.items is invalid:`, order.items);
        return false;
     }
 
@@ -82,7 +82,7 @@ export async function sendReceiptEmail(order, toEmail) {
     
     return await sendEmail({ to: toEmail, subject, html, from });
   } catch (error) {
-    console.error("[EmailService] ❌ Error in sendReceiptEmail:", error);
+    console.error("[EmailService]  Error in sendReceiptEmail:", error);
     return false;
   }
 }
@@ -101,7 +101,7 @@ export async function sendAuthEmail({ to, userName, resetLink }) {
     const from = process.env.EMAIL_FROM_AUTH || "QuickServe Auth <auth@quickservehq.com>";
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
-    console.error("[EmailService] ❌ Error in sendAuthEmail:", error);
+    console.error("[EmailService]  Error in sendAuthEmail:", error);
     return false;
   }
 }
@@ -124,7 +124,7 @@ export async function sendOnboardingEmail({ to, userName, businessName, inviteLi
     const from = process.env.EMAIL_FROM_ONBOARDING || "QuickServe <onboarding@quickservehq.com>";
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
-    console.error("[EmailService] ❌ Error in sendOnboardingEmail:", error);
+    console.error("[EmailService]  Error in sendOnboardingEmail:", error);
     return false;
   }
 }
