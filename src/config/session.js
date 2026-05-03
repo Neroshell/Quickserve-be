@@ -15,7 +15,8 @@ export const sessionMiddleware = session({
     cookie: {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production", // requires trust proxy in express
-        sameSite: "lax", // NOTE: change to "none" if frontend & backend are on completely different domains
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax", // NOTE: change to "none" if frontend & backend are on completely different domains
         maxAge: 8 * 60 * 60 * 1000 // 8 hours
     }
 })
+
