@@ -1,4 +1,5 @@
 import MenuItem from "../models/menuItem.js"
+import Order from "../models/order.js"
 
 /** Accept businessId with fallback to legacy restaurantId */
 function resolveBusinessId(req) {
@@ -152,3 +153,69 @@ export async function toggleMenuItemAvailability(req, res) {
         return res.status(500).json({ error: "Failed to toggle availability" })
     }
 }
+
+/**
+ * GET /menu-items/popular?businessId=...
+ * Returns up to 8 menu items ranked by total quantity ordered in the last 7 days.
+ * Falls back to an empty array if there are no recent orders.
+ */
+export async function getPopularItems(req, res) {
+    try {
+        const businessId = resolveBusinessId(req)
+
+        if (!businessId) {
+            return res.status(400).json({ error: "Missing businessId parameter" })
+        }
+
+        const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+
+        // Aggregate: unwind order items, group by itemName, sum quantities
+        const aggregated = await Order.aggregate([
+            {
+                $match: {
+                    businessId,
+                    createdAt: { $gte: since },
+                    status: { $in: ["placed", "in_progress", "ready", "completed"] }
+                }
+            },
+            { $unwind: "$items" },
+            {
+                $group: {
+                    _id: "$items.itemName",
+                    totalOrdered: { $sum: "$items.quantity" }
+                }
+            },
+            { $sort: { totalOrdered: -1 } },
+            { $limit: 8 }
+        ])
+
+        if (aggregated.length === 0) {
+            return res.json([])
+        }
+
+        // Map popular names to rank for sorting
+        const rankMap = {}
+        aggregated.forEach((a, i) => { rankMap[a._id] = i })
+
+        // Fetch matching MenuItem docs by name
+        const popularNames = aggregated.map(a => a._id)
+        const items = await MenuItem.find({
+            businessId,
+            name: { $in: popularNames }
+        })
+
+        // Sort by popularity rank, inject orderCount for frontend use
+        const sorted = items
+            .map(item => ({
+                ...item.toObject(),
+                orderCount: aggregated.find(a => a._id === item.name)?.totalOrdered ?? 0
+            }))
+            .sort((a, b) => (rankMap[a.name] ?? 99) - (rankMap[b.name] ?? 99))
+
+        return res.json(sorted)
+    } catch (err) {
+        console.error("[getPopularItems]", err)
+        return res.status(500).json({ error: "Failed to fetch popular items" })
+    }
+}
+

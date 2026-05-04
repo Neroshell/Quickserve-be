@@ -131,4 +131,124 @@ router.post("/menu-item", upload.single("image"), async (req, res) => {
   }
 })
 
+/**
+ * POST /upload/menu-banner
+ * Upload a promotional banner image and attach it to the business.
+ * Body (multipart/form-data): image (file), businessId (string)
+ * Sets menuBannerEnabled = true automatically on upload.
+ */
+router.post("/menu-banner", upload.single("image"), async (req, res) => {
+  try {
+    const { businessId } = req.body
+
+    if (!businessId) {
+      return res.status(400).json({ error: "businessId is required" })
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "Image file is required" })
+    }
+
+    const business = await Business.findOne({
+      $or: [{ businessId }, { restaurantId: businessId }],
+    })
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+
+    // Delete previous banner from Cloudinary if one exists
+    if (business.menuBannerPublicId) {
+      await deleteFromCloudinary(business.menuBannerPublicId)
+    }
+
+    const { secure_url, public_id } = await uploadToCloudinary(
+      req.file.buffer,
+      "quickserve/menu-banners",
+      req.file.mimetype
+    )
+
+    business.menuBannerImageUrl = secure_url
+    business.menuBannerPublicId = public_id
+    business.menuBannerEnabled  = true
+    await business.save()
+
+    return res.json({
+      menuBannerImageUrl: secure_url,
+      menuBannerPublicId: public_id,
+      menuBannerEnabled:  true,
+    })
+  } catch (err) {
+    console.error("[upload/menu-banner POST]", err)
+    return res.status(500).json({ error: err.message || "Upload failed" })
+  }
+})
+
+/**
+ * PATCH /upload/menu-banner
+ * Enable or disable the menu banner without deleting the image.
+ * Body: { businessId: string, menuBannerEnabled: boolean }
+ */
+router.patch("/menu-banner", async (req, res) => {
+  try {
+    const { businessId, menuBannerEnabled } = req.body
+
+    if (!businessId) {
+      return res.status(400).json({ error: "businessId is required" })
+    }
+    if (typeof menuBannerEnabled !== "boolean") {
+      return res.status(400).json({ error: "menuBannerEnabled (boolean) is required" })
+    }
+
+    const business = await Business.findOneAndUpdate(
+      { $or: [{ businessId }, { restaurantId: businessId }] },
+      { menuBannerEnabled },
+      { new: true }
+    )
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+
+    return res.json({ menuBannerEnabled: business.menuBannerEnabled })
+  } catch (err) {
+    console.error("[upload/menu-banner PATCH]", err)
+    return res.status(500).json({ error: err.message || "Failed to update banner" })
+  }
+})
+
+/**
+ * DELETE /upload/menu-banner
+ * Remove the banner image from Cloudinary and clear all banner fields.
+ * Body: { businessId: string }
+ */
+router.delete("/menu-banner", async (req, res) => {
+  try {
+    const { businessId } = req.body
+
+    if (!businessId) {
+      return res.status(400).json({ error: "businessId is required" })
+    }
+
+    const business = await Business.findOne({
+      $or: [{ businessId }, { restaurantId: businessId }],
+    })
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+
+    if (business.menuBannerPublicId) {
+      await deleteFromCloudinary(business.menuBannerPublicId)
+    }
+
+    business.menuBannerImageUrl = ""
+    business.menuBannerPublicId = ""
+    business.menuBannerEnabled  = false
+    await business.save()
+
+    return res.json({ success: true })
+  } catch (err) {
+    console.error("[upload/menu-banner DELETE]", err)
+    return res.status(500).json({ error: err.message || "Failed to delete banner" })
+  }
+})
+
 export default router
+

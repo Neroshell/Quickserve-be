@@ -4,7 +4,8 @@ import {
     createMenuItem,
     updateMenuItem,
     deleteMenuItem,
-    toggleMenuItemAvailability
+    toggleMenuItemAvailability,
+    getPopularItems
 } from "../controllers/menuController.js"
 
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
@@ -13,8 +14,12 @@ const router = express.Router()
 
 const requireManager = [requireAuth, requireRole("owner", "admin", "manager")]
 
+// GET /menu-items/popular?businessId=...  — public, no auth required
+router.get("/popular", getPopularItems)
+
 // GET /menu-items?businessId=...
 router.get("/", getMenuItems)
+
 
 // POST /menu-items
 router.post("/", requireManager, createMenuItem)
