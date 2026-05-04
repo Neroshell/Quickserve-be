@@ -60,10 +60,7 @@ const BusinessSchema = new mongoose.Schema({
     timezone: { type: String, default: "America/New_York" },
     logoUrl: { type: String, default: "" },
     logoPublicId: { type: String, default: "" },
-    // Menu promo banner — one banner image per business
-    menuBannerImageUrl: { type: String, default: "" },
-    menuBannerPublicId: { type: String, default: "" },
-    menuBannerEnabled:  { type: Boolean, default: false },
+
     // Stripe Connect — linked Express account for this business
     stripeAccountId: { type: String, default: null },
     stripeOnboardingComplete: { type: Boolean, default: false },
