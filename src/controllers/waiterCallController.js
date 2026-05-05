@@ -174,7 +174,7 @@ export async function claimWaiterCall(req, res) {
       })
     }
 
-    await publishEvent("waiter_call_updated", businessId, ["waiter"], { call: claimed })
+    await publishEvent("waiter_call_updated", businessId, ["waiter", "table", "anon"], { call: claimed })
 
     return res.json({ success: true, call: claimed })
   } catch (err) {
@@ -238,7 +238,7 @@ export async function resolveWaiterCall(req, res) {
       })
     }
 
-    await publishEvent("waiter_call_updated", businessId, ["waiter"], { call: updated })
+    await publishEvent("waiter_call_updated", businessId, ["waiter", "table", "anon"], { call: updated })
 
     return res.json({ success: true, call: updated })
   } catch (err) {
