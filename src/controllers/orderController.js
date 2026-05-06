@@ -365,7 +365,7 @@ export async function markPaid(req, res) {
         await publishEvent("order_updated", order.businessId, ["bar"], { order: barDTO })
     }
 
-    await publishEvent("order_updated", order.businessId, ["waiter", "table", "anon"], { order: orderDTO })
+    await publishEvent("order_updated", order.businessId, ["waiter", "table", "anon"], { order: orderDTO, action: "payment_confirmed" })
 
     // ✅ Step 3: Respond immediately — do NOT wait for email
 
