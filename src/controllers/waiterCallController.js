@@ -22,8 +22,8 @@ function getRelativeTime(date) {
 
 export async function createWaiterCall(req, res) {
   try {
-    const waiterId = getWaiterId(req) // can be empty for customer calls (that’s fine)
-    const { tableNumber, tableLabel = "", tableCode = "", reason = "", note = "" } = req.body || {}
+    const waiterId = getWaiterId(req) // can be empty for customer calls (that's fine)
+    const { tableNumber, tableLabel = "", tableCode = "", reason = "", note = "", userDeviceId = "" } = req.body || {}
     const businessId = req.session?.user?.businessId || req.body?.businessId || req.body?.restaurantId
 
     if (!businessId) {
@@ -34,19 +34,23 @@ export async function createWaiterCall(req, res) {
       return res.status(400).json({ error: "tableNumber is required" })
     }
 
-    // OPTIONAL anti-spam: don’t allow multiple pending calls for same table
-    const existingPending = await WaiterCall.findOne({
-      businessId,
-      tableNumber: String(tableNumber).trim(),
-      status: "pending",
-    }).lean()
+    // Device-level anti-spam: block the SAME device from spamming,
+    // but allow DIFFERENT devices at the same table to call independently.
+    if (userDeviceId) {
+      const existingPending = await WaiterCall.findOne({
+        businessId,
+        tableNumber: String(tableNumber).trim(),
+        userDeviceId: String(userDeviceId).trim(),
+        status: "pending",
+      }).lean()
 
-    if (existingPending) {
-      return res.status(200).json({
-        success: true,
-        call: existingPending,
-        message: "Call already pending for this table",
-      })
+      if (existingPending) {
+        return res.status(200).json({
+          success: true,
+          call: existingPending,
+          message: "Call already pending for this device",
+        })
+      }
     }
 
     // Resolve Service Point dynamically on creation to store labels statically
@@ -74,6 +78,7 @@ export async function createWaiterCall(req, res) {
       tableNumber: String(tableNumber).trim(),
       tableLabel: finalTableLabel,
       tableCode: finalTableCode,
+      userDeviceId: userDeviceId ? String(userDeviceId).trim() : null,
       reason: String(reason || "").trim(),
       note: String(note || "").trim(),
       status: "pending",

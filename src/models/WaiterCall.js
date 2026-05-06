@@ -7,6 +7,10 @@ const WaiterCallSchema = new mongoose.Schema(
     tableLabel: { type: String, default: "" },
     tableCode: { type: String, default: "" },
 
+    // Unique per-device identifier sent by the customer frontend
+    // Used for device-level anti-spam and SSE notification targeting
+    userDeviceId: { type: String, default: null, index: true },
+
     // Optional metadata (future-proof)
     reason: { type: String, default: "" },
     note: { type: String, default: "" },
