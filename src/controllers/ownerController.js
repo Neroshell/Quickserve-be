@@ -2,25 +2,10 @@ import { DateTime } from "luxon"
 import Order from "../models/order.js"
 import TableSession from "../models/TableSession.js"
 import ServicePoint from "../models/ServicePoint.js"
-const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
-const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
+import Business from "../models/Business.js"
+import { getBusinessDayRange } from "../utils/businessDay.js"
 
-function getBusinessDayRange() {
-    const now = DateTime.now().setZone(BUSINESS_TZ)
-    const isBeforeRollover = now.hour < ROLLOVER_HOUR
-    const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
 
-    const start = baseDay
-        .startOf("day")
-        .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-
-    const end = start.plus({ days: 1 })
-
-    return {
-        start,
-        end,
-    }
-}
 
 // GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...
 export async function ownerOrders(req, res) {
@@ -32,11 +17,12 @@ export async function ownerOrders(req, res) {
             return res.status(400).json({ error: "businessId is required" })
         }
 
+        const business = await Business.findOne({ businessId }, "timezone operatingHours").lean()
+        const { start: todayStart, end: todayEnd, tz, rolloverHour, rolloverMinute } = getBusinessDayRange(business)
+
         let startDateJS, endDateJS
 
         // 1. Determine Date Range Base
-        const { start: todayStart, end: todayEnd } = getBusinessDayRange()
-
         switch (range) {
             case "today":
                 startDateJS = todayStart.toJSDate()
@@ -51,8 +37,8 @@ export async function ownerOrders(req, res) {
                 endDateJS = todayEnd.toJSDate()
                 break
             case "thisMonth":
-                // Start of the calendar month, aligned to ROLLOVER_HOUR
-                const currentMonthStart = todayStart.startOf("month").set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
+                // Start of the calendar month, aligned to rollover time
+                const currentMonthStart = todayStart.startOf("month").set({ hour: rolloverHour, minute: rolloverMinute, second: 0, millisecond: 0 })
                 startDateJS = currentMonthStart.toJSDate()
                 endDateJS = todayEnd.toJSDate()
                 break
@@ -61,8 +47,8 @@ export async function ownerOrders(req, res) {
                     return res.status(400).json({ error: "Missing 'from' or 'to' for custom range" })
                 }
                 // Parse the "YYYY-MM-DD" keeping business TZ logic
-                const customStart = DateTime.fromISO(from, { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-                const customEnd = DateTime.fromISO(to, { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 }).plus({ days: 1 })
+                const customStart = DateTime.fromISO(from, { zone: tz }).set({ hour: rolloverHour, minute: rolloverMinute, second: 0, millisecond: 0 })
+                const customEnd = DateTime.fromISO(to, { zone: tz }).set({ hour: rolloverHour, minute: rolloverMinute, second: 0, millisecond: 0 }).plus({ days: 1 })
 
                 if (!customStart.isValid || !customEnd.isValid) {
                     return res.status(400).json({ error: "Invalid date format for custom range" })
@@ -129,26 +115,7 @@ export async function ownerOrders(req, res) {
             .sort({ updatedAt: -1, createdAt: -1 })
             .lean()
 
-        // // Batch-hydrate tableLabel for any order that is missing it.
-        // // This covers online orders created before the fix was deployed.
-        // const unlabelled = rawOrders.filter(o => !o.tableLabel && o.tableNumber?.startsWith("sp_"));
-        // if (unlabelled.length > 0) {
-        //     const uniqueSpIds = [...new Set(unlabelled.map(o => o.tableNumber))];
-        //     const sps = await ServicePoint.find(
-        //         { servicePointId: { $in: uniqueSpIds }, businessId },
-        //         "servicePointId label code"
-        //     ).lean();
-        //     const spMap = {};
-        //     for (const sp of sps) {
-        //         spMap[sp.servicePointId] = sp.label || sp.code || sp.servicePointId;
-        //     }
-        //     for (const o of unlabelled) {
-        //         o.tableLabel = spMap[o.tableNumber] || o.tableNumber;
-        //     }
-        // }
-
-        // 4. Calculate Status Counts across the ACTIVE date range
-        // Note: Counts ignore the current 'status' or 'search' filter so UI tabs show total accurate pool volume
+        
         const countsFilter = {
             businessId,
             createdAt: { $gte: startDateJS, $lt: endDateJS },
@@ -293,7 +260,8 @@ export async function ownerAnalytics(req, res) {
         let startDateJS, endDateJS
 
         // 1. Determine Date Range Base
-        const { start: todayStart, end: todayEnd } = getBusinessDayRange()
+        const business = await Business.findOne({ businessId }, "timezone operatingHours").lean()
+        const { start: todayStart, end: todayEnd, tz, rolloverHour, rolloverMinute } = getBusinessDayRange(business)
 
         switch (range) {
             case "today":
@@ -309,7 +277,7 @@ export async function ownerAnalytics(req, res) {
                 endDateJS = todayEnd.toJSDate()
                 break
             case "thisMonth":
-                const currentMonthStart = todayStart.startOf("month").set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
+                const currentMonthStart = todayStart.startOf("month").set({ hour: rolloverHour, minute: rolloverMinute, second: 0, millisecond: 0 })
                 startDateJS = currentMonthStart.toJSDate()
                 endDateJS = todayEnd.toJSDate()
                 break
@@ -317,8 +285,8 @@ export async function ownerAnalytics(req, res) {
                 if (!from || !to) {
                     return res.status(400).json({ error: "Missing 'from' or 'to' for custom range" })
                 }
-                const customStart = DateTime.fromISO(from, { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-                const customEnd = DateTime.fromISO(to, { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 }).plus({ days: 1 })
+                const customStart = DateTime.fromISO(from, { zone: tz }).set({ hour: rolloverHour, minute: rolloverMinute, second: 0, millisecond: 0 })
+                const customEnd = DateTime.fromISO(to, { zone: tz }).set({ hour: rolloverHour, minute: rolloverMinute, second: 0, millisecond: 0 }).plus({ days: 1 })
 
                 if (!customStart.isValid || !customEnd.isValid) {
                     return res.status(400).json({ error: "Invalid date format for custom range" })
@@ -374,8 +342,8 @@ export async function ownerAnalytics(req, res) {
         const isSingleDay = (range === "today" || range === "yesterday" || (range === "custom" && from === to))
 
         if (!isSingleDay) {
-            let current = DateTime.fromJSDate(startDateJS).setZone(BUSINESS_TZ)
-            const end = DateTime.fromJSDate(endDateJS).setZone(BUSINESS_TZ)
+            let current = DateTime.fromJSDate(startDateJS).setZone(tz)
+            const end = DateTime.fromJSDate(endDateJS).setZone(tz)
             while (current < end) {
                 const label = range === "7days"
                     ? current.toFormat("ccc") // e.g. Mon, Tue
@@ -389,7 +357,7 @@ export async function ownerAnalytics(req, res) {
 
         // 4. Process Orders Iteratively
         for (const order of orders) {
-            const orderDateObj = DateTime.fromJSDate(order.createdAt).setZone(BUSINESS_TZ)
+            const orderDateObj = DateTime.fromJSDate(order.createdAt).setZone(tz)
 
             // Time charts extraction
             const hourLabel = `${orderDateObj.toFormat("h")}${orderDateObj.toFormat("a")}`

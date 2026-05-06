@@ -1,27 +1,8 @@
-import { DateTime } from "luxon"
 import Order from "../models/order.js"
+import Business from "../models/Business.js"
+import { getBusinessDayRange } from "../utils/businessDay.js"
 
-const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
-const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
 
-function getBusinessDayRange() {
-    const now = DateTime.now().setZone(BUSINESS_TZ)
-    const isBeforeRollover = now.hour < ROLLOVER_HOUR
-    const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
-
-    const start = baseDay
-        .startOf("day")
-        .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-
-    const end = start.plus({ days: 1 })
-
-    return {
-        startJS: start.toJSDate(),
-        endJS: end.toJSDate(),
-        businessDay: start.toISODate(),
-        generatedAt: now.toISO(),
-    }
-}
 
 // ✅ NEW: waiter can fetch ANY status (ready/placed/in_progress/completed/all)
 // GET /waiter?status=ready
@@ -32,7 +13,8 @@ export async function waiterOrders(req, res) {
             return res.status(400).json({ error: "businessId is required" })
         }
 
-        const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
+        const business = await Business.findOne({ businessId }, "timezone operatingHours").lean()
+        const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange(business)
 
         const status = String(req.query.status || "ready")
 
