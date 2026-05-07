@@ -34,23 +34,19 @@ export async function createWaiterCall(req, res) {
       return res.status(400).json({ error: "tableNumber is required" })
     }
 
-    // Device-level anti-spam: block the SAME device from spamming,
-    // but allow DIFFERENT devices at the same table to call independently.
-    if (userDeviceId) {
-      const existingPending = await WaiterCall.findOne({
-        businessId,
-        tableNumber: String(tableNumber).trim(),
-        userDeviceId: String(userDeviceId).trim(),
-        status: "pending",
-      }).lean()
+    // Table-level anti-spam: only allow one active call per table
+    const existingActiveCall = await WaiterCall.findOne({
+      businessId,
+      tableNumber: String(tableNumber).trim(),
+      status: { $in: ["pending", "acknowledged"] },
+    }).lean()
 
-      if (existingPending) {
-        return res.status(200).json({
-          success: true,
-          call: existingPending,
-          message: "Call already pending for this device",
-        })
-      }
+    if (existingActiveCall) {
+      return res.status(200).json({
+        success: true,
+        call: existingActiveCall,
+        message: "A waiter has already been requested for this table.",
+      })
     }
 
     // Resolve Service Point dynamically on creation to store labels statically
