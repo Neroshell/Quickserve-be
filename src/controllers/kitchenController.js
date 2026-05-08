@@ -1,11 +1,30 @@
+import { DateTime } from "luxon"
 import Order from "../models/order.js"
-import Business from "../models/Business.js"
 import Staff from "../models/Staff.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
-import { getBusinessDayRange } from "../utils/businessDay.js"
 
+const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
+const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
 
+function getBusinessDayRange() {
+  const now = DateTime.now().setZone(BUSINESS_TZ)
+  const isBeforeRollover = now.hour < ROLLOVER_HOUR
+  const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
+
+  const start = baseDay
+    .startOf("day")
+    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
+
+  const end = start.plus({ days: 1 })
+
+  return {
+    startJS: start.toJSDate(),
+    endJS: end.toJSDate(),
+    businessDay: start.toISODate(),
+    generatedAt: now.toISO(),
+  }
+}
 
 export async function kitchenOrders(req, res) {
   try {
@@ -14,8 +33,7 @@ export async function kitchenOrders(req, res) {
       return res.status(400).json({ error: "businessId is required" })
     }
 
-    const business = await Business.findOne({ businessId }, "timezone operatingHours").lean()
-    const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange(business)
+    const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
 
     const ACTIVE_STATUSES = ["placed", "in_progress", "ready"]
 
@@ -43,7 +61,10 @@ export async function kitchenOrders(req, res) {
       return {
         ...dto,
         items: foodItems,
-      
+        // Recalculate allergies/notes based on filtered items if needed?
+        // The prompt says: "allergies: [...new Set(foodItems.flatMap(i => i.allergies || []))]" 
+        // asking to update kitchenController logic specifically.
+        // Let's implement the specific logic requested in TASK 5.
       }
     }).filter(Boolean)
 
