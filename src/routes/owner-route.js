@@ -16,6 +16,7 @@ import {
     createServicePoint,
     updateServicePoint,
     toggleServicePoint,
+    deleteServicePoint,
 } from "../controllers/servicePointController.js"
 
 import { requireAuth, requireOwner } from "../middleware/authMiddleware.js"
@@ -77,6 +78,9 @@ router.patch("/service-points/:servicePointId", updateServicePoint)
 
 // PATCH  /owner/service-points/:servicePointId/toggle  — flip isActive
 router.patch("/service-points/:servicePointId/toggle", toggleServicePoint)
+
+// DELETE /owner/service-points/:servicePointId
+router.delete("/service-points/:servicePointId", deleteServicePoint)
 
 // ─── Stripe Connect ───────────────────────────────────────────────────────────
 

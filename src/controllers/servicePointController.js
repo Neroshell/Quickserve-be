@@ -210,3 +210,30 @@ export async function toggleServicePoint(req, res) {
         return res.status(500).json({ error: "Failed to toggle service point" })
     }
 }
+
+/**
+ * DELETE /owner/service-points/:servicePointId
+ * Delete a service point.
+ * Ownership is enforced.
+ */
+export async function deleteServicePoint(req, res) {
+    try {
+        const businessId = resolveOwnerBusinessId(req)
+        if (!businessId) {
+            return res.status(401).json({ error: "Unauthorized" })
+        }
+
+        const { servicePointId } = req.params
+
+        const sp = await ServicePoint.findOneAndDelete({ servicePointId, businessId })
+        if (!sp) {
+            return res.status(404).json({ error: "Service point not found" })
+        }
+
+        return res.json({ success: true, message: "Service point deleted successfully" })
+    } catch (err) {
+        console.error("[deleteServicePoint]", err)
+        return res.status(500).json({ error: "Failed to delete service point" })
+    }
+}
+
