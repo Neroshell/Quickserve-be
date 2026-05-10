@@ -90,6 +90,10 @@ export async function createServicePoint(req, res) {
             return res.status(400).json({ error: "label is required" })
         }
 
+        if (!code || !code.trim()) {
+            return res.status(400).json({ error: "code is required" })
+        }
+
         // Fetch business to derive servicePointType
         const business = await Business.findOne({ businessId }).lean()
         if (!business) {
@@ -151,7 +155,10 @@ export async function updateServicePoint(req, res) {
             if (!label.trim()) return res.status(400).json({ error: "label cannot be empty" })
             updates.label = label.trim()
         }
-        if (code !== undefined) updates.code = code.trim()
+        if (code !== undefined) {
+            if (!code.trim()) return res.status(400).json({ error: "code cannot be empty" })
+            updates.code = code.trim()
+        }
         if (capacity !== undefined) {
             updates.capacity = capacity === null || capacity === "" ? null : Number(capacity)
         }

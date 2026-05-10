@@ -1,6 +1,27 @@
 import WaiterCall from "../models/WaiterCall.js"
 import ServicePoint from "../models/ServicePoint.js"
 import { publishEvent } from "../utils/sseManager.js"
+import { DateTime } from "luxon"
+
+const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
+const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
+
+function getBusinessDayRange() {
+  const now = DateTime.now().setZone(BUSINESS_TZ)
+  const isBeforeRollover = now.hour < ROLLOVER_HOUR
+  const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
+
+  const start = baseDay
+    .startOf("day")
+    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
+
+  const end = start.plus({ days: 1 })
+
+  return {
+    startJS: start.toJSDate(),
+    endJS: end.toJSDate(),
+  }
+}
 
 /**
  * Expects a stable per-device waiter id in header:
@@ -109,6 +130,9 @@ export async function listWaiterCalls(req, res) {
     } else if (["pending", "acknowledged", "resolved"].includes(String(status))) {
       filter.status = String(status)
     }
+
+    const { startJS, endJS } = getBusinessDayRange()
+    filter.createdAt = { $gte: startJS, $lt: endJS }
 
     const calls = await WaiterCall.find(filter, {
       __v: 0,

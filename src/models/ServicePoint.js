@@ -42,12 +42,12 @@ const ServicePointSchema = new mongoose.Schema(
             maxlength: 80,
         },
 
-        // Optional short code, e.g. "T7", "204"
+        // Short code, e.g. "T7", "204"
         code: {
             type: String,
+            required: true,
             trim: true,
             maxlength: 20,
-            default: "",
         },
 
         // Auto-derived from businessType — "table" or "room"
