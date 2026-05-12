@@ -25,7 +25,8 @@ const WaiterCallSchema = new mongoose.Schema(
     // Multi-waiter ownership fields
     claimedBy: { type: String, default: null, index: true }, // waiter userId later, deviceId now
     claimedAt: { type: Date, default: null },
-    
+    acknowledgedAt: { type: Date, default: null }, // stamped when call transitions → acknowledged
+
     acknowledgedByStaffId: { type: String, default: null },
     acknowledgedByName: { type: String, default: null },
 

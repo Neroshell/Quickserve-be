@@ -179,8 +179,9 @@ export async function claimWaiterCall(req, res) {
       {
         $set: {
           status: "acknowledged",
-          claimedBy: staffId, // using staffId instead of device header
+          claimedBy: staffId,
           claimedAt: now,
+          acknowledgedAt: now,
           acknowledgedByStaffId: staffId,
           acknowledgedByName: staffName,
         },

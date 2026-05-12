@@ -2,6 +2,7 @@ import { DateTime } from "luxon"
 import Order from "../models/order.js"
 import TableSession from "../models/TableSession.js"
 import ServicePoint from "../models/ServicePoint.js"
+import WaiterCall from "../models/WaiterCall.js"
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
 
@@ -332,11 +333,60 @@ export async function ownerAnalytics(req, res) {
                 endDateJS = todayEnd.toJSDate()
         }
 
-        // 2. Fetch Base Orders
-        const orders = await Order.find({
-            businessId,
-            createdAt: { $gte: startDateJS, $lt: endDateJS }
-        }).lean()
+        // 2. Fetch Base Orders + Service Call analytics in parallel
+        const [orders, serviceCallsAgg] = await Promise.all([
+            Order.find({
+                businessId,
+                createdAt: { $gte: startDateJS, $lt: endDateJS }
+            }).lean(),
+
+            WaiterCall.aggregate([
+                {
+                    $match: {
+                        businessId,
+                        createdAt: { $gte: startDateJS, $lt: endDateJS }
+                    }
+                },
+                {
+                    $facet: {
+                        byStatus: [
+                            { $group: { _id: "$status", count: { $sum: 1 } } }
+                        ],
+                        byReason: [
+                            { $group: { _id: "$reason", count: { $sum: 1 } } }
+                        ],
+                        responseTimes: [
+                            { $match: { acknowledgedAt: { $ne: null } } },
+                            {
+                                $project: {
+                                    responseTimeSeconds: {
+                                        $divide: [
+                                            { $subtract: ["$acknowledgedAt", "$createdAt"] },
+                                            1000
+                                        ]
+                                    }
+                                }
+                            },
+                            { $group: { _id: null, avg: { $avg: "$responseTimeSeconds" } } }
+                        ],
+                        resolutionTimes: [
+                            { $match: { resolvedAt: { $ne: null }, status: "resolved" } },
+                            {
+                                $project: {
+                                    resolutionTimeSeconds: {
+                                        $divide: [
+                                            { $subtract: ["$resolvedAt", "$createdAt"] },
+                                            1000
+                                        ]
+                                    }
+                                }
+                            },
+                            { $group: { _id: null, avg: { $avg: "$resolutionTimeSeconds" } } }
+                        ]
+                    }
+                }
+            ])
+        ])
 
         // 3. Setup core variables
         const stats = {
@@ -535,13 +585,43 @@ export async function ownerAnalytics(req, res) {
             }
         ]
 
+        // ─── Shape serviceCalls ───────────────────────────────────────────
+        const scFacet = serviceCallsAgg?.[0] || {}
+
+        const scByStatus = {}
+        for (const row of scFacet.byStatus || []) {
+            if (row._id) scByStatus[row._id] = row.count
+        }
+
+        const KNOWN_REASONS = ["request_bill", "assistance", "emergency"]
+        const scByReason = { request_bill: 0, assistance: 0, emergency: 0, other: 0 }
+        for (const row of scFacet.byReason || []) {
+            const key = (row._id || "").toLowerCase().trim().replace(/\s+/g, "_")
+            if (KNOWN_REASONS.includes(key)) {
+                scByReason[key] += row.count
+            } else {
+                scByReason.other += row.count
+            }
+        }
+
+        const serviceCalls = {
+            total: (scByStatus.pending || 0) + (scByStatus.acknowledged || 0) + (scByStatus.resolved || 0),
+            pending: scByStatus.pending || 0,
+            acknowledged: scByStatus.acknowledged || 0,
+            resolved: scByStatus.resolved || 0,
+            byReason: scByReason,
+            avgResponseTimeSeconds: Math.round(scFacet.responseTimes?.[0]?.avg || 0),
+            avgResolutionTimeSeconds: Math.round(scFacet.resolutionTimes?.[0]?.avg || 0)
+        }
+
         return res.json({
             stats,
             revenueByDay,
             hourlyOrders,
             topItems,
             categoryPerformance,
-            orderTypeBreakdown
+            orderTypeBreakdown,
+            serviceCalls
         })
 
     } catch (err) {
