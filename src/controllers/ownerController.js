@@ -333,8 +333,8 @@ export async function ownerAnalytics(req, res) {
                 endDateJS = todayEnd.toJSDate()
         }
 
-        // 2. Fetch Base Orders + Service Call analytics in parallel
-        const [orders, serviceCallsAgg] = await Promise.all([
+        // 2. Fetch orders, service call analytics, and table performance in parallel
+        const [orders, serviceCallsAgg, tableAgg] = await Promise.all([
             Order.find({
                 businessId,
                 createdAt: { $gte: startDateJS, $lt: endDateJS }
@@ -385,6 +385,28 @@ export async function ownerAnalytics(req, res) {
                         ]
                     }
                 }
+            ]),
+
+            // Table performance — uses the same owner reporting range as all other analytics
+            Order.aggregate([
+                {
+                    $match: {
+                        businessId,
+                        createdAt: { $gte: startDateJS, $lt: endDateJS },
+                        status: { $in: ["placed", "in_progress", "ready", "completed"] }
+                    }
+                },
+                {
+                    $group: {
+                        _id: "$tableNumber",
+                        label:       { $first: "$tableLabel" },
+                        orderCount:  { $sum: 1 },
+                        totalRevenue:{ $sum: "$total" },
+                        paidOrders:  { $sum: { $cond: [{ $eq: ["$paymentStatus", "paid"] }, 1, 0] } },
+                        unpaidOrders:{ $sum: { $cond: [{ $ne: ["$paymentStatus", "paid"] }, 1, 0] } }
+                    }
+                },
+                { $sort: { orderCount: -1, totalRevenue: -1 } }
             ])
         ])
 
@@ -614,6 +636,41 @@ export async function ownerAnalytics(req, res) {
             avgResolutionTimeSeconds: Math.round(scFacet.resolutionTimes?.[0]?.avg || 0)
         }
 
+        // ─── Shape tablePerformance ───────────────────────────────────────
+        // Enrich aggregated rows with ServicePoint metadata (label, code, type)
+        const spIds = tableAgg
+            .map(t => t._id)
+            .filter(id => typeof id === "string" && id.startsWith("sp_"))
+
+        const servicePoints = spIds.length > 0
+            ? await ServicePoint.find(
+                { servicePointId: { $in: spIds }, businessId },
+                "servicePointId label code servicePointType"
+              ).lean()
+            : []
+
+        const spMap = {}
+        for (const sp of servicePoints) {
+            spMap[sp.servicePointId] = sp
+        }
+
+        const tablePerformance = tableAgg.map(t => {
+            const sp = spMap[t._id]
+            const rev = t.totalRevenue || 0
+            const cnt = t.orderCount  || 0
+            return {
+                servicePointId:   t._id || "",
+                label:            sp?.label || t.label || t._id || "Unknown",
+                code:             sp?.code  || "",
+                servicePointType: sp?.servicePointType || "table",
+                orderCount:       cnt,
+                totalRevenue:     +rev.toFixed(2),
+                averageOrderValue: cnt > 0 ? +(rev / cnt).toFixed(2) : 0,
+                paidOrders:       t.paidOrders   || 0,
+                unpaidOrders:     t.unpaidOrders || 0,
+            }
+        })
+
         return res.json({
             stats,
             revenueByDay,
@@ -621,7 +678,8 @@ export async function ownerAnalytics(req, res) {
             topItems,
             categoryPerformance,
             orderTypeBreakdown,
-            serviceCalls
+            serviceCalls,
+            tablePerformance
         })
 
     } catch (err) {
