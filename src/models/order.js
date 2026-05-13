@@ -75,6 +75,13 @@ const OrderSchema = new mongoose.Schema(
 
     // Staff attribution
     completedBy: { type: String, default: null },
+    // Payment confirmed by staff (offline POS/cash payments via waiter)
+    paidByStaffId: { type: String, default: null, index: true },
+    paidByName:    { type: String, default: null },
+    // Order served/delivered by waiter (Mark Served action)
+    servedByStaffId: { type: String, default: null, index: true },
+    servedByName:    { type: String, default: null },
+    servedAt:        { type: Date,   default: null },
   },
   { timestamps: true },
 )

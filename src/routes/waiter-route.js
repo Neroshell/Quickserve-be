@@ -1,6 +1,7 @@
 import express from "express"
 import { waiterOrders } from "../controllers/waiterOrdersController.js"
 import { updateOrderStatus } from "../controllers/kitchenController.js"
+import { markPaid } from "../controllers/orderController.js"
 import {
     createWaiterCall,
     listWaiterCalls,
@@ -29,6 +30,7 @@ router.use(requireAuth, requireRole("waiter"))
 // Orders
 router.get("/", waiterOrders)
 router.patch("/orders/:orderId/status", updateOrderStatus)
+router.patch("/orders/:orderId/mark-paid", markPaid)
 
 // Calls actions
 router.patch("/calls/:id/claim", claimWaiterCall)

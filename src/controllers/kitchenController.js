@@ -137,6 +137,10 @@ export async function updateOrderStatus(req, res) {
         if (staff) order.completedBy = staff.name
       }
 
+      // Waiter attribution for analytics (servedByStaffId is only set on waiter route)
+      if (staffId) order.servedByStaffId = staffId
+      if (staffName) order.servedByName   = staffName
+      order.servedAt    = new Date()
       order.completedAt = new Date()
     }
 

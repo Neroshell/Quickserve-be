@@ -333,8 +333,9 @@ export async function ownerAnalytics(req, res) {
                 endDateJS = todayEnd.toJSDate()
         }
 
-        // 2. Fetch orders, service call analytics, and table performance in parallel
-        const [orders, serviceCallsAgg, tableAgg] = await Promise.all([
+        // 2. Fetch orders, service call analytics, table performance,
+        //    and per-staff waitstaff metrics in parallel
+        const [orders, serviceCallsAgg, tableAgg, waiterCallStaffAgg, paymentStaffAgg, servedStaffAgg] = await Promise.all([
             Order.find({
                 businessId,
                 createdAt: { $gte: startDateJS, $lt: endDateJS }
@@ -407,6 +408,101 @@ export async function ownerAnalytics(req, res) {
                     }
                 },
                 { $sort: { orderCount: -1, totalRevenue: -1 } }
+            ]),
+
+            // Per-staff waiter call metrics (acknowledged + resolved, with timing)
+            WaiterCall.aggregate([
+                {
+                    $match: {
+                        businessId,
+                        createdAt: { $gte: startDateJS, $lt: endDateJS }
+                    }
+                },
+                {
+                    $facet: {
+                        acknowledged: [
+                            { $match: { acknowledgedByStaffId: { $ne: null } } },
+                            {
+                                $group: {
+                                    _id: "$acknowledgedByStaffId",
+                                    name:          { $first: "$acknowledgedByName" },
+                                    count:         { $sum: 1 },
+                                    totalRespMs: {
+                                        $sum: {
+                                            $cond: [
+                                                { $and: [{ $ne: ["$acknowledgedAt", null] }, { $ne: ["$createdAt", null] }] },
+                                                { $subtract: ["$acknowledgedAt", "$createdAt"] },
+                                                0
+                                            ]
+                                        }
+                                    },
+                                    respCount: { $sum: { $cond: [{ $ne: ["$acknowledgedAt", null] }, 1, 0] } }
+                                }
+                            }
+                        ],
+                        resolved: [
+                            { $match: { resolvedByStaffId: { $ne: null } } },
+                            {
+                                $group: {
+                                    _id: "$resolvedByStaffId",
+                                    name:          { $first: "$resolvedByName" },
+                                    count:         { $sum: 1 },
+                                    totalResolMs: {
+                                        $sum: {
+                                            $cond: [
+                                                { $and: [{ $ne: ["$resolvedAt", null] }, { $ne: ["$createdAt", null] }] },
+                                                { $subtract: ["$resolvedAt", "$createdAt"] },
+                                                0
+                                            ]
+                                        }
+                                    },
+                                    resolCount: { $sum: { $cond: [{ $ne: ["$resolvedAt", null] }, 1, 0] } }
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]),
+
+            // Per-staff payment confirmation metrics (offline payment focus)
+            Order.aggregate([
+                {
+                    $match: {
+                        businessId,
+                        createdAt: { $gte: startDateJS, $lt: endDateJS },
+                        paidByStaffId: { $ne: null },
+                        paymentStatus: "paid"
+                    }
+                },
+                {
+                    $group: {
+                        _id: "$paidByStaffId",
+                        name:                        { $first: "$paidByName" },
+                        paymentsConfirmed:           { $sum: 1 },
+                        totalOfflinePaymentsConfirmed: {
+                            $sum: { $cond: [{ $eq: ["$paymentChannel", "offline"] }, "$total", 0] }
+                        }
+                    }
+                }
+            ]),
+
+            // Per-staff orders served (waiter clicked Mark Served → completed)
+            Order.aggregate([
+                {
+                    $match: {
+                        businessId,
+                        createdAt: { $gte: startDateJS, $lt: endDateJS },
+                        servedByStaffId: { $ne: null },
+                        status: "completed"
+                    }
+                },
+                {
+                    $group: {
+                        _id: "$servedByStaffId",
+                        name: { $first: "$servedByName" },
+                        ordersServed: { $sum: 1 }
+                    }
+                }
             ])
         ])
 
@@ -671,6 +767,72 @@ export async function ownerAnalytics(req, res) {
             }
         })
 
+        // ─── Shape waitstaffPerformance ────────────────────────────────────
+        const staffMap = {}
+
+        function ensureStaff(id, name) {
+            if (!id) return
+            if (!staffMap[id]) {
+                staffMap[id] = {
+                    staffId: id,
+                    name: name || "Unknown Staff",
+                    callsAcknowledged: 0,
+                    callsResolved: 0,
+                    totalRespMs: 0,    respCount: 0,
+                    totalResolMs: 0,   resolCount: 0,
+                    ordersServed: 0,
+                    paymentsConfirmed: 0,
+                    totalOfflinePaymentsConfirmed: 0,
+                }
+            }
+            // update name if we now have a better value
+            if (name && staffMap[id].name === "Unknown Staff") staffMap[id].name = name
+        }
+
+        const wcsAgg = waiterCallStaffAgg?.[0] || {}
+
+        for (const row of wcsAgg.acknowledged || []) {
+            ensureStaff(row._id, row.name)
+            const s = staffMap[row._id]
+            s.callsAcknowledged += row.count     || 0
+            s.totalRespMs       += row.totalRespMs || 0
+            s.respCount         += row.respCount  || 0
+        }
+        for (const row of wcsAgg.resolved || []) {
+            ensureStaff(row._id, row.name)
+            const s = staffMap[row._id]
+            s.callsResolved  += row.count        || 0
+            s.totalResolMs   += row.totalResolMs || 0
+            s.resolCount     += row.resolCount   || 0
+        }
+        for (const row of paymentStaffAgg || []) {
+            ensureStaff(row._id, row.name)
+            const s = staffMap[row._id]
+            s.paymentsConfirmed             += row.paymentsConfirmed             || 0
+            s.totalOfflinePaymentsConfirmed += row.totalOfflinePaymentsConfirmed || 0
+        }
+        for (const row of servedStaffAgg || []) {
+            ensureStaff(row._id, row.name)
+            staffMap[row._id].ordersServed += row.ordersServed || 0
+        }
+
+        const waitstaffPerformance = Object.values(staffMap)
+            .map(s => ({
+                staffId:                      s.staffId,
+                name:                         s.name,
+                callsAcknowledged:            s.callsAcknowledged,
+                callsResolved:                s.callsResolved,
+                avgResponseTimeSeconds:       s.respCount  > 0 ? Math.round(s.totalRespMs  / s.respCount  / 1000) : 0,
+                avgResolutionTimeSeconds:     s.resolCount > 0 ? Math.round(s.totalResolMs / s.resolCount / 1000) : 0,
+                ordersServed:                 s.ordersServed,
+                paymentsConfirmed:            s.paymentsConfirmed,
+                totalOfflinePaymentsConfirmed: +s.totalOfflinePaymentsConfirmed.toFixed(2),
+            }))
+            .sort((a, b) =>
+                b.callsResolved - a.callsResolved ||
+                b.paymentsConfirmed - a.paymentsConfirmed
+            )
+
         return res.json({
             stats,
             revenueByDay,
@@ -679,7 +841,8 @@ export async function ownerAnalytics(req, res) {
             categoryPerformance,
             orderTypeBreakdown,
             serviceCalls,
-            tablePerformance
+            tablePerformance,
+            waitstaffPerformance
         })
 
     } catch (err) {

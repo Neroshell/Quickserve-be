@@ -347,6 +347,9 @@ export async function markPaid(req, res) {
     // ✅ Step 1: Save payment — this must always succeed
     order.paymentStatus = "paid"
     order.paidVia = paidVia
+    // Stamp which staff member confirmed this payment (waiter analytics)
+    if (req.session?.user?.staffId) order.paidByStaffId = req.session.user.staffId
+    if (req.session?.user?.name)    order.paidByName    = req.session.user.name
     await order.save()
 
     const orderDTO = toOrderDTO(order)
