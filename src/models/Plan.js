@@ -1,31 +1,37 @@
 import mongoose from "mongoose"
 
 const PlanSchema = new mongoose.Schema({
-    name: { 
-        type: String, 
-        required: true, 
+    name: {
+        type: String,
+        required: true,
         unique: true,
         trim: true
     },
-    commissionPercentage: { 
-        type: Number, 
-        required: true, 
+    slug: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true
+    },
+    offlineCommissionRate: {
+        type: Number,
+        required: true,
         default: 0,
-        min: 0 
+        min: 0
     },
-    monthlyFee: { 
-        type: Number, 
-        required: true, 
+    monthlyPrice: {
+        type: Number,
+        required: true,
         default: 0,
-        min: 0 
+        min: 0
     },
-    currency: { 
-        type: String, 
-        default: "USD" 
+    currency: {
+        type: String,
+        default: "EUR"
     },
-    isActive: { 
-        type: Boolean, 
-        default: true 
+    isActive: {
+        type: Boolean,
+        default: true
     },
     description: {
         type: String,

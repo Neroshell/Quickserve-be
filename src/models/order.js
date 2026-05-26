@@ -32,6 +32,9 @@ const OrderSchema = new mongoose.Schema(
     sessionId: { type: String, index: true },
     status: { type: String, enum: ["placed", "in_progress", "ready", "completed"], default: "placed", index: true },
     items: { type: [OrderItemSchema], required: true },
+    subtotal: { type: Number, default: 0 },
+    taxAmount: { type: Number, default: 0 },
+    platformFeeTotal: { type: Number, default: 0 },
     total: { type: Number, default: 0 },
     currency: { type: String, default: "EUR" },
 

@@ -8,7 +8,12 @@ import { publishEvent } from "../utils/sseManager.js"
 import { sendReceiptEmail } from "../utils/emailService.js"
 import ServicePoint from "../models/ServicePoint.js"
 import Business from "../models/Business.js"
+import Plan from "../models/Plan.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
+
+function canUseOfflinePayments(business) {
+  return business.billingStatus === "active" && !!business.defaultPaymentMethodId
+}
 
 /** Resolve businessId from request — accepts businessId or legacy restaurantId */
 function resolveBusinessId(req) {
@@ -123,6 +128,15 @@ export async function createOrder(req, res) {
       })
     }
 
+    // ✅ Guard: Offline payment setup
+    const isOffline = (!paymentChannel || paymentChannel === "offline")
+    if (isOffline && !canUseOfflinePayments(business)) {
+      return res.status(403).json({
+        code: "OFFLINE_BILLING_NOT_SETUP",
+        message: "Offline payments are not available. This business has not completed billing setup."
+      })
+    }
+
     // Resolve human-friendly label for display (stored once, no need to look up later)
     const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId }).lean()
     const tableLabel = sp?.label || sp?.code || tableNumber
@@ -162,8 +176,21 @@ export async function createOrder(req, res) {
     const hasFood = enrichedItems.some(i => i.type === "food")
     const initialStatus = hasFood ? "placed" : "ready"
 
-    // Use calculated total if possible, fallback to frontend total
-    const finalTotal = calculatedTotal > 0 ? Number(calculatedTotal.toFixed(2)) : (Number(total) || 0)
+    // ✅ Backend-authoritative total calculation
+    const subtotal = calculatedTotal > 0 ? Number(calculatedTotal.toFixed(2)) : (Number(total) || 0)
+    const taxRate = business.taxRate || 0
+    const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2))
+
+    // Platform fee: only when the owner has opted to pass it to the customer
+    let platformFeeTotal = 0
+    if (business.passPlatformFeeToCustomer) {
+      const currentPlan = business.currentPlan || "basic"
+      const planDef = await Plan.findOne({ slug: currentPlan }).lean()
+      const feeRate = planDef ? planDef.offlineCommissionRate : 2.5
+      platformFeeTotal = Number((subtotal * (feeRate / 100)).toFixed(2))
+    }
+
+    const finalTotal = Number((subtotal + taxAmount + platformFeeTotal).toFixed(2))
 
     const saved = await Order.create({
       orderId,
@@ -174,6 +201,9 @@ export async function createOrder(req, res) {
       sessionId,
       items: enrichedItems,
       status: initialStatus,
+      subtotal,
+      taxAmount,
+      platformFeeTotal,
       total: finalTotal,
       currency: currency || "EUR",
       paymentChannel: paymentChannel || "offline",
@@ -342,6 +372,14 @@ export async function markPaid(req, res) {
 
     if (order.paymentStatus === "paid") {
       return res.status(400).json({ message: "Order is already paid" })
+    }
+
+    const business = await Business.findOne({ $or: [{ businessId }, { restaurantId: businessId }] }).lean()
+    if (!business || !canUseOfflinePayments(business)) {
+      return res.status(403).json({
+        code: "OFFLINE_BILLING_NOT_SETUP",
+        message: "Offline payment confirmation is unavailable until billing setup is complete."
+      })
     }
 
     // ✅ Step 1: Save payment — this must always succeed

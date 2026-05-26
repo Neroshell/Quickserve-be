@@ -18,12 +18,26 @@ export async function getSettings(req, res) {
             return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json(business)
+        const bizObj = business.toObject()
+        const canUseOfflinePayments = bizObj.billingStatus === "active" && !!bizObj.defaultPaymentMethodId
+        bizObj.offlinePaymentsAvailable = canUseOfflinePayments
+        bizObj.offlinePaymentsUnavailableReason = canUseOfflinePayments 
+            ? null 
+            : (bizObj.billingStatus === "past_due" ? "past_due" : "billing_not_setup")
+
+        // Resolve platform fee rate from the plan
+        const currentPlan = bizObj.currentPlan || "basic"
+        const planDef = await Plan.findOne({ slug: currentPlan }).lean()
+        const platformFeeRate = planDef ? planDef.offlineCommissionRate : 2.5
+        bizObj.platformFeeRate = platformFeeRate
+
+        return res.json(bizObj)
     } catch (err) {
         console.error("Get settings error:", err)
         return res.status(500).json({ message: "Server error" })
     }
 }
+
 
 export async function updateSettings(req, res) {
     try {

@@ -42,10 +42,9 @@ export async function updatePlan(req, res) {
 export async function seedPlans(req, res) {
     try {
         const defaultPlans = [
-            { name: "Basic", commissionPercentage: 2.5, monthlyFee: 0 },
-            { name: "Starter", commissionPercentage: 2.5, monthlyFee: 39 },
-            { name: "Growth", commissionPercentage: 2.5, monthlyFee: 79 },
-            { name: "Enterprise", commissionPercentage: 2, monthlyFee: 119 },
+            { name: "Basic", slug: "basic", offlineCommissionRate: 2.5, monthlyPrice: 0 },
+            { name: "Growth", slug: "growth", offlineCommissionRate: 3.0, monthlyPrice: 0 },
+            { name: "Enterprise", slug: "enterprise", offlineCommissionRate: 4.0, monthlyPrice: 0 },
         ]
 
         for (const p of defaultPlans) {

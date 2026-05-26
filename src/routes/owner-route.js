@@ -21,6 +21,16 @@ import {
 
 import { requireAuth, requireOwner } from "../middleware/authMiddleware.js"
 import { connectAccount, getStripeStatus, getStripeDashboardLink } from "../controllers/stripeConnectController.js"
+import {
+    getBillingOverview,
+    createSetupIntent,
+    verifyPaymentMethod,
+    deletePaymentMethod,
+    updatePlan,
+    getCommissionSummary,
+    getInvoices,
+    updatePlatformFeeSettings
+} from "../controllers/billingController.js"
 
 const router = express.Router()
 router.use(requireAuth, requireOwner)
@@ -95,5 +105,31 @@ router.get("/stripe/status", getStripeStatus)
 // GET /owner/stripe/dashboard-link
 // Creates a single-use Stripe Express dashboard login link for the connected account.
 router.get("/stripe/dashboard-link", getStripeDashboardLink)
+
+// ─── QuickServe Billing (MVP) ────────────────────────────────────────────────
+
+// GET /owner/billing
+router.get("/billing", getBillingOverview)
+
+// POST /owner/billing/setup-intent
+router.post("/billing/setup-intent", createSetupIntent)
+
+// POST /owner/billing/verify-payment-method
+router.post("/billing/verify-payment-method", verifyPaymentMethod)
+
+// DELETE /owner/billing/payment-method
+router.delete("/billing/payment-method", deletePaymentMethod)
+
+// POST /owner/billing/plan
+router.post("/billing/plan", updatePlan)
+
+// GET /owner/billing/commission
+router.get("/billing/commission", getCommissionSummary)
+
+// GET /owner/billing/invoices
+router.get("/billing/invoices", getInvoices)
+
+// PATCH /owner/billing/platform-fee-settings
+router.patch("/billing/platform-fee-settings", updatePlatformFeeSettings)
 
 export default router

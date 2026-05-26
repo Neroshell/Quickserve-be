@@ -77,12 +77,32 @@ const BusinessSchema = new mongoose.Schema({
         type: [String],
         default: ["appetizers", "mains", "desserts", "beverages"]
     },
-    plan: { 
+    // QuickServe MVP Billing & Plan Fields
+    billingStatus: { 
         type: String, 
-        enum: ["basic", "starter", "growth", "enterprise"], 
-        default: "basic" 
+        enum: ['active', 'incomplete', 'past_due'], 
+        default: 'incomplete' 
     },
-    planId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan' },
+    billingEnabled: { type: Boolean, default: false },
+    currentPlan: { 
+        type: String, 
+        enum: ['basic', 'growth', 'enterprise'], 
+        default: 'basic' 
+    },
+    planActivatedAt: { type: Date },
+    billingCycle: { type: String, enum: ['monthly'], default: 'monthly' },
+    nextBillingDate: { type: Date },
+    
+    passPlatformFeeToCustomer: { type: Boolean, default: false },
+    platformFeeLabel: { type: String, default: "Platform Fee" },
+    
+    // Stripe Payment Method (Safe display metadata only)
+    stripeCustomerId: { type: String },
+    defaultPaymentMethodId: { type: String },
+    paymentMethodBrand: { type: String },
+    paymentMethodLast4: { type: String },
+    paymentMethodExpMonth: { type: Number },
+    paymentMethodExpYear: { type: Number },
     status: { 
         type: String, 
         enum: ["draft", "active", "suspended", "archived"], 
