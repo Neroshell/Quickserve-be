@@ -305,11 +305,50 @@ export async function getInvoices(req, res) {
         const businessId = resolveBusinessId(req)
         if (!businessId) return res.status(401).json({ message: "Unauthorized" })
 
-        const invoices = await BillingInvoice.find({ businessId }).sort({ createdAt: -1 }).lean()
+        const dbInvoices = await BillingInvoice.find({ businessId }).sort({ createdAt: -1 }).lean()
+
+        const invoices = await Promise.all(dbInvoices.map(async (inv) => {
+            if (inv.stripeInvoiceId) {
+                try {
+                    const stripeInvoice = await stripe.invoices.retrieve(inv.stripeInvoiceId)
+                    return {
+                        ...inv,
+                        hosted_invoice_url: stripeInvoice.hosted_invoice_url,
+                        invoice_pdf: stripeInvoice.invoice_pdf
+                    }
+                } catch (e) {
+                    console.error(`[getInvoices] Failed to retrieve Stripe invoice ${inv.stripeInvoiceId}:`, e.message)
+                    return inv
+                }
+            }
+            return inv
+        }))
+
         res.json(invoices)
     } catch (err) {
         console.error("[getInvoices] Error:", err)
         res.status(500).json({ message: "Server error fetching invoices" })
+    }
+}
+
+/**
+ * DELETE /owner/billing/invoices/:id
+ * Archives (deletes) a billing invoice from the local DB.
+ */
+export async function archiveInvoice(req, res) {
+    try {
+        const businessId = resolveBusinessId(req)
+        if (!businessId) return res.status(401).json({ message: "Unauthorized" })
+
+        const { id } = req.params
+
+        const invoice = await BillingInvoice.findOneAndDelete({ _id: id, businessId })
+        if (!invoice) return res.status(404).json({ message: "Invoice not found" })
+
+        res.json({ message: "Invoice archived successfully" })
+    } catch (err) {
+        console.error("[archiveInvoice] Error:", err)
+        res.status(500).json({ message: "Server error archiving invoice" })
     }
 }
 

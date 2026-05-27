@@ -29,6 +29,7 @@ import {
     updatePlan,
     getCommissionSummary,
     getInvoices,
+    archiveInvoice,
     updatePlatformFeeSettings
 } from "../controllers/billingController.js"
 
@@ -128,6 +129,9 @@ router.get("/billing/commission", getCommissionSummary)
 
 // GET /owner/billing/invoices
 router.get("/billing/invoices", getInvoices)
+
+// DELETE /owner/billing/invoices/:id
+router.delete("/billing/invoices/:id", archiveInvoice)
 
 // PATCH /owner/billing/platform-fee-settings
 router.patch("/billing/platform-fee-settings", updatePlatformFeeSettings)
