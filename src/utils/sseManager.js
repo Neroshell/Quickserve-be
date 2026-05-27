@@ -18,6 +18,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { redisPub, REDIS_CHANNEL } from "../config/redisClient.js"
+import TableSession from "../models/TableSession.js"
 
 // ── Local client registry ────────────────────────────────────────────────────
 const clients = new Set()
@@ -37,15 +38,40 @@ function removeClient(client) {
 }
 
 // ── SSE HTTP handler ─────────────────────────────────────────────────────────
-export function sseHandler(req, res) {
+export async function sseHandler(req, res) {
+    const role = req.query.role || "anon"
+    const businessId = req.query.businessId || req.query.restaurantId
+    const token = req.query.token
+
+    if (!businessId) {
+        return res.status(400).end("Missing businessId")
+    }
+
+    // ── Authentication & Authorization ─────────────────────────────────────────
+    if (role === "table" || role === "anon" || role === "customer") {
+        if (!token) {
+            return res.status(401).end("Missing session token")
+        }
+        const ts = await TableSession.findOne({ token, businessId }).lean()
+        if (!ts || ts.expiresAt < new Date()) {
+            return res.status(403).end("Invalid or expired table session")
+        }
+    } else {
+        // Staff roles (waiter, kitchen, bar, owner, etc.)
+        if (!req.session || !req.session.user) {
+            return res.status(401).end("Unauthorized. Please log in.")
+        }
+        if (req.session.user.businessId !== businessId) {
+            return res.status(403).end("Forbidden. businessId mismatch.")
+        }
+    }
+
     res.setHeader("Content-Type", "text/event-stream")
     res.setHeader("Cache-Control", "no-cache")
     res.setHeader("Connection", "keep-alive")
     res.setHeader("X-Accel-Buffering", "no")   // disable nginx proxy buffering
     res.flushHeaders?.()
 
-    const role = req.query.role || "anon"
-    const businessId = req.query.businessId || req.query.restaurantId || "default-business-id"
     const client = { res, role, businessId }
 
     addClient(client)

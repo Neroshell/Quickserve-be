@@ -3,8 +3,12 @@ import multer from "multer"
 import Business from "../models/Business.js"
 import MenuItem from "../models/menuItem.js"
 import { uploadToCloudinary, deleteFromCloudinary } from "../utils/uploadToCloudinary.js"
+import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
 
 const router = express.Router()
+
+// Require manager/owner level access for all uploads
+router.use(requireAuth, requireRole("owner", "admin", "manager"))
 
 // Memory storage — no files written to disk
 const upload = multer({

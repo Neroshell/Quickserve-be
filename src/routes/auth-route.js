@@ -4,12 +4,14 @@ import { validateInviteToken, setupOwnerPassword, loginUser, getMe, requestPassw
 
 const router = express.Router();
 
+// Strict rate limiter for sensitive auth endpoints
 const authLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute
-  max: 10, // Limit each IP to 10 requests per minute
-  message: { message: "Too many requests. Please try again later." },
+  windowMs: 10 * 60 * 1000, // 15-minute window
+  max: 5, // Max 5 attempts per IP per window
+  message: { message: "Too many attempts. Please try again in 15 minutes." },
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true, // Only count failed requests against the limit
 });
 
 // GET /auth/invite/validate?token=...

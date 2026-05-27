@@ -45,7 +45,7 @@ export async function listOrders(req, res) {
     }
 
     const orders = await Order.find(filter).sort({ createdAt: -1 }).lean()
-    
+
     // Hydrate table labels for service points
     for (const order of orders) {
       if (order.tableNumber && order.tableNumber.startsWith("sp_")) {
@@ -113,8 +113,9 @@ export async function createOrder(req, res) {
       return res.status(403).json({ message: "This table session is already in use on another device." })
     }
 
-    // Get businessId from req body — accept businessId or legacy restaurantId
-    const businessId = resolveBusinessId(req) || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
+    //  STRICT SECURITY: Override businessId explicitly from the validated TableSession
+    // This prevents an attacker with a valid session at Restaurant A from injecting orders into Restaurant B.
+    const businessId = ts.businessId
 
     // ✅ CRITICAL GATE: Business Open/Closed logic
     const business = await Business.findOne({
@@ -150,11 +151,14 @@ export async function createOrder(req, res) {
     const enrichedItems = await Promise.all(
       items.map(async (item) => {
         const menuItem = await MenuItem.findOne({ name: item.itemName, businessId }).lean()
-        // Authoritative from DB, fallback to provided price, else 0
-        const unitPrice = menuItem?.price || item.unitPrice || 0
-        const itemType = menuItem?.type || (item.orderCategory === "drinks" ? "drinks" : "food")
-        const displayCategory = menuItem?.category || "mains"
-        const itemImage = menuItem?.imageUrl || item.image || ""
+        if (!menuItem) {
+          throw new Error(`Menu item '${item.itemName}' is no longer available.`)
+        }
+        // Authoritative from DB, strictly ignoring client price
+        const unitPrice = menuItem.price || 0
+        const itemType = menuItem.type || (item.orderCategory === "drinks" ? "drinks" : "food")
+        const displayCategory = menuItem.category || "mains"
+        const itemImage = menuItem.imageUrl || item.image || ""
 
         const itemLineTotal = Number((unitPrice * item.quantity).toFixed(2))
         calculatedTotal += itemLineTotal
@@ -177,7 +181,7 @@ export async function createOrder(req, res) {
     const initialStatus = hasFood ? "placed" : "ready"
 
     // ✅ Backend-authoritative total calculation
-    const subtotal = calculatedTotal > 0 ? Number(calculatedTotal.toFixed(2)) : (Number(total) || 0)
+    const subtotal = Number(calculatedTotal.toFixed(2))
     const taxRate = business.taxRate || 0
     const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2))
 
@@ -236,6 +240,9 @@ export async function createOrder(req, res) {
     return res.status(201).json({ orderId: saved.orderId, businessId: saved.businessId, status: saved.status })
   } catch (err) {
     console.error("Create order error:", err)
+    if (err.message && err.message.includes("is no longer available")) {
+      return res.status(400).json({ error: err.message })
+    }
     return res.status(500).json({ message: "Server error" })
   }
 }
@@ -387,7 +394,7 @@ export async function markPaid(req, res) {
     order.paidVia = paidVia
     // Stamp which staff member confirmed this payment (waiter analytics)
     if (req.session?.user?.staffId) order.paidByStaffId = req.session.user.staffId
-    if (req.session?.user?.name)    order.paidByName    = req.session.user.name
+    if (req.session?.user?.name) order.paidByName = req.session.user.name
     await order.save()
 
     const orderDTO = toOrderDTO(order)
@@ -395,23 +402,23 @@ export async function markPaid(req, res) {
     // Broadcast via Redis — kitchen gets food-only, bar gets drinks-only, waiters get full order
     const foodItems2 = order.items.filter(i => i.type === "food")
     const drinkItems2 = order.items.filter(i => i.type === "drinks")
-    
+
     if (foodItems2.length > 0) {
-        const kitchenDTO = { ...orderDTO, items: foodItems2 }
-        await publishEvent("order_updated", order.businessId, ["kitchen"], { order: kitchenDTO })
+      const kitchenDTO = { ...orderDTO, items: foodItems2 }
+      await publishEvent("order_updated", order.businessId, ["kitchen"], { order: kitchenDTO })
     }
-    
+
     if (drinkItems2.length > 0) {
-        const barDTO = { ...orderDTO, items: drinkItems2 }
-        await publishEvent("order_updated", order.businessId, ["bar"], { order: barDTO })
+      const barDTO = { ...orderDTO, items: drinkItems2 }
+      await publishEvent("order_updated", order.businessId, ["bar"], { order: barDTO })
     }
 
     await publishEvent("order_updated", order.businessId, ["waiter", "table", "anon"], { order: orderDTO, action: "payment_confirmed" })
 
     // ✅ Step 3: Respond immediately — do NOT wait for email
 
- if (order.receiptEmail && !order.receiptSent) {
-      ;(async () => {
+    if (order.receiptEmail && !order.receiptSent) {
+      ; (async () => {
         try {
           const emailSent = await sendReceiptEmail(order, order.receiptEmail)
           if (emailSent) {
@@ -435,7 +442,7 @@ export async function markPaid(req, res) {
 
     // ✅ Step 4: Fire-and-forget receipt email — runs AFTER response is sent
     // This will never block the HTTP response, even if SMTP hangs in production
-   
+
   } catch (err) {
     console.error("[markPaid] Error:", err)
     return res.status(500).json({ message: "Server error" })

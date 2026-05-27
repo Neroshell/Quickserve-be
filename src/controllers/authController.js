@@ -177,7 +177,9 @@ export async function setupStaffPassword(req, res) {
  */
 export async function loginUser(req, res) {
     try {
-        const { email, password } = req.body;
+        // Strictly cast to string to prevent NoSQL injection via JSON object payloads (e.g. {"$ne": null})
+        const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : null
+        const password = typeof req.body.password === "string" ? req.body.password : null
 
         if (!email || !password) {
             return res.status(400).json({ message: "Email and password are required" });
@@ -378,14 +380,13 @@ export async function getMe(req, res) {
  */
 export async function requestPasswordReset(req, res) {
     try {
-        const { email } = req.body;
+        // Strictly cast to string to prevent NoSQL injection via JSON object payloads (e.g. {"$ne": null})
+        const normalizedEmail = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : null
         
-        if (!email) {
+        if (!normalizedEmail) {
             return res.status(400).json({ message: "Email is required" });
         }
 
-        const normalizedEmail = email.trim().toLowerCase();
-        
         // Find user by email (Owner first)
         let user = await Business.findOne({ ownerEmail: normalizedEmail });
         let userType = "owner";
