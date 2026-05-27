@@ -52,10 +52,17 @@ export async function createCheckoutSession(req, res) {
         if (ts.tableId !== tableNumber)
             return res.status(403).json({ message: "Table session mismatch." });
 
-        // Bind session to first device
+        // Bind session to first device ATOMICALLY
         if (!ts.boundSessionId) {
+            const updatedTs = await TableSession.findOneAndUpdate(
+                { _id: ts._id, boundSessionId: null },
+                { $set: { boundSessionId: sessionId } },
+                { new: true }
+            );
+            if (!updatedTs) {
+                return res.status(403).json({ message: "Table session was just claimed by another device." });
+            }
             ts.boundSessionId = sessionId;
-            await ts.save();
         } else if (ts.boundSessionId !== sessionId) {
             return res.status(403).json({ message: "Table session active on another device." });
         }

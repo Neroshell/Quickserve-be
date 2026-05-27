@@ -105,10 +105,17 @@ export async function createOrder(req, res) {
       return res.status(403).json({ message: "Table session mismatch. Please rescan the correct table QR." })
     }
 
-    // Bind token to first device sessionId
+    // Bind token to first device sessionId ATOMICALLY
     if (!ts.boundSessionId) {
+      const updatedTs = await TableSession.findOneAndUpdate(
+        { _id: ts._id, boundSessionId: null },
+        { $set: { boundSessionId: sessionId } },
+        { new: true }
+      )
+      if (!updatedTs) {
+        return res.status(403).json({ message: "This table session was just claimed by another device." })
+      }
       ts.boundSessionId = sessionId
-      await ts.save()
     } else if (ts.boundSessionId !== sessionId) {
       return res.status(403).json({ message: "This table session is already in use on another device." })
     }
@@ -311,7 +318,7 @@ export async function updateOrderStatus(req, res) {
       return res.status(400).json({ error: "Invalid status" })
     }
 
-    const order = await Order.findOne({ orderId, businessId })
+    const order = await Order.findOne({ orderId, businessId }).lean()
     if (!order) return res.status(404).json({ error: "Order not found" })
 
     const allowedNext = {
@@ -334,24 +341,31 @@ export async function updateOrderStatus(req, res) {
       })
     }
 
-    order.status = nextStatus
+    const updateObj = { status: nextStatus }
+    if (nextStatus === "ready" && !order.readyAt) updateObj.readyAt = new Date()
+    if (nextStatus === "completed" && !order.completedAt) updateObj.completedAt = new Date()
 
-    // ✅ add timestamps when certain statuses happen
-    if (nextStatus === "ready" && !order.readyAt) order.readyAt = new Date()
-    if (nextStatus === "completed" && !order.completedAt) order.completedAt = new Date()
+    // ✅ ATOMIC UPDATE: Prevent race conditions if two waiters click the button simultaneously
+    const updatedOrder = await Order.findOneAndUpdate(
+      { orderId, businessId, status: order.status },
+      { $set: updateObj },
+      { new: true }
+    )
 
-    await order.save()
+    if (!updatedOrder) {
+      return res.status(409).json({ error: "Order status was updated by another request. Please refresh and try again." })
+    }
 
-    const orderDTO = toOrderDTO(order)
-    await publishEvent("order_updated", order.businessId, null, { order: orderDTO })
+    const orderDTO = toOrderDTO(updatedOrder)
+    await publishEvent("order_updated", updatedOrder.businessId, null, { order: orderDTO })
 
     return res.json({
       success: true,
-      orderId: order.orderId,
-      status: order.status,
-      updatedAt: order.updatedAt,
-      readyAt: order.readyAt,
-      completedAt: order.completedAt,
+      orderId: updatedOrder.orderId,
+      status: updatedOrder.status,
+      updatedAt: updatedOrder.updatedAt,
+      readyAt: updatedOrder.readyAt,
+      completedAt: updatedOrder.completedAt,
     })
   } catch (err) {
     console.error("[updateOrderStatus]", err)
@@ -374,7 +388,7 @@ export async function markPaid(req, res) {
       return res.status(400).json({ message: "Invalid paidVia method" })
     }
 
-    const order = await Order.findOne({ orderId, businessId })
+    const order = await Order.findOne({ orderId, businessId }).lean()
     if (!order) return res.status(404).json({ message: "Order not found" })
 
     if (order.paymentStatus === "paid") {
@@ -389,41 +403,51 @@ export async function markPaid(req, res) {
       })
     }
 
-    // ✅ Step 1: Save payment — this must always succeed
-    order.paymentStatus = "paid"
-    order.paidVia = paidVia
+    // ✅ ATOMIC UPDATE: Prevent double mark-paid race condition
+    const updateObj = {
+      paymentStatus: "paid",
+      paidVia
+    }
     // Stamp which staff member confirmed this payment (waiter analytics)
-    if (req.session?.user?.staffId) order.paidByStaffId = req.session.user.staffId
-    if (req.session?.user?.name) order.paidByName = req.session.user.name
-    await order.save()
+    if (req.session?.user?.staffId) updateObj.paidByStaffId = req.session.user.staffId
+    if (req.session?.user?.name) updateObj.paidByName = req.session.user.name
 
-    const orderDTO = toOrderDTO(order)
+    const updatedOrder = await Order.findOneAndUpdate(
+      { orderId, businessId, paymentStatus: { $ne: "paid" } },
+      { $set: updateObj },
+      { new: true }
+    )
+
+    if (!updatedOrder) {
+      return res.status(409).json({ message: "Order was already marked paid by another request." })
+    }
+
+    const orderDTO = toOrderDTO(updatedOrder)
 
     // Broadcast via Redis — kitchen gets food-only, bar gets drinks-only, waiters get full order
-    const foodItems2 = order.items.filter(i => i.type === "food")
-    const drinkItems2 = order.items.filter(i => i.type === "drinks")
+    const foodItems2 = updatedOrder.items.filter(i => i.type === "food")
+    const drinkItems2 = updatedOrder.items.filter(i => i.type === "drinks")
 
     if (foodItems2.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems2 }
-      await publishEvent("order_updated", order.businessId, ["kitchen"], { order: kitchenDTO })
+      await publishEvent("order_updated", updatedOrder.businessId, ["kitchen"], { order: kitchenDTO })
     }
 
     if (drinkItems2.length > 0) {
       const barDTO = { ...orderDTO, items: drinkItems2 }
-      await publishEvent("order_updated", order.businessId, ["bar"], { order: barDTO })
+      await publishEvent("order_updated", updatedOrder.businessId, ["bar"], { order: barDTO })
     }
 
-    await publishEvent("order_updated", order.businessId, ["waiter", "table", "anon"], { order: orderDTO, action: "payment_confirmed" })
+    await publishEvent("order_updated", updatedOrder.businessId, ["waiter", "table", "anon"], { order: orderDTO, action: "payment_confirmed" })
 
     // ✅ Step 3: Respond immediately — do NOT wait for email
 
-    if (order.receiptEmail && !order.receiptSent) {
+    if (updatedOrder.receiptEmail && !updatedOrder.receiptSent) {
       ; (async () => {
         try {
-          const emailSent = await sendReceiptEmail(order, order.receiptEmail)
+          const emailSent = await sendReceiptEmail(updatedOrder, updatedOrder.receiptEmail)
           if (emailSent) {
-            order.receiptSent = true
-            await order.save()
+            await Order.findOneAndUpdate({ _id: updatedOrder._id }, { $set: { receiptSent: true } })
           } else {
             console.warn(`[markPaid] ⚠️ sendReceiptEmail returned false for order ${orderId} — email not sent`)
           }

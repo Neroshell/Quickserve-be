@@ -15,8 +15,9 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 }, // 5MB cap
   fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith("image/")) {
-      return cb(new Error("Only image files are allowed"))
+    const allowedMimes = ["image/jpeg", "image/png", "image/webp"]
+    if (!allowedMimes.includes(file.mimetype)) {
+      return cb(new Error("Invalid file type. Only JPEG, PNG, and WEBP images are allowed."))
     }
     cb(null, true)
   },
