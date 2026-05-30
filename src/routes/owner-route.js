@@ -30,7 +30,8 @@ import {
     getCommissionSummary,
     getInvoices,
     archiveInvoice,
-    updatePlatformFeeSettings
+    updatePlatformFeeSettings,
+    reportOfflineUsage
 } from "../controllers/billingController.js"
 
 const router = express.Router()
@@ -135,5 +136,8 @@ router.delete("/billing/invoices/:id", archiveInvoice)
 
 // PATCH /owner/billing/platform-fee-settings
 router.patch("/billing/platform-fee-settings", updatePlatformFeeSettings)
+
+// POST /owner/billing/report-usage
+router.post("/billing/report-usage", reportOfflineUsage)
 
 export default router

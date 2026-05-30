@@ -103,6 +103,12 @@ const BusinessSchema = new mongoose.Schema({
     paymentMethodLast4: { type: String },
     paymentMethodExpMonth: { type: Number },
     paymentMethodExpYear: { type: Number },
+    // QuickServe Stripe Subscription (Metered Billing)
+    stripeSubscriptionId: { type: String, default: null, index: true },
+    stripeMeteredSubscriptionItemId: { type: String, default: null }, // Used to report usage records
+    stripeSubscriptionStatus: { type: String, default: "incomplete" }, // Synced from Stripe webhooks
+    scheduledDowngradePlan: { type: String, default: null }, // Pending downgrade at period end
+    scheduledPlanEffectiveDate: { type: Date, default: null },
     status: { 
         type: String, 
         enum: ["draft", "active", "suspended", "archived"], 

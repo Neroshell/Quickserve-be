@@ -36,7 +36,10 @@ const PlanSchema = new mongoose.Schema({
     description: {
         type: String,
         default: ""
-    }
+    },
+    // Stripe Price IDs — populated by the seedStripePlans script
+    stripeBasePriceId: { type: String, default: null },       // recurring monthly flat fee
+    stripeMeteredPriceId: { type: String, default: null },    // per-unit offline commission
 }, { timestamps: true })
 
 export default mongoose.models.Plan || mongoose.model("Plan", PlanSchema)

@@ -3,6 +3,7 @@ import PendingCheckout from "../models/PendingCheckout.js";
 import Business from "../models/Business.js";
 import Order from "../models/order.js";
 import ServicePoint from "../models/ServicePoint.js";
+import Plan from "../models/Plan.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
 import { publishEvent } from "../utils/sseManager.js";
@@ -41,6 +42,68 @@ export async function handleStripeWebhook(req, res) {
                 }
             );
 
+            return res.status(200).send();
+        }
+
+        if (event.type === "invoice.paid") {
+            const invoice = event.data.object;
+            if (invoice.subscription) {
+                const biz = await Business.findOne({ stripeSubscriptionId: invoice.subscription });
+                if (biz && biz.scheduledDowngradePlan) {
+                    console.log(`[webhook] Applying scheduled downgrade for business ${biz.businessId} to ${biz.scheduledDowngradePlan}`);
+                    const targetPlan = await Plan.findOne({ slug: biz.scheduledDowngradePlan }).lean();
+                    
+                    if (targetPlan && targetPlan.stripeMeteredPriceId) {
+                        const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
+                        const baseItem = subscription.items.data.find(i => i.price.recurring?.usage_type !== 'metered');
+                        const meteredItem = subscription.items.data.find(i => i.price.recurring?.usage_type === 'metered');
+                        
+                        const itemsToUpdate = [];
+                        
+                        // Downgrade base item
+                        if (targetPlan.stripeBasePriceId) {
+                            if (baseItem) {
+                                itemsToUpdate.push({ id: baseItem.id, price: targetPlan.stripeBasePriceId });
+                            } else {
+                                itemsToUpdate.push({ price: targetPlan.stripeBasePriceId });
+                            }
+                        } else if (baseItem) {
+                            itemsToUpdate.push({ id: baseItem.id, deleted: true });
+                        }
+                        
+                        // Downgrade metered item
+                        if (meteredItem) {
+                            itemsToUpdate.push({ id: meteredItem.id, price: targetPlan.stripeMeteredPriceId });
+                        } else {
+                            itemsToUpdate.push({ price: targetPlan.stripeMeteredPriceId });
+                        }
+                        
+                        const updated = await stripe.subscriptions.update(invoice.subscription, {
+                            items: itemsToUpdate,
+                            proration_behavior: 'none', // Next cycle has started, no prorations needed
+                            metadata: { quickserve_plan: biz.scheduledDowngradePlan },
+                        });
+                        
+                        const updatedMeteredItem = updated.items.data.find(
+                            i => i.price.id === targetPlan.stripeMeteredPriceId
+                        );
+                        
+                        await Business.findOneAndUpdate(
+                            { _id: biz._id },
+                            {
+                                $set: {
+                                    currentPlan: biz.scheduledDowngradePlan,
+                                    plan: biz.scheduledDowngradePlan,
+                                    stripeMeteredSubscriptionItemId: updatedMeteredItem?.id ?? null,
+                                    scheduledDowngradePlan: null,
+                                    scheduledPlanEffectiveDate: null
+                                }
+                            }
+                        );
+                        console.log(`[webhook] Downgrade complete for business ${biz.businessId}`);
+                    }
+                }
+            }
             return res.status(200).send();
         }
 

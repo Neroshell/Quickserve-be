@@ -193,12 +193,20 @@ export async function createOrder(req, res) {
     const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2))
 
     // Platform fee: only when the owner has opted to pass it to the customer
+    const currentPlan = business.currentPlan || "basic"
+    const planDef = await Plan.findOne({ slug: currentPlan }).lean()
+    const commissionRate = planDef ? planDef.offlineCommissionRate : 2.5
+    
     let platformFeeTotal = 0
     if (business.passPlatformFeeToCustomer) {
-      const currentPlan = business.currentPlan || "basic"
-      const planDef = await Plan.findOne({ slug: currentPlan }).lean()
-      const feeRate = planDef ? planDef.offlineCommissionRate : 2.5
-      platformFeeTotal = Number((subtotal * (feeRate / 100)).toFixed(2))
+      platformFeeTotal = Number((subtotal * (commissionRate / 100)).toFixed(2))
+    }
+
+    let commissionAmountCents = 0
+    if (business.passPlatformFeeToCustomer && platformFeeTotal > 0) {
+      commissionAmountCents = Math.round(platformFeeTotal * 100)
+    } else {
+      commissionAmountCents = Math.round(subtotal * (commissionRate / 100) * 100)
     }
 
     const finalTotal = Number((subtotal + taxAmount + platformFeeTotal).toFixed(2))
@@ -221,6 +229,9 @@ export async function createOrder(req, res) {
       paymentStatus: paymentStatus || "unpaid",
       paidVia: paidVia || null,
       receiptEmail: receiptEmail || null,
+      planApplied: currentPlan,
+      commissionRateApplied: commissionRate,
+      commissionAmountCents,
     })
 
     const orderDTO = toOrderDTO(saved)
@@ -411,6 +422,21 @@ export async function markPaid(req, res) {
     // Stamp which staff member confirmed this payment (waiter analytics)
     if (req.session?.user?.staffId) updateObj.paidByStaffId = req.session.user.staffId
     if (req.session?.user?.name) updateObj.paidByName = req.session.user.name
+
+    // Lock commission rate if not already set (legacy order backfill)
+    if (order.commissionRateApplied == null) {
+      const planDef = await Plan.findOne({ slug: business.currentPlan || 'basic' }).lean()
+      const rate = planDef?.offlineCommissionRate ?? 2.5
+      let commAmountCents = 0
+      if (order.platformFeeTotal > 0) {
+        commAmountCents = Math.round(order.platformFeeTotal * 100)
+      } else {
+        commAmountCents = Math.round((order.subtotal || 0) * (rate / 100) * 100)
+      }
+      updateObj.planApplied = business.currentPlan || 'basic'
+      updateObj.commissionRateApplied = rate
+      updateObj.commissionAmountCents = commAmountCents
+    }
 
     const updatedOrder = await Order.findOneAndUpdate(
       { orderId, businessId, paymentStatus: { $ne: "paid" } },

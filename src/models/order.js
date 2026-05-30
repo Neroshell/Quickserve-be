@@ -85,6 +85,15 @@ const OrderSchema = new mongoose.Schema(
     servedByStaffId: { type: String, default: null, index: true },
     servedByName:    { type: String, default: null },
     servedAt:        { type: Date,   default: null },
+
+    // Offline commission tracking — prevents duplicate usage reports to Stripe
+    commissionReportedToStripe: { type: Boolean, default: false, index: true },
+
+    // Order-level commission locking — rate is frozen at order creation / payment time
+    planApplied:             { type: String, enum: ["basic", "growth", "enterprise"], default: null },
+    commissionRateApplied:   { type: Number, default: null },   // e.g. 2.5 (percentage)
+    commissionAmountCents:   { type: Number, default: 0 },      // pre-calculated commission in cents
+    stripeUsageReportedAt:   { type: Date, default: null },
   },
   { timestamps: true },
 )
