@@ -94,6 +94,9 @@ const OrderSchema = new mongoose.Schema(
     commissionRateApplied:   { type: Number, default: null },   // e.g. 2.5 (percentage)
     commissionAmountCents:   { type: Number, default: 0 },      // pre-calculated commission in cents
     stripeUsageReportedAt:   { type: Date, default: null },
+    
+    // Customer Feedback
+    feedbackSubmitted: { type: Boolean, default: false },
   },
   { timestamps: true },
 )

@@ -52,5 +52,8 @@ export function toOrderDTO(orderDoc) {
         // Aggregated fields for UI cards
         allergies: Array.from(allergiesSet),
         notes: firstNote,
+        // Feedback tracking — needed by customer status page to avoid re-triggering the modal
+        businessId: o.businessId || null,
+        feedbackSubmitted: o.feedbackSubmitted || false,
     };
 }

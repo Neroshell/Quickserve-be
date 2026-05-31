@@ -1,5 +1,6 @@
 import express from "express"
 import { ownerOrders, ownerAnalytics, getTableSessionsOverview } from "../controllers/ownerController.js"
+import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
 import {
     // Staff Management (new unified API)
     getStaff,
@@ -45,6 +46,9 @@ router.get("/analytics", ownerAnalytics)
 
 // GET /owner/table-sessions/overview
 router.get("/table-sessions/overview", getTableSessionsOverview)
+
+// GET /owner/feedback
+router.get("/feedback", getOwnerFeedbackAnalytics)
 
 // ─── Staff Management (unified, multi-role) ───────────────────────────────────
 // Supports ?role=waiter|kitchen|manager&status=active|offline
