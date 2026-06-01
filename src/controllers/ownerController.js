@@ -850,3 +850,167 @@ export async function ownerAnalytics(req, res) {
         return res.status(500).json({ error: "Failed to generate owner analytics" })
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /owner/dashboard  — Command Center: single aggregated payload
+// ─────────────────────────────────────────────────────────────────────────────
+import Business from "../models/Business.js"
+import Feedback from "../models/Feedback.js"
+import Staff from "../models/Staff.js"
+import MenuItem from "../models/menuItem.js"
+
+export async function getDashboardData(req, res) {
+    try {
+        const businessId = req.session?.user?.businessId || req.query.businessId
+        if (!businessId) return res.status(400).json({ error: "businessId is required" })
+
+        const { start: todayStart, end: todayEnd } = getBusinessDayRange()
+        const startDateJS = todayStart.toJSDate()
+        const endDateJS   = todayEnd.toJSDate()
+        const dateFilter  = { businessId, createdAt: { $gte: startDateJS, $lt: endDateJS } }
+
+        // ── Run all queries in parallel ──────────────────────────────────────
+        const [
+            todayOrdersRaw,
+            business,
+            recentFeedback,
+            activeStaff,
+            pendingWaiterCalls,
+            totalMenuItems,
+        ] = await Promise.all([
+            Order.find({
+                ...dateFilter,
+                status: { $in: ["placed", "in_progress", "ready", "completed"] }
+            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, tableLabel: 1, tableNumber: 1, orderType: 1 }).lean(),
+
+            Business.findOne({ businessId }).lean(),
+
+            Feedback.find({ businessId })
+                .sort({ createdAt: -1 })
+                .limit(5)
+                .lean(),
+
+            Staff.find({ businessId, $or: [{ presenceStatus: "active" }, { status: "active" }] }).lean(),
+
+            WaiterCall.find({ businessId, status: "pending" }).lean(),
+
+            MenuItem.countDocuments({ businessId }),
+        ])
+
+        // ── Today's KPIs ─────────────────────────────────────────────────────
+        const completedOrders = todayOrdersRaw.filter(o => o.status === "completed")
+        const paidOrders      = todayOrdersRaw.filter(o => o.paymentStatus === "paid")
+        const todayRevenue    = paidOrders.reduce((sum, o) => sum + (o.total || 0), 0)
+        const todayOrders     = todayOrdersRaw.length
+        const tablesServed    = completedOrders.length
+        const activeOrders    = todayOrdersRaw.filter(o => ["placed","in_progress","ready"].includes(o.status)).length
+
+        // ── Hourly Revenue (today) ───────────────────────────────────────────
+        const hourlyMap = new Map()
+        for (let i = 0; i < 24; i++) {
+            const h = i > 12 ? i - 12 : (i === 0 ? 12 : i)
+            const ampm = i >= 12 ? "PM" : "AM"
+            hourlyMap.set(`${h}${ampm}`, 0)
+        }
+        for (const o of paidOrders) {
+            const dt = DateTime.fromJSDate(o.createdAt).setZone(BUSINESS_TZ)
+            const label = `${dt.toFormat("h")}${dt.toFormat("a")}`
+            if (hourlyMap.has(label)) hourlyMap.set(label, hourlyMap.get(label) + (o.total || 0))
+        }
+        const hourlyRevenue = Array.from(hourlyMap.entries()).map(([hour, revenue]) => ({ hour, revenue }))
+
+        // ── Business Health ──────────────────────────────────────────────────
+        const onlinePaymentsOk  = business?.stripeChargesEnabled === true
+        const billingStatus     = business?.billingStatus || "incomplete"
+        const hasMenu           = true // Placeholder — could query MenuItem count
+        const staffOnlineCount  = activeStaff.length
+
+        // ── Action Items ─────────────────────────────────────────────────────
+        const actionItems = []
+
+        if (billingStatus === "incomplete") {
+            actionItems.push({ type: "billing", severity: "error", message: "Billing setup is incomplete. Set up billing to accept payments.", href: "/owner/billing" })
+        } else if (billingStatus === "past_due") {
+            actionItems.push({ type: "billing", severity: "error", message: "Your billing is past due. Please update your payment method.", href: "/owner/billing" })
+        }
+
+        if (!onlinePaymentsOk) {
+            actionItems.push({ type: "payments", severity: "warning", message: "Online payments are not configured. Connect Stripe to accept card payments.", href: "/owner/billing" })
+        }
+
+        if (pendingWaiterCalls.length > 0) {
+            actionItems.push({ type: "service", severity: "warning", message: `${pendingWaiterCalls.length} unanswered waiter call${pendingWaiterCalls.length > 1 ? "s" : ""} pending.`, href: "/owner/orders" })
+        }
+
+        // Orders waiting >15 minutes
+        const now15 = new Date(Date.now() - 15 * 60 * 1000)
+        const longWaitOrders = todayOrdersRaw.filter(o => ["placed","in_progress"].includes(o.status) && new Date(o.createdAt) < now15)
+        if (longWaitOrders.length > 0) {
+            actionItems.push({ type: "orders", severity: "warning", message: `${longWaitOrders.length} order${longWaitOrders.length > 1 ? "s" : ""} waiting over 15 minutes.`, href: "/owner/orders" })
+        }
+
+        if (staffOnlineCount === 0) {
+            actionItems.push({ type: "staff", severity: "info", message: "No staff members are currently active.", href: "/owner/waiters" })
+        }
+
+        // ── Recent Activity (latest orders + feedback) ────────────────────────
+        const recentActivity = []
+
+        // Latest 10 orders as activity events
+        const latestOrders = [...todayOrdersRaw]
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+            .slice(0, 8)
+
+        for (const o of latestOrders) {
+            const label = o.tableLabel || o.tableNumber || ""
+            if (o.paymentStatus === "paid") {
+                recentActivity.push({ type: "payment", icon: "💳", message: `Order ${o.orderId} paid`, sub: label, time: o.createdAt })
+            } else {
+                const statusEmoji = { placed: "🆕", in_progress: "🍳", ready: "✅", completed: "🎉" }
+                recentActivity.push({ type: "order", icon: statusEmoji[o.status] || "📋", message: `Order ${o.orderId} ${o.status.replace("_", " ")}`, sub: label ? `${label} · ${o.orderType}` : o.orderType, time: o.createdAt })
+            }
+        }
+
+        // Recent feedback as activity events
+        for (const f of recentFeedback.slice(0, 3)) {
+            recentActivity.push({ type: "feedback", icon: "⭐", message: `New feedback received (${f.overallRating}★)`, sub: f.comment ? f.comment.slice(0, 60) : "No comment", time: f.createdAt })
+        }
+
+        // Sort and cap at 10
+        recentActivity.sort((a, b) => new Date(b.time) - new Date(a.time))
+        const activityFeed = recentActivity.slice(0, 10)
+
+        // ── Shape recentFeedback for preview ─────────────────────────────────
+        const feedbackPreview = recentFeedback.map(f => ({
+            id: f._id,
+            rating: f.overallRating,
+            comment: f.comment || "",
+            sentiment: f.sentiment,
+            createdAt: f.createdAt
+        }))
+
+        return res.json({
+            snapshot: {
+                todayOrders,
+                todayRevenue: +todayRevenue.toFixed(2),
+                tablesServed,
+                totalMenuItems,
+                activeOrders,
+            },
+            businessHealth: {
+                onlinePayments: onlinePaymentsOk ? "active" : "not_configured",
+                billing: billingStatus,
+                staffOnline: staffOnlineCount,
+            },
+            actionItems,
+            activityFeed,
+            feedbackPreview,
+            hourlyRevenue,
+        })
+
+    } catch (err) {
+        console.error("[getDashboardData]", err)
+        return res.status(500).json({ error: "Failed to fetch dashboard data" })
+    }
+}
+

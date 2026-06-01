@@ -1,5 +1,5 @@
 import express from "express"
-import { ownerOrders, ownerAnalytics, getTableSessionsOverview } from "../controllers/ownerController.js"
+import { ownerOrders, ownerAnalytics, getTableSessionsOverview, getDashboardData } from "../controllers/ownerController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
 import {
     // Staff Management (new unified API)
@@ -40,6 +40,9 @@ router.use(requireAuth, requireOwner)
 
 // GET /owner/orders
 router.get("/orders", ownerOrders)
+
+// GET /owner/dashboard  — Command Center
+router.get("/dashboard", getDashboardData)
 
 // GET /owner/analytics
 router.get("/analytics", ownerAnalytics)
