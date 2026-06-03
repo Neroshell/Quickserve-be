@@ -1,6 +1,7 @@
 import express from "express"
 import { ownerOrders, ownerAnalytics, getTableSessionsOverview, getDashboardData } from "../controllers/ownerController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
+import { getTeam, inviteCoOwner, removeCoOwner } from "../controllers/teamController.js"
 import {
     // Staff Management (new unified API)
     getStaff,
@@ -20,7 +21,7 @@ import {
     deleteServicePoint,
 } from "../controllers/servicePointController.js"
 
-import { requireAuth, requireOwner } from "../middleware/authMiddleware.js"
+import { requireAuth, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
 import { connectAccount, getStripeStatus, getStripeDashboardLink } from "../controllers/stripeConnectController.js"
 import {
     getBillingOverview,
@@ -36,7 +37,7 @@ import {
 } from "../controllers/billingController.js"
 
 const router = express.Router()
-router.use(requireAuth, requireOwner)
+router.use(requireAuth, requireOwnerOrCoOwner)
 
 // GET /owner/orders
 router.get("/orders", ownerOrders)
@@ -66,6 +67,17 @@ router.post("/staff", createStaff)
 
 // DELETE /owner/staff/:staffId
 router.delete("/staff/:staffId", deleteStaff)
+
+// ─── Team & Access (Primary Owner Only) ───────────────────────────────────────
+
+// GET /owner/team
+router.get("/team", requirePrimaryOwner, getTeam)
+
+// POST /owner/team/co-owner
+router.post("/team/co-owner", requirePrimaryOwner, inviteCoOwner)
+
+// DELETE /owner/team/co-owner/:staffId
+router.delete("/team/co-owner/:staffId", requirePrimaryOwner, removeCoOwner)
 
 // ─── Legacy Waitstaff routes (backward compat — do NOT remove) ────────────────
 
@@ -105,46 +117,46 @@ router.delete("/service-points/:servicePointId", deleteServicePoint)
 
 // POST /owner/stripe/connect-account
 // Creates or retrieves an Express connected account and returns an onboarding link.
-router.post("/stripe/connect-account", connectAccount)
+router.post("/stripe/connect-account", requirePrimaryOwner, connectAccount)
 
 // GET /owner/stripe/status
 // Fetches live status from Stripe and syncs it to the Business document.
-router.get("/stripe/status", getStripeStatus)
+router.get("/stripe/status", requirePrimaryOwner, getStripeStatus)
 
 // GET /owner/stripe/dashboard-link
 // Creates a single-use Stripe Express dashboard login link for the connected account.
-router.get("/stripe/dashboard-link", getStripeDashboardLink)
+router.get("/stripe/dashboard-link", requirePrimaryOwner, getStripeDashboardLink)
 
 // ─── QuickServe Billing (MVP) ────────────────────────────────────────────────
 
 // GET /owner/billing
-router.get("/billing", getBillingOverview)
+router.get("/billing", requirePrimaryOwner, getBillingOverview)
 
 // POST /owner/billing/setup-intent
-router.post("/billing/setup-intent", createSetupIntent)
+router.post("/billing/setup-intent", requirePrimaryOwner, createSetupIntent)
 
 // POST /owner/billing/verify-payment-method
-router.post("/billing/verify-payment-method", verifyPaymentMethod)
+router.post("/billing/verify-payment-method", requirePrimaryOwner, verifyPaymentMethod)
 
 // DELETE /owner/billing/payment-method
-router.delete("/billing/payment-method", deletePaymentMethod)
+router.delete("/billing/payment-method", requirePrimaryOwner, deletePaymentMethod)
 
 // POST /owner/billing/plan
-router.post("/billing/plan", updatePlan)
+router.post("/billing/plan", requirePrimaryOwner, updatePlan)
 
 // GET /owner/billing/commission
-router.get("/billing/commission", getCommissionSummary)
+router.get("/billing/commission", requirePrimaryOwner, getCommissionSummary)
 
 // GET /owner/billing/invoices
-router.get("/billing/invoices", getInvoices)
+router.get("/billing/invoices", requirePrimaryOwner, getInvoices)
 
 // DELETE /owner/billing/invoices/:id
-router.delete("/billing/invoices/:id", archiveInvoice)
+router.delete("/billing/invoices/:id", requirePrimaryOwner, archiveInvoice)
 
 // PATCH /owner/billing/platform-fee-settings
-router.patch("/billing/platform-fee-settings", updatePlatformFeeSettings)
+router.patch("/billing/platform-fee-settings", requirePrimaryOwner, updatePlatformFeeSettings)
 
 // POST /owner/billing/report-usage
-router.post("/billing/report-usage", reportOfflineUsage)
+router.post("/billing/report-usage", requirePrimaryOwner, reportOfflineUsage)
 
 export default router

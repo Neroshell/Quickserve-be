@@ -17,4 +17,5 @@ export function requireRole(...roles) {
     }
 }
 
-export const requireOwner = requireRole("owner")
+export const requirePrimaryOwner = requireRole("owner")
+export const requireOwnerOrCoOwner = requireRole("owner", "co_owner")

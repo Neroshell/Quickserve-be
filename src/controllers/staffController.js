@@ -55,6 +55,9 @@ export async function getStaff(req, res) {
         // Role filter — set by card selection, never free-text
         if (role && role !== "all" && ALLOWED_ROLES.includes(role)) {
             filter.role = role
+        } else {
+            // Exclude business access roles like co_owner from standard operational staff lists
+            filter.role = { $in: ALLOWED_ROLES }
         }
 
         // Presence status filter

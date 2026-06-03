@@ -1,6 +1,6 @@
 import mongoose from "mongoose"
 
-const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
+const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender", "co_owner"]
 
 const StaffSchema = new mongoose.Schema({
     businessId: { type: String, required: true, index: true },
