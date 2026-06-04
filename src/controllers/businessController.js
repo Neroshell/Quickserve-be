@@ -31,6 +31,23 @@ export async function getSettings(req, res) {
         const platformFeeRate = planDef ? planDef.offlineCommissionRate : 2.5
         bizObj.platformFeeRate = platformFeeRate
 
+        // Branding Access & Downgrade Protection
+        const canUseBranding = ["growth", "enterprise"].includes(currentPlan)
+        const canRemoveQuickServeBranding = currentPlan === "enterprise"
+        
+        bizObj.brandingAccess = {
+            canUseBranding,
+            canRemoveQuickServeBranding
+        }
+        
+        if (!canUseBranding) {
+            bizObj.branding = null
+        } else if (bizObj.branding) {
+            if (!canRemoveQuickServeBranding) {
+                bizObj.branding.removeQuickServeBranding = false
+            }
+        }
+
         return res.json(bizObj)
     } catch (err) {
         console.error("Get settings error:", err)

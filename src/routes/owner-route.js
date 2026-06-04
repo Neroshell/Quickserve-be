@@ -1,5 +1,5 @@
 import express from "express"
-import { ownerOrders, ownerAnalytics, getTableSessionsOverview, getDashboardData } from "../controllers/ownerController.js"
+import { ownerOrders, ownerAnalytics, getTableSessionsOverview, getDashboardData, getBranding, updateBranding } from "../controllers/ownerController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
 import { getTeam, inviteCoOwner, removeCoOwner } from "../controllers/teamController.js"
 import {
@@ -38,6 +38,14 @@ import {
 
 const router = express.Router()
 router.use(requireAuth, requireOwnerOrCoOwner)
+
+// ─── Branding ─────────────────────────────────────────────────────────────────
+
+// GET /owner/branding
+router.get("/branding", getBranding)
+
+// PATCH /owner/branding
+router.patch("/branding", updateBranding)
 
 // GET /owner/orders
 router.get("/orders", ownerOrders)

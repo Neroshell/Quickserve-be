@@ -1014,3 +1014,89 @@ export async function getDashboardData(req, res) {
     }
 }
 
+// ─── Branding ─────────────────────────────────────────────────────────────────
+
+export async function getBranding(req, res) {
+    try {
+        const businessId = req.session?.user?.businessId
+        if (!businessId) return res.status(401).json({ error: "Unauthorized" })
+
+        const business = await Business.findOne({ businessId }).lean()
+        if (!business) return res.status(404).json({ error: "Business not found" })
+
+        return res.json({
+            branding: business.branding || {
+                enabled: false,
+                logoUrl: null,
+                coverImageUrl: null,
+                primaryColor: "#EA601A",
+                accentColor: "#FB923C",
+                removeQuickServeBranding: false
+            },
+            currentPlan: business.currentPlan || "basic"
+        })
+    } catch (err) {
+        console.error("[getBranding]", err)
+        return res.status(500).json({ error: "Failed to fetch branding" })
+    }
+}
+
+export async function updateBranding(req, res) {
+    try {
+        const businessId = req.session?.user?.businessId
+        if (!businessId) return res.status(401).json({ error: "Unauthorized" })
+
+        const business = await Business.findOne({ businessId })
+        if (!business) return res.status(404).json({ error: "Business not found" })
+
+        const { enabled, logoUrl, coverImageUrl, primaryColor, secondaryColor, accentColor, backgroundColor, removeQuickServeBranding } = req.body
+
+        // Validation
+        const hexRegex = /^#([0-9A-F]{3}){1,2}$/i
+        if (primaryColor && !hexRegex.test(primaryColor)) {
+            return res.status(400).json({ error: "Invalid primary color hex code" })
+        }
+        if (secondaryColor && !hexRegex.test(secondaryColor)) {
+            return res.status(400).json({ error: "Invalid secondary color hex code" })
+        }
+        if (accentColor && !hexRegex.test(accentColor)) {
+            return res.status(400).json({ error: "Invalid accent color hex code" })
+        }
+        if (backgroundColor && !hexRegex.test(backgroundColor)) {
+            return res.status(400).json({ error: "Invalid background color hex code" })
+        }
+
+        const urlRegex = /^(https?:\/\/)/i
+        if (logoUrl && !urlRegex.test(logoUrl)) {
+            return res.status(400).json({ error: "Invalid logo URL" })
+        }
+        if (coverImageUrl && !urlRegex.test(coverImageUrl)) {
+            return res.status(400).json({ error: "Invalid cover image URL" })
+        }
+
+        const currentPlan = business.currentPlan || "basic"
+        const canUseBranding = ["growth", "enterprise"].includes(currentPlan)
+
+        if (!canUseBranding) {
+            return res.status(403).json({ error: "Branding is available on Growth and Enterprise plans." })
+        }
+
+        business.branding = {
+            enabled: typeof enabled === "boolean" ? enabled : business.branding?.enabled || false,
+            logoUrl: logoUrl || null,
+            coverImageUrl: coverImageUrl || null,
+            primaryColor: primaryColor || "#EA601A",
+            secondaryColor: secondaryColor || "#2B304C",
+            accentColor: accentColor || "#FB923C",
+            backgroundColor: backgroundColor || "#F8F9FA",
+            removeQuickServeBranding: currentPlan === "enterprise" && removeQuickServeBranding === true
+        }
+
+        await business.save()
+
+        return res.json({ message: "Branding updated successfully", branding: business.branding })
+    } catch (err) {
+        console.error("[updateBranding]", err)
+        return res.status(500).json({ error: "Failed to update branding" })
+    }
+}

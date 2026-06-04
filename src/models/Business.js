@@ -115,6 +115,16 @@ const BusinessSchema = new mongoose.Schema({
         default: "draft" 
     },
     language: { type: String, default: "en" },
+    branding: {
+        enabled: { type: Boolean, default: false },
+        logoUrl: { type: String, default: null },
+        coverImageUrl: { type: String, default: null },
+        primaryColor: { type: String, default: "#EA601A" },
+        secondaryColor: { type: String, default: "#2B304C" },
+        accentColor: { type: String, default: "#FB923C" },
+        backgroundColor: { type: String, default: "#F8F9FA" },
+        removeQuickServeBranding: { type: Boolean, default: false }
+    },
     settings: {
         onlinePaymentEnabled: { type: Boolean, default: true },
         offlinePaymentEnabled: { type: Boolean, default: true },
