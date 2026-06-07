@@ -219,6 +219,40 @@ export async function toggleServicePoint(req, res) {
 }
 
 /**
+ * PATCH /owner/service-points/:servicePointId/toggle-reservable
+ * Flip reservable between true/false.
+ * Ownership is enforced.
+ */
+export async function toggleReservableServicePoint(req, res) {
+    try {
+        const businessId = resolveOwnerBusinessId(req)
+        if (!businessId) {
+            return res.status(401).json({ error: "Unauthorized" })
+        }
+
+        const { servicePointId } = req.params
+
+        // Find first to read current state
+        const current = await ServicePoint.findOne({ servicePointId, businessId })
+        if (!current) {
+            return res.status(404).json({ error: "Service point not found" })
+        }
+
+        current.reservable = !current.reservable
+        await current.save()
+
+        return res.json({
+            servicePointId: current.servicePointId,
+            reservable: current.reservable,
+            label: current.label,
+        })
+    } catch (err) {
+        console.error("[toggleReservableServicePoint]", err)
+        return res.status(500).json({ error: "Failed to toggle reservable status" })
+    }
+}
+
+/**
  * DELETE /owner/service-points/:servicePointId
  * Delete a service point.
  * Ownership is enforced.

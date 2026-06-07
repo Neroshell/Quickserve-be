@@ -70,6 +70,12 @@ const ServicePointSchema = new mongoose.Schema(
             default: true,
             index: true,
         },
+
+        // Whether this service point can be selected by customers during reservation
+        reservable: {
+            type: Boolean,
+            default: true,
+        },
     },
     { timestamps: true }
 )

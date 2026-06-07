@@ -18,8 +18,14 @@ import {
     createServicePoint,
     updateServicePoint,
     toggleServicePoint,
+    toggleReservableServicePoint,
     deleteServicePoint,
 } from "../controllers/servicePointController.js"
+import {
+    getReservations,
+    updateReservationStatus,
+    deleteReservation
+} from "../controllers/reservationController.js"
 
 import { requireAuth, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
 import { connectAccount, getStripeStatus, getStripeDashboardLink } from "../controllers/stripeConnectController.js"
@@ -118,8 +124,22 @@ router.patch("/service-points/:servicePointId", updateServicePoint)
 // PATCH  /owner/service-points/:servicePointId/toggle  — flip isActive
 router.patch("/service-points/:servicePointId/toggle", toggleServicePoint)
 
+// PATCH  /owner/service-points/:servicePointId/toggle-reservable  — flip reservable
+router.patch("/service-points/:servicePointId/toggle-reservable", toggleReservableServicePoint)
+
 // DELETE /owner/service-points/:servicePointId
 router.delete("/service-points/:servicePointId", deleteServicePoint)
+
+// ─── Reservations ─────────────────────────────────────────────────────────────
+
+// GET    /owner/reservations
+router.get("/reservations", getReservations)
+
+// PATCH  /owner/reservations/:id/status
+router.patch("/reservations/:id/status", updateReservationStatus)
+
+// DELETE /owner/reservations/:id
+router.delete("/reservations/:id", deleteReservation)
 
 // ─── Stripe Connect ───────────────────────────────────────────────────────────
 

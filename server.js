@@ -17,6 +17,7 @@ import adminRoute from "./src/routes/admin-route.js"
 import authRoute from "./src/routes/auth-route.js"
 import uploadRoute from "./src/routes/upload-route.js"
 import feedbackRoute from "./src/routes/feedback-route.js"
+import publicRoute from "./src/routes/public-route.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 import helmet from "helmet"
 import { sessionMiddleware } from "./src/config/session.js"
@@ -73,6 +74,7 @@ app.use("/admin", adminRoute)
 app.use("/auth", authRoute)
 app.use("/upload", uploadRoute)
 app.use("/feedback", feedbackRoute)
+app.use("/public", publicRoute)
 app.use(sseRoute)
 
 // Global error handler to swallow 500 stack traces and prevent information leakage (CWE-209)

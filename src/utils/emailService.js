@@ -5,6 +5,7 @@ import { render } from "@react-email/render";
 import ReceiptEmail from "../../emails/ReceiptEmail.js";
 import AuthEmail from "../../emails/AuthEmail.js";
 import OnboardingEmail from "../../emails/OnboardingEmail.js";
+import ReservationRequestEmail from "../../emails/ReservationRequestEmail.js";
 import Business from "../models/Business.js";
 
 dotenv.config();
@@ -125,6 +126,21 @@ export async function sendOnboardingEmail({ to, userName, businessName, inviteLi
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
     console.error("[EmailService]  Error in sendOnboardingEmail:", error);
+    return false;
+  }
+}
+
+/**
+ * Send a reservation request email to the business owner.
+ */
+export async function sendReservationRequestEmail({ to, businessName, reservation }) {
+  try {
+    const html = await render(React.createElement(ReservationRequestEmail, { businessName, reservation }));
+    const subject = `New Reservation Request for ${businessName}`;
+    const from = process.env.EMAIL_FROM_RESERVATIONS || "QuickServe Reservations <reservations@quickservehq.com>";
+    return await sendEmail({ to, subject, html, from });
+  } catch (error) {
+    console.error("[EmailService]  Error in sendReservationRequestEmail:", error);
     return false;
   }
 }

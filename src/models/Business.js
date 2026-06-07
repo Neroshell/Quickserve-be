@@ -133,6 +133,7 @@ const BusinessSchema = new mongoose.Schema({
         dineInEnabled: { type: Boolean, default: true },
         takeoutEnabled: { type: Boolean, default: false },
         callWaiterEnabled: { type: Boolean, default: true },
+        reservationsEnabled: { type: Boolean, default: true },
     },
     notes: { type: String, default: "" },
     ownerName: { type: String, required: false },

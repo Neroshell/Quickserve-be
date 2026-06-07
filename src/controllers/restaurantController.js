@@ -3,6 +3,7 @@ import Order from "../models/order.js"
 import Plan from "../models/Plan.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
+import { generateSlugFromName } from "../utils/slugify.js"
 
 function generateBusinessId() {
     return `rest_${crypto.randomBytes(4).toString("hex")}`
@@ -43,7 +44,7 @@ export async function updateSettings(req, res) {
             }
         }
 
-        // Slug validation if being updated
+        // Slug validation if being updated explicitly
         if (updates.slug) {
             const slugRegex = /^[a-z0-9-]+$/
             if (!slugRegex.test(updates.slug)) {
@@ -56,6 +57,19 @@ export async function updateSettings(req, res) {
             const existing = await Restaurant.findOne({ slug: updates.slug, businessId: { $ne: businessId } })
             if (existing) {
                 return res.status(400).json({ message: "Slug already in use" })
+            }
+        } else if (updates.displayName || updates.name) {
+            // Auto-generate slug if missing and displayName is updated
+            const existingRest = await Restaurant.findOne({ businessId });
+            if (existingRest && (!existingRest.slug || existingRest.slug.startsWith('rest_'))) {
+                const baseSlug = generateSlugFromName(updates.displayName || updates.name);
+                let newSlug = baseSlug;
+                let counter = 1;
+                while (await Restaurant.exists({ slug: newSlug, businessId: { $ne: businessId } })) {
+                    newSlug = `${baseSlug}-${counter}`;
+                    counter++;
+                }
+                updateObj.slug = newSlug;
             }
         }
 
@@ -104,7 +118,7 @@ export async function updateOperatingHours(req, res) {
 
 export async function updateOrderingPreferences(req, res) {
     try {
-        const { orderingPreferences } = req.body
+        const { orderingPreferences, settings } = req.body
         const businessId = req.body.businessId || req.body.restaurantId
 
         if (!businessId || !orderingPreferences) {
@@ -119,6 +133,10 @@ export async function updateOrderingPreferences(req, res) {
         if (typeof callWaiterEnabled === "boolean") safePrefs["orderingPreferences.callWaiterEnabled"] = callWaiterEnabled
         if (typeof hideOutOfStockItems === "boolean") safePrefs["orderingPreferences.hideOutOfStockItems"] = hideOutOfStockItems
         if (typeof qrOrderingEnabled === "boolean") safePrefs["orderingPreferences.qrOrderingEnabled"] = qrOrderingEnabled
+
+        if (settings && typeof settings.reservationsEnabled === "boolean") {
+            safePrefs["settings.reservationsEnabled"] = settings.reservationsEnabled
+        }
 
         const restaurant = await Restaurant.findOneAndUpdate(
             { businessId },
