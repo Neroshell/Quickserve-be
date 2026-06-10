@@ -1,5 +1,21 @@
 import mongoose from "mongoose";
 
+// Minimum reservation length (minutes). There is intentionally no maximum —
+// customers may reserve any length their selected time range allows.
+export const MIN_DURATION_MINUTES = 30;
+
+/** Convert an "HH:MM" string to minutes-since-midnight. Returns NaN if invalid. */
+export function timeStringToMinutes(value) {
+  if (typeof value !== "string") return NaN;
+  const parts = value.split(":");
+  if (parts.length !== 2) return NaN;
+  const hours = Number(parts[0]);
+  const minutes = Number(parts[1]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return NaN;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return NaN;
+  return hours * 60 + minutes;
+}
+
 const ReservationSchema = new mongoose.Schema(
   {
     businessId: {
@@ -47,7 +63,7 @@ const ReservationSchema = new mongoose.Schema(
     durationMinutes: {
       type: Number,
       required: true,
-      min: 30,
+      min: MIN_DURATION_MINUTES,
     },
     guestCount: {
       type: Number,
@@ -88,5 +104,35 @@ const ReservationSchema = new mongoose.Schema(
 );
 
 ReservationSchema.index({ businessId: 1, servicePointId: 1, date: 1, status: 1, startTime: 1, endTime: 1 });
+
+// Cross-field validation: the start/end time range is the source of truth and
+// must stay consistent with durationMinutes. Runs on every save (no exemptions).
+ReservationSchema.pre("validate", function () {
+  const start = timeStringToMinutes(this.startTime);
+  const end = timeStringToMinutes(this.endTime);
+
+  if (Number.isNaN(start)) {
+    this.invalidate("startTime", "startTime must be a valid HH:MM value");
+  }
+  if (Number.isNaN(end)) {
+    this.invalidate("endTime", "endTime must be a valid HH:MM value");
+  }
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    return;
+  }
+
+  if (end <= start) {
+    this.invalidate("endTime", "endTime must be after startTime");
+    return;
+  }
+
+  const computed = end - start;
+  if (this.durationMinutes !== computed) {
+    this.invalidate(
+      "durationMinutes",
+      `durationMinutes (${this.durationMinutes}) must match the start/end time difference (${computed} minutes)`
+    );
+  }
+});
 
 export default mongoose.models.Reservation || mongoose.model("Reservation", ReservationSchema);

@@ -1,5 +1,5 @@
 import Business from "../models/Business.js";
-import Reservation from "../models/Reservation.js";
+import Reservation, { timeStringToMinutes, MIN_DURATION_MINUTES } from "../models/Reservation.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { sendReservationRequestEmail } from "../utils/emailService.js";
 
@@ -73,13 +73,23 @@ export async function createReservation(req, res) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    if (startTime >= endTime) {
+    const startMinutes = timeStringToMinutes(startTime);
+    const endMinutes = timeStringToMinutes(endTime);
+    if (Number.isNaN(startMinutes) || Number.isNaN(endMinutes)) {
+      return res.status(400).json({ error: "startTime and endTime must be valid HH:MM values" });
+    }
+    if (endMinutes <= startMinutes) {
       return res.status(400).json({ error: "End time must be after start time" });
     }
 
-    const duration = durationMinutes || 120;
-    if (duration < 30 || duration > 240) {
-      return res.status(400).json({ error: "Duration must be between 30 minutes and 4 hours" });
+    // The start/end range is the source of truth for duration. If a client also
+    // sends durationMinutes, it must agree with the range.
+    const duration = endMinutes - startMinutes;
+    if (durationMinutes != null && Number(durationMinutes) !== duration) {
+      return res.status(400).json({ error: "durationMinutes does not match the start/end time range" });
+    }
+    if (duration < MIN_DURATION_MINUTES) {
+      return res.status(400).json({ error: "Duration must be at least 30 minutes" });
     }
 
     // Guest count validation
