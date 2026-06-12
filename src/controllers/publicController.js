@@ -1,7 +1,7 @@
 import Business from "../models/Business.js";
 import Reservation, { timeStringToMinutes, MIN_DURATION_MINUTES } from "../models/Reservation.js";
 import ServicePoint from "../models/ServicePoint.js";
-import { sendReservationRequestEmail } from "../utils/emailService.js";
+import { sendReservationRequestEmail, sendReservationRequestReceivedEmail } from "../utils/emailService.js";
 
 /**
  * Returns a sanitized public DTO for the business hub.
@@ -69,7 +69,7 @@ export async function createReservation(req, res) {
       specialRequest,
     } = req.body;
 
-    if (!businessSlug || !customerName || !phone || !date || !startTime || !endTime || !guestCount) {
+    if (!businessSlug || !customerName || !phone || !email || !date || !startTime || !endTime || !guestCount) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
@@ -177,14 +177,29 @@ export async function createReservation(req, res) {
 
     await reservation.save();
 
-    // Send email (async, do not block response, don't fail if email fails)
+    // Emails are fire-and-forget: never block the response or fail the request.
+    const reservationObj = reservation.toObject();
+    const businessDisplayName = business.displayName || business.name;
+
+    // 1. Notify the business owner of the new request.
     const targetEmail = business.contactEmail || business.ownerEmail;
     if (targetEmail) {
       sendReservationRequestEmail({
         to: targetEmail,
-        businessName: business.displayName || business.name,
-        reservation: reservation.toObject()
-      }).catch(err => console.error("[createReservation] Email failed to send:", err));
+        businessName: businessDisplayName,
+        reservation: reservationObj
+      }).catch(err => console.error("[createReservation] Owner email failed to send:", err));
+    }
+
+    // 2. Notify the customer their request was received (only if they gave an email).
+    if (reservationObj.email) {
+      sendReservationRequestReceivedEmail({
+        to: reservationObj.email,
+        businessName: businessDisplayName,
+        businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
+        primaryColor: business.branding?.primaryColor,
+        reservation: reservationObj
+      }).catch(err => console.error("[createReservation] Customer email failed to send:", err));
     }
 
     res.status(201).json({

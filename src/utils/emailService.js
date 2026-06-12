@@ -6,6 +6,9 @@ import ReceiptEmail from "../../emails/ReceiptEmail.js";
 import AuthEmail from "../../emails/AuthEmail.js";
 import OnboardingEmail from "../../emails/OnboardingEmail.js";
 import ReservationRequestEmail from "../../emails/ReservationRequestEmail.js";
+import ReservationRequestReceivedEmail from "../../emails/ReservationRequestReceivedEmail.js";
+import ReservationConfirmedEmail from "../../emails/ReservationConfirmedEmail.js";
+import ReservationCancelledEmail from "../../emails/ReservationCancelledEmail.js";
 import Business from "../models/Business.js";
 
 dotenv.config();
@@ -141,6 +144,56 @@ export async function sendReservationRequestEmail({ to, businessName, reservatio
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
     console.error("[EmailService]  Error in sendReservationRequestEmail:", error);
+    return false;
+  }
+}
+
+const RESERVATION_FROM = process.env.EMAIL_FROM_RESERVATIONS || "QuickServe Reservations <reservations@quickservehq.com>";
+
+/**
+ * Customer-facing: confirm a reservation request was received (status: pending).
+ * @param {object} params
+ * @param {string} params.to - Customer email
+ * @param {string} params.businessName
+ * @param {string} [params.businessLogoUrl]
+ * @param {string} [params.primaryColor]
+ * @param {object} params.reservation - Plain reservation object
+ */
+export async function sendReservationRequestReceivedEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
+  try {
+    const html = await render(React.createElement(ReservationRequestReceivedEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
+    const subject = `Reservation Request Received - ${businessName}`;
+    return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
+  } catch (error) {
+    console.error("[EmailService]  Error in sendReservationRequestReceivedEmail:", error);
+    return false;
+  }
+}
+
+/**
+ * Customer-facing: notify the customer their reservation is confirmed.
+ */
+export async function sendReservationConfirmedEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
+  try {
+    const html = await render(React.createElement(ReservationConfirmedEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
+    const subject = `Reservation Confirmed - ${businessName}`;
+    return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
+  } catch (error) {
+    console.error("[EmailService]  Error in sendReservationConfirmedEmail:", error);
+    return false;
+  }
+}
+
+/**
+ * Customer-facing: notify the customer their reservation cannot be accommodated.
+ */
+export async function sendReservationCancelledEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
+  try {
+    const html = await render(React.createElement(ReservationCancelledEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
+    const subject = `Reservation Unavailable - ${businessName}`;
+    return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
+  } catch (error) {
+    console.error("[EmailService]  Error in sendReservationCancelledEmail:", error);
     return false;
   }
 }

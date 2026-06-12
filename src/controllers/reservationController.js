@@ -1,5 +1,6 @@
 import Reservation from "../models/Reservation.js";
 import Business from "../models/Business.js";
+import { sendReservationConfirmedEmail, sendReservationCancelledEmail } from "../utils/emailService.js";
 
 /**
  * Get reservations for a specific business (Owner authenticated)
@@ -52,9 +53,16 @@ export async function updateReservationStatus(req, res) {
       return res.status(404).json({ error: "Reservation not found" });
     }
 
-    // Ensure the business belongs to this owner
-    const business = await Business.findOne({ businessId: reservation.businessId, ownerEmail: req.session.user.email }).lean();
-    if (!business && req.session.user.role !== "admin") {
+    // Load the business (unscoped) so branding is available for emails and the
+    // operating-hours check below works for admins too.
+    const business = await Business.findOne({ businessId: reservation.businessId }).lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
+    }
+
+    // Ensure the business belongs to this owner (or the requester is an admin).
+    const isOwner = business.ownerEmail === req.session.user.email;
+    if (!isOwner && req.session.user.role !== "admin") {
       return res.status(403).json({ error: "Unauthorized access to this business" });
     }
 
@@ -92,12 +100,52 @@ export async function updateReservationStatus(req, res) {
       }
     }
 
+    const previousStatus = reservation.status;
     reservation.status = status;
     await reservation.save();
 
-    // TODO: Send customer confirmation email if status === "confirmed" (v2 feature as per plan)
+    const statusChanged = previousStatus !== status;
+    let emailStatus = "not_sent";
 
-    res.json(reservation);
+    if (statusChanged) {
+      console.log("[Reservation] Status change:", previousStatus, "->", status);
+      
+      const reservationObj = reservation.toObject();
+
+      if (!reservationObj.email) {
+        console.log("Reservation status changed but no customer email found in DB.", reservationObj);
+      } else if (status === "confirmed" || status === "cancelled") {
+        console.log("[Reservation Email] Customer email:", reservationObj.email);
+        console.log(`[Reservation Email] Sending ${status} email`);
+
+        const emailArgs = {
+          to: reservationObj.email,
+          businessName: business.displayName || business.name,
+          businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
+          primaryColor: business.branding?.primaryColor,
+          reservation: reservationObj,
+        };
+
+        const sender = status === "confirmed" ? sendReservationConfirmedEmail : sendReservationCancelledEmail;
+        try {
+          console.log("[Reservation Email] Awaiting sender...");
+          const success = await sender(emailArgs);
+          console.log(`[Reservation Email] Sender returned:`, success);
+          if (!success) {
+            emailStatus = "failed";
+            console.error(`[Reservation Email] Failed to send ${status} email (sender returned false)`);
+          } else {
+            emailStatus = "sent";
+            console.log(`[Reservation Email] Successfully sent ${status} email`);
+          }
+        } catch (emailError) {
+          console.error(`[Reservation Email] Exception in sender for ${status} email:`, emailError);
+          emailStatus = "failed";
+        }
+      }
+    }
+
+    res.json({ reservation, emailStatus });
   } catch (error) {
     console.error("[reservationController.updateReservationStatus] Error:", error);
     res.status(500).json({ error: "Server error" });
