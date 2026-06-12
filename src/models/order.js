@@ -76,6 +76,11 @@ const OrderSchema = new mongoose.Schema(
     receiptEmail: { type: String, default: null },
     receiptSent:  { type: Boolean, default: false },
 
+    // Order creation metadata
+    orderSource: { type: String, enum: ["self", "waitstaff"], default: "self", index: true },
+    createdBy: { type: String, enum: ["customer", "staff"], default: "customer" },
+    createdByStaffId: { type: String, default: null, index: true },
+
     // Staff attribution
     completedBy: { type: String, default: null },
     // Payment confirmed by staff (offline POS/cash payments via waiter)

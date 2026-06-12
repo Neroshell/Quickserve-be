@@ -1,5 +1,5 @@
 import express from "express"
-import { waiterOrders } from "../controllers/waiterOrdersController.js"
+import { waiterOrders, createWaiterOrder } from "../controllers/waiterOrdersController.js"
 import { updateOrderStatus } from "../controllers/kitchenController.js"
 import { markPaid } from "../controllers/orderController.js"
 import {
@@ -8,6 +8,8 @@ import {
     claimWaiterCall,
     resolveWaiterCall,
 } from "../controllers/waiterCallController.js"
+
+import { listServicePoints } from "../controllers/servicePointController.js"
 
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
 
@@ -29,8 +31,12 @@ router.use(requireAuth, requireRole("waiter"))
 
 // Orders
 router.get("/", waiterOrders)
+router.post("/orders", createWaiterOrder)
 router.patch("/orders/:orderId/status", updateOrderStatus)
 router.patch("/orders/:orderId/mark-paid", markPaid)
+
+// Service Points
+router.get("/service-points", listServicePoints)
 
 // Calls actions
 router.patch("/calls/:id/claim", claimWaiterCall)

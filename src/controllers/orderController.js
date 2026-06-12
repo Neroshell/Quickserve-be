@@ -71,10 +71,12 @@ export async function createOrder(req, res) {
       paymentChannel, paymentStatus, paidVia, receiptEmail
     } = req.body
 
-    if (!sessionId) {
+    const isWaiter = req.session?.user?.role === "waiter" || req.session?.user?.role === "owner" || req.session?.user?.role === "manager"
+
+    if (!isWaiter && !sessionId) {
       return res.status(400).json({ message: "sessionId is required" })
     }
-    if (!tableSessionToken) {
+    if (!isWaiter && !tableSessionToken) {
       return res.status(400).json({ message: "tableSessionToken is required" })
     }
     if (!tableNumber || !Array.isArray(items) || items.length === 0) {
@@ -89,40 +91,49 @@ export async function createOrder(req, res) {
       return res.status(400).json({ message: `Invalid orderType. Use: ${allowedTypes.join(", ")}` })
     }
 
-    // Validate token
-    const ts = await TableSession.findOne({ token: tableSessionToken })
-    if (!ts) {
-      return res.status(403).json({ message: "Invalid or expired table session. Please rescan the QR code." })
-    }
+    let businessId;
 
-    // Expiry check
-    if (ts.expiresAt.getTime() < Date.now()) {
-      return res.status(403).json({ message: "Session expired. Please rescan the QR code." })
-    }
-
-    // Table must match
-    if (ts.tableId !== tableNumber) {
-      return res.status(403).json({ message: "Table session mismatch. Please rescan the correct table QR." })
-    }
-
-    // Bind token to first device sessionId ATOMICALLY
-    if (!ts.boundSessionId) {
-      const updatedTs = await TableSession.findOneAndUpdate(
-        { _id: ts._id, boundSessionId: null },
-        { $set: { boundSessionId: sessionId } },
-        { new: true }
-      )
-      if (!updatedTs) {
-        return res.status(403).json({ message: "This table session was just claimed by another device." })
+    if (!isWaiter) {
+      // Validate token
+      const ts = await TableSession.findOne({ token: tableSessionToken })
+      if (!ts) {
+        return res.status(403).json({ message: "Invalid or expired table session. Please rescan the QR code." })
       }
-      ts.boundSessionId = sessionId
-    } else if (ts.boundSessionId !== sessionId) {
-      return res.status(403).json({ message: "This table session is already in use on another device." })
-    }
 
-    //  STRICT SECURITY: Override businessId explicitly from the validated TableSession
-    // This prevents an attacker with a valid session at Restaurant A from injecting orders into Restaurant B.
-    const businessId = ts.businessId
+      // Expiry check
+      if (ts.expiresAt.getTime() < Date.now()) {
+        return res.status(403).json({ message: "Session expired. Please rescan the QR code." })
+      }
+
+      // Table must match
+      if (ts.tableId !== tableNumber) {
+        return res.status(403).json({ message: "Table session mismatch. Please rescan the correct table QR." })
+      }
+
+      // Bind token to first device sessionId ATOMICALLY
+      if (!ts.boundSessionId) {
+        const updatedTs = await TableSession.findOneAndUpdate(
+          { _id: ts._id, boundSessionId: null },
+          { $set: { boundSessionId: sessionId } },
+          { new: true }
+        )
+        if (!updatedTs) {
+          return res.status(403).json({ message: "This table session was just claimed by another device." })
+        }
+        ts.boundSessionId = sessionId
+      } else if (ts.boundSessionId !== sessionId) {
+        return res.status(403).json({ message: "This table session is already in use on another device." })
+      }
+
+      //  STRICT SECURITY: Override businessId explicitly from the validated TableSession
+      // This prevents an attacker with a valid session at Restaurant A from injecting orders into Restaurant B.
+      businessId = ts.businessId
+    } else {
+      businessId = req.session.user.businessId
+      if (!businessId) {
+         return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
+      }
+    }
 
     // ✅ CRITICAL GATE: Business Open/Closed logic
     const business = await Business.findOne({
@@ -232,6 +243,7 @@ export async function createOrder(req, res) {
       planApplied: currentPlan,
       commissionRateApplied: commissionRate,
       commissionAmountCents,
+      orderSource: isWaiter ? "waitstaff" : "self",
     })
 
     const orderDTO = toOrderDTO(saved)

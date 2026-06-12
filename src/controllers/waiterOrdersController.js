@@ -1,5 +1,13 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
+import MenuItem from "../models/menuItem.js"
+import Business from "../models/Business.js"
+import Plan from "../models/Plan.js"
+import ServicePoint from "../models/ServicePoint.js"
+import { generateOrderId } from "../utils/orderId.js"
+import { toOrderDTO } from "../utils/orderDTO.js"
+import { publishEvent } from "../utils/sseManager.js"
+import { isBusinessOpen } from "../utils/operatingHours.js"
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -35,6 +43,14 @@ export async function waiterOrders(req, res) {
         if (!businessId) {
             return res.status(400).json({ error: "businessId is required" })
         }
+
+        // Surface the waiter-ordering setting so the dashboard can show/hide the
+        // "+ Take Order" button. Defaults to enabled when unset.
+        const bizPrefs = await Business.findOne(
+            { $or: [{ businessId }, { restaurantId: businessId }] },
+            { "orderingPreferences.enableWaiterOrdering": 1 }
+        ).lean()
+        const enableWaiterOrdering = bizPrefs?.orderingPreferences?.enableWaiterOrdering !== false
 
         // ✅ Fetch all relevant statuses so FE can calculate counts for tabs
         // The FE sends ?status=... but relies on receiving ALL data to show badge counts
@@ -135,7 +151,7 @@ export async function waiterOrders(req, res) {
             orders.sort((a, b) => (rank[a.status] || 99) - (rank[b.status] || 99))
         }
 
-        return res.json({ businessDay, generatedAt, counts, orders })
+        return res.json({ businessDay, generatedAt, counts, orders, settings: { enableWaiterOrdering } })
     } catch (err) {
         console.error("[waiterOrders]", err)
         return res.status(500).json({ error: "Failed to fetch waiter orders" })
@@ -146,4 +162,168 @@ export async function waiterOrders(req, res) {
 export async function waiterReadyOrders(req, res) {
     req.query.status = "ready"
     return waiterOrders(req, res)
+}
+
+export async function createWaiterOrder(req, res) {
+  try {
+    const businessId = req.session?.user?.businessId
+    const staffId = req.session?.user?.staffId || req.session?.user?.id
+    
+    if (!businessId) {
+      return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
+    }
+
+    const { tableNumber, items, orderType, currency } = req.body
+
+    if (!tableNumber || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "tableNumber and items are required" })
+    }
+
+    const allowedTypes = ["dine-in", "takeout"]
+    const finalOrderType = orderType || "dine-in"
+
+    if (!allowedTypes.includes(finalOrderType)) {
+      return res.status(400).json({ message: `Invalid orderType. Use: ${allowedTypes.join(", ")}` })
+    }
+
+    // Verify service point belongs to this business
+    const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId }).lean()
+    if (!sp) {
+      return res.status(403).json({ message: "Invalid service point for this business." })
+    }
+
+    const business = await Business.findOne({
+      $or: [{ businessId }, { restaurantId: businessId }],
+    }).lean()
+
+    if (!business) {
+      return res.status(404).json({ success: false, message: "Business not found." })
+    }
+
+    // Enforce the waiter-assisted ordering setting on the server — hiding the
+    // button on the client is not sufficient. Defaults to enabled when unset.
+    if (business.orderingPreferences?.enableWaiterOrdering === false) {
+      return res.status(403).json({
+        success: false,
+        message: "Waiter-assisted ordering is disabled for this business.",
+      })
+    }
+
+    const openStatus = isBusinessOpen(business)
+    if (!openStatus.isOpen) {
+      return res.status(403).json({
+        error: `Business is closed. Will open ${openStatus.nextOpeningTime}.`
+      })
+    }
+
+    const tableLabel = sp.label || sp.code || tableNumber
+    const tableCode = sp.code || sp.label || tableNumber
+
+    const now = new Date()
+    const orderId = generateOrderId(tableCode, now)
+
+    let calculatedTotal = 0
+    const enrichedItems = await Promise.all(
+      items.map(async (item) => {
+        const menuItem = await MenuItem.findOne({ name: item.itemName, businessId }).lean()
+        if (!menuItem) {
+          throw new Error(`Menu item '${item.itemName}' is no longer available.`)
+        }
+        
+        const unitPrice = menuItem.price || 0
+        const itemType = menuItem.type || (item.orderCategory === "drinks" ? "drinks" : "food")
+        const displayCategory = menuItem.category || "mains"
+        const itemImage = menuItem.imageUrl || item.image || ""
+
+        const itemLineTotal = Number((unitPrice * item.quantity).toFixed(2))
+        calculatedTotal += itemLineTotal
+
+        return {
+          itemName: item.itemName,
+          quantity: item.quantity,
+          lineTotal: itemLineTotal,
+          type: itemType,
+          category: displayCategory,
+          notes: item.notes || "",
+          allergies: item.allergies || [],
+          image: itemImage
+        }
+      })
+    )
+
+    const hasFood = enrichedItems.some(i => i.type === "food")
+    const initialStatus = hasFood ? "placed" : "ready"
+
+    const subtotal = Number(calculatedTotal.toFixed(2))
+    const taxRate = business.taxRate || 0
+    const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2))
+
+    const currentPlan = business.currentPlan || "basic"
+    const planDef = await Plan.findOne({ slug: currentPlan }).lean()
+    const commissionRate = planDef ? planDef.offlineCommissionRate : 2.5
+    
+    let platformFeeTotal = 0
+    if (business.passPlatformFeeToCustomer) {
+      platformFeeTotal = Number((subtotal * (commissionRate / 100)).toFixed(2))
+    }
+
+    let commissionAmountCents = 0
+    if (business.passPlatformFeeToCustomer && platformFeeTotal > 0) {
+      commissionAmountCents = Math.round(platformFeeTotal * 100)
+    } else {
+      commissionAmountCents = Math.round(subtotal * (commissionRate / 100) * 100)
+    }
+
+    const finalTotal = Number((subtotal + taxAmount + platformFeeTotal).toFixed(2))
+
+    const saved = await Order.create({
+      orderId,
+      businessId,
+      tableNumber,
+      tableLabel,
+      orderType: finalOrderType,
+      sessionId: `waiter_${staffId}_${Date.now()}`,
+      items: enrichedItems,
+      status: initialStatus,
+      subtotal,
+      taxAmount,
+      platformFeeTotal,
+      total: finalTotal,
+      currency: currency || business.currency || "EUR",
+      paymentChannel: "offline",
+      paymentStatus: "unpaid",
+      paidVia: null,
+      planApplied: currentPlan,
+      commissionRateApplied: commissionRate,
+      commissionAmountCents,
+      orderSource: "waitstaff",
+      createdBy: "staff",
+      createdByStaffId: staffId
+    })
+
+    const orderDTO = toOrderDTO(saved)
+
+    const foodItems = saved.items.filter(i => i.type === "food")
+    const drinkItems = saved.items.filter(i => i.type === "drinks")
+
+    if (foodItems.length > 0) {
+      const kitchenDTO = { ...orderDTO, items: foodItems }
+      await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO })
+    }
+
+    if (drinkItems.length > 0) {
+      const barDTO = { ...orderDTO, items: drinkItems }
+      await publishEvent("order_created", businessId, ["bar"], { order: barDTO })
+    }
+
+    await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
+
+    return res.status(201).json({ orderId: saved.orderId, businessId: saved.businessId, status: saved.status })
+  } catch (err) {
+    console.error("Create waiter order error:", err)
+    if (err.message && err.message.includes("is no longer available")) {
+      return res.status(400).json({ error: err.message })
+    }
+    return res.status(500).json({ message: "Server error" })
+  }
 }

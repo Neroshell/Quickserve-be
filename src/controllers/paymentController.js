@@ -31,9 +31,11 @@ export async function createCheckoutSession(req, res) {
         } = req.body;
 
         // --- Validation ---
-        if (!sessionId)
+        const isWaiter = req.session?.user?.role === "waiter" || req.session?.user?.role === "owner" || req.session?.user?.role === "manager";
+
+        if (!isWaiter && !sessionId)
             return res.status(400).json({ message: "sessionId is required" });
-        if (!tableSessionToken)
+        if (!isWaiter && !tableSessionToken)
             return res.status(400).json({ message: "tableSessionToken is required" });
         if (!tableNumber || !Array.isArray(items) || items.length === 0)
             return res.status(400).json({ message: "tableNumber and items are required" });
@@ -43,28 +45,38 @@ export async function createCheckoutSession(req, res) {
         if (!allowedTypes.includes(finalOrderType))
             return res.status(400).json({ message: `Invalid orderType. Use: ${allowedTypes.join(", ")}` });
 
-        // --- Validate table session token ---
-        const ts = await TableSession.findOne({ token: tableSessionToken });
-        if (!ts)
-            return res.status(403).json({ message: "Invalid or expired table session." });
-        if (ts.expiresAt.getTime() < Date.now())
-            return res.status(403).json({ message: "Session expired." });
-        if (ts.tableId !== tableNumber)
-            return res.status(403).json({ message: "Table session mismatch." });
+        let businessIdToUse;
 
-        // Bind session to first device ATOMICALLY
-        if (!ts.boundSessionId) {
-            const updatedTs = await TableSession.findOneAndUpdate(
-                { _id: ts._id, boundSessionId: null },
-                { $set: { boundSessionId: sessionId } },
-                { new: true }
-            );
-            if (!updatedTs) {
-                return res.status(403).json({ message: "Table session was just claimed by another device." });
+        if (!isWaiter) {
+            // --- Validate table session token ---
+            const ts = await TableSession.findOne({ token: tableSessionToken });
+            if (!ts)
+                return res.status(403).json({ message: "Invalid or expired table session." });
+            if (ts.expiresAt.getTime() < Date.now())
+                return res.status(403).json({ message: "Session expired." });
+            if (ts.tableId !== tableNumber)
+                return res.status(403).json({ message: "Table session mismatch." });
+
+            // Bind session to first device ATOMICALLY
+            if (!ts.boundSessionId) {
+                const updatedTs = await TableSession.findOneAndUpdate(
+                    { _id: ts._id, boundSessionId: null },
+                    { $set: { boundSessionId: sessionId } },
+                    { new: true }
+                );
+                if (!updatedTs) {
+                    return res.status(403).json({ message: "Table session was just claimed by another device." });
+                }
+                ts.boundSessionId = sessionId;
+            } else if (ts.boundSessionId !== sessionId) {
+                return res.status(403).json({ message: "Table session active on another device." });
             }
-            ts.boundSessionId = sessionId;
-        } else if (ts.boundSessionId !== sessionId) {
-            return res.status(403).json({ message: "Table session active on another device." });
+            businessIdToUse = ts.businessId;
+        } else {
+            businessIdToUse = req.session.user.businessId;
+            if (!businessIdToUse) {
+                 return res.status(403).json({ message: "Unauthorized: Missing businessId in session" });
+            }
         }
 
         // --- Build Stripe line items and enrich cart items ---
@@ -102,7 +114,7 @@ export async function createCheckoutSession(req, res) {
 
         // --- Resolve business and check Stripe Connect readiness ---
         const business = await Business.findOne({
-            $or: [{ businessId: ts.businessId }, { restaurantId: ts.businessId }],
+            $or: [{ businessId: businessIdToUse }, { restaurantId: businessIdToUse }],
         }).lean();
 
         if (!business) {
@@ -122,7 +134,7 @@ export async function createCheckoutSession(req, res) {
         // --- Resolve service point label for display ---
         // tableNumber is the internal servicePointId (e.g. sp_xxxx); we resolve the
         // human-friendly label once here so the webhook can copy it without a second lookup.
-        const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId: ts.businessId }).lean();
+        const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId: businessIdToUse }).lean();
         const tableLabel = sp?.label || sp?.code || tableNumber;
         const tableCode  = sp?.code  || sp?.label || tableNumber;
 
@@ -131,7 +143,7 @@ export async function createCheckoutSession(req, res) {
         const orderId = generateOrderId(tableCode, now);
 
         const pending = await PendingCheckout.create({
-            businessId: ts.businessId,
+            businessId: businessIdToUse,
             orderId,
             tableNumber,   // internal servicePointId — preserved for routing
             tableLabel,    // human-friendly — copied to Order by webhook
@@ -160,7 +172,7 @@ export async function createCheckoutSession(req, res) {
                 pendingCheckoutId: pending._id.toString(),
                 orderId,
                 tableNumber,
-                businessId: ts.businessId,
+                businessId: businessIdToUse,
             },
             // Route payment to connected account; platform fee stays with QuickServe
             payment_intent_data: {
@@ -170,11 +182,11 @@ export async function createCheckoutSession(req, res) {
                 },
                 metadata: {
                     orderId,
-                    businessId: ts.businessId,
+                    businessId: businessIdToUse,
                 },
             },
-            success_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/confirmation?payment=success&orderId=${orderId}&businessId=${ts.businessId}`,
-            cancel_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/order?payment=cancelled&businessId=${ts.businessId}`,
+            success_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/confirmation?payment=success&orderId=${orderId}&businessId=${businessIdToUse}`,
+            cancel_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/order?payment=cancelled&businessId=${businessIdToUse}`,
         };
 
         if (receiptEmail) {

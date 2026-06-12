@@ -157,13 +157,14 @@ export async function updateOrderingPreferences(req, res) {
         }
 
         // Only allow the known boolean fields to be updated
-        const { dineInEnabled, takeoutEnabled, callWaiterEnabled, hideOutOfStockItems, qrOrderingEnabled } = orderingPreferences
+        const { dineInEnabled, takeoutEnabled, callWaiterEnabled, hideOutOfStockItems, qrOrderingEnabled, enableWaiterOrdering } = orderingPreferences
         const safePrefs = {}
         if (typeof dineInEnabled === "boolean") safePrefs["orderingPreferences.dineInEnabled"] = dineInEnabled
         if (typeof takeoutEnabled === "boolean") safePrefs["orderingPreferences.takeoutEnabled"] = takeoutEnabled
         if (typeof callWaiterEnabled === "boolean") safePrefs["orderingPreferences.callWaiterEnabled"] = callWaiterEnabled
         if (typeof hideOutOfStockItems === "boolean") safePrefs["orderingPreferences.hideOutOfStockItems"] = hideOutOfStockItems
         if (typeof qrOrderingEnabled === "boolean") safePrefs["orderingPreferences.qrOrderingEnabled"] = qrOrderingEnabled
+        if (typeof enableWaiterOrdering === "boolean") safePrefs["orderingPreferences.enableWaiterOrdering"] = enableWaiterOrdering
 
         if (settings && typeof settings.reservationsEnabled === "boolean") {
             safePrefs["settings.reservationsEnabled"] = settings.reservationsEnabled

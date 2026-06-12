@@ -22,6 +22,8 @@ const OrderingPreferencesSchema = new mongoose.Schema({
     callWaiterEnabled: { type: Boolean, default: true },
     hideOutOfStockItems: { type: Boolean, default: false },
     qrOrderingEnabled: { type: Boolean, default: true },
+    // Allows waiters to place offline orders on behalf of customers without a QR scan.
+    enableWaiterOrdering: { type: Boolean, default: true },
 }, { _id: false })
 
 const PaymentPreferencesSchema = new mongoose.Schema({

@@ -520,7 +520,11 @@ export async function ownerAnalytics(req, res) {
             peakHour: "N/A",
             averagePrepTime: 0,
             dineInCount: 0,
-            takeoutCount: 0
+            takeoutCount: 0,
+            customerOrderCount: 0,
+            staffOrderCount: 0,
+            customerRevenue: 0,
+            staffRevenue: 0
         }
 
         const hourlyOrdersMap = new Map() // Hour string -> { orders, revenue }
@@ -577,6 +581,13 @@ export async function ownerAnalytics(req, res) {
             if (order.orderType === "dine-in") stats.dineInCount++
             if (order.orderType === "takeout") stats.takeoutCount++
 
+            // Channel calculations
+            if (order.orderSource === "waitstaff") {
+                stats.staffOrderCount++
+            } else {
+                stats.customerOrderCount++
+            }
+
             // Prep time calculations
             if (order.createdAt && order.readyAt) {
                 const prepMinutes = DateTime.fromJSDate(order.readyAt).diff(DateTime.fromJSDate(order.createdAt), "minutes").minutes
@@ -593,6 +604,13 @@ export async function ownerAnalytics(req, res) {
 
                 if (hourlyOrdersMap.has(hourLabel)) {
                     hourlyOrdersMap.get(hourLabel).revenue += (order.total || 0)
+                }
+
+                // Channel Revenue calculations
+                if (order.orderSource === "waitstaff") {
+                    stats.staffRevenue += (order.total || 0)
+                } else {
+                    stats.customerRevenue += (order.total || 0)
                 }
 
                 // Map revenue by day if multi-day view
@@ -700,6 +718,28 @@ export async function ownerAnalytics(req, res) {
                 count: stats.takeoutCount,
                 revenue: takeoutRevenue,
                 percentage: totalTypedOrders > 0 ? Math.round((stats.takeoutCount / totalTypedOrders) * 100) : 0
+            }
+        ]
+
+        const totalChannelOrders = stats.customerOrderCount + stats.staffOrderCount
+        const totalChannelRevenue = stats.customerRevenue + stats.staffRevenue
+
+        const channelBreakdown = [
+            {
+                channel: "self",
+                label: "Self Ordering",
+                count: stats.customerOrderCount,
+                revenue: stats.customerRevenue,
+                orderPercentage: totalChannelOrders > 0 ? Math.round((stats.customerOrderCount / totalChannelOrders) * 100) : 0,
+                revenuePercentage: totalChannelRevenue > 0 ? Math.round((stats.customerRevenue / totalChannelRevenue) * 100) : 0
+            },
+            {
+                channel: "waitstaff",
+                label: "Staff-Assisted Ordering",
+                count: stats.staffOrderCount,
+                revenue: stats.staffRevenue,
+                orderPercentage: totalChannelOrders > 0 ? Math.round((stats.staffOrderCount / totalChannelOrders) * 100) : 0,
+                revenuePercentage: totalChannelRevenue > 0 ? Math.round((stats.staffRevenue / totalChannelRevenue) * 100) : 0
             }
         ]
 
@@ -840,6 +880,7 @@ export async function ownerAnalytics(req, res) {
             topItems,
             categoryPerformance,
             orderTypeBreakdown,
+            channelBreakdown,
             serviceCalls,
             tablePerformance,
             waitstaffPerformance
