@@ -44,9 +44,9 @@ const StaffSchema = new mongoose.Schema({
         default: "offline" 
     },
     passwordHash: { type: String },
-    inviteToken: { type: String },
+    inviteToken: { type: String, select: false },
     inviteTokenExpires: { type: Date },
-    passwordResetToken: { type: String, index: true },
+    passwordResetToken: { type: String, index: true, select: false },
     passwordResetExpires: { type: Date },
 }, { timestamps: true })
 

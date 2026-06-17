@@ -11,10 +11,51 @@ function randomToken() {
 }
 
 /**
- * POST /table-session/start
- *
- * Called by the frontend QR intercept page after scan.
- * Accepts both servicePointId (new) and tableId (legacy) for backward compat.
+ * @openapi
+ * /table-session/start:
+ *   post:
+ *     summary: Initialize a new Table Session from a QR code scan
+ *     tags:
+ *       - Table Session
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - businessId
+ *               - servicePointId
+ *             properties:
+ *               businessId:
+ *                 type: string
+ *               restaurantId:
+ *                 type: string
+ *                 description: Legacy restaurant ID (backward compatibility)
+ *               servicePointId:
+ *                 type: string
+ *               tableId:
+ *                 type: string
+ *                 description: Legacy table ID (backward compatibility)
+ *     responses:
+ *       200:
+ *         description: Table session started successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token:
+ *                   type: string
+ *                 expiresAt:
+ *                   type: string
+ *                   format: date-time
+ *                 businessId:
+ *                   type: string
+ *                 servicePointId:
+ *                   type: string
+ *                 label:
+ *                   type: string
  */
 router.post("/start", async (req, res) => {
   try {

@@ -2,6 +2,7 @@ import Staff from "../models/Staff.js"
 import Business from "../models/Business.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
+import { hashToken } from "../utils/tokenHash.js"
 
 function resolveBusinessId(req) {
     return req.session?.user?.businessId || req.query.businessId
@@ -84,7 +85,7 @@ export async function inviteCoOwner(req, res) {
             accountStatus: "pending",
             presenceStatus: "offline",
             status: "offline",
-            inviteToken,
+            inviteToken: hashToken(inviteToken), // store hash; raw token only goes in the email
             inviteTokenExpires
         })
 

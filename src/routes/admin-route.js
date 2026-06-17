@@ -1,44 +1,286 @@
-﻿import express from "express"
+import express from "express"
 import { createBusiness, getAdminBusinesses, getAdminOwners, createAdminOwner, getAdminBusinessById, updateAdminBusiness, getAdminDashboardStats, deleteAdminBusiness } from "../controllers/businessController.js"
 import { getPlans, updatePlan, seedPlans } from "../controllers/planController.js"
 
-// import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+import { requirePlatformAdmin } from "../middleware/platformAdminAuth.js"
 
 const router = express.Router()
 
-// router.use(requireAuth, requireRole("owner", "admin"))
+// Platform admin (QuickServe backoffice) only — Supabase bearer token + email allowlist.
+// This is separate from tenant owner/manager/staff auth.
+router.use(requirePlatformAdmin)
 
-// POST /admin/businesses
+/**
+ * @openapi
+ * /admin/businesses:
+ *   post:
+ *     summary: Create a new business (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - displayName
+ *               - slug
+ *               - ownerEmail
+ *             properties:
+ *               name:
+ *                 type: string
+ *               displayName:
+ *                 type: string
+ *               slug:
+ *                 type: string
+ *               ownerEmail:
+ *                 type: string
+ *               ownerName:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Business created successfully
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ */
 router.post("/businesses", createBusiness)
 
-// POST /admin/owners
+/**
+ * @openapi
+ * /admin/owners:
+ *   post:
+ *     summary: Create an admin/owner user (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - email
+ *               - businessId
+ *             properties:
+ *               name:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *               businessId:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Owner created successfully
+ *       401:
+ *         description: Unauthorized
+ */
 router.post("/owners", createAdminOwner)
 
-// GET /admin/businesses
+/**
+ * @openapi
+ * /admin/businesses:
+ *   get:
+ *     summary: List all businesses (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of businesses
+ *       401:
+ *         description: Unauthorized
+ */
 router.get("/businesses", getAdminBusinesses)
 
-// GET /admin/owners
+/**
+ * @openapi
+ * /admin/owners:
+ *   get:
+ *     summary: List all business owners (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of owners
+ *       401:
+ *         description: Unauthorized
+ */
 router.get("/owners", getAdminOwners)
 
-// GET /admin/dashboard-stats
+/**
+ * @openapi
+ * /admin/dashboard-stats:
+ *   get:
+ *     summary: Get overview stats for backoffice dashboard (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Dashboard statistics
+ *       401:
+ *         description: Unauthorized
+ */
 router.get("/dashboard-stats", getAdminDashboardStats)
 
-// GET /admin/businesses/:businessId
+/**
+ * @openapi
+ * /admin/businesses/{businessId}:
+ *   get:
+ *     summary: Get business details by ID (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: businessId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Business details
+ *       404:
+ *         description: Business not found
+ */
 router.get("/businesses/:businessId", getAdminBusinessById)
 
-// PATCH /admin/businesses/:businessId
+/**
+ * @openapi
+ * /admin/businesses/{businessId}:
+ *   patch:
+ *     summary: Update business details (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: businessId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               displayName:
+ *                 type: string
+ *               status:
+ *                 type: string
+ *                 enum: [draft, active, suspended, archived]
+ *     responses:
+ *       200:
+ *         description: Business updated successfully
+ *       404:
+ *         description: Business not found
+ */
 router.patch("/businesses/:businessId", updateAdminBusiness)
 
-// DELETE /admin/businesses/:businessId
+/**
+ * @openapi
+ * /admin/businesses/{businessId}:
+ *   delete:
+ *     summary: Delete a business (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: businessId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Business deleted successfully
+ *       404:
+ *         description: Business not found
+ */
 router.delete("/businesses/:businessId", deleteAdminBusiness)
 
-// GET /admin/plans
+/**
+ * @openapi
+ * /admin/plans:
+ *   get:
+ *     summary: Get all plans (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of pricing/billing plans
+ */
 router.get("/plans", getPlans)
 
-// PATCH /admin/plans/:id
+/**
+ * @openapi
+ * /admin/plans/{id}:
+ *   patch:
+ *     summary: Update a pricing plan (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               description:
+ *                 type: string
+ *               price:
+ *                 type: number
+ *     responses:
+ *       200:
+ *         description: Plan updated successfully
+ */
 router.patch("/plans/:id", updatePlan)
 
-// POST /admin/plans/seed
+/**
+ * @openapi
+ * /admin/plans/seed:
+ *   post:
+ *     summary: Seed default pricing plans (Platform Admin Only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Plans seeded successfully
+ */
 router.post("/plans/seed", seedPlans)
 
 export default router

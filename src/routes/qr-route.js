@@ -19,6 +19,30 @@ function randomToken() {
  *   - A stable `sp_XXXXXXXX` ID from the ServicePoint collection (new flow)
  *   - A legacy plain string like "table-1" preserved for backward compat
  */
+/**
+ * @openapi
+ * /q/{businessId}/{servicePointId}:
+ *   get:
+ *     summary: QR code scan landing route (redirects to the customer frontend UI)
+ *     tags:
+ *       - QR Scanning
+ *     parameters:
+ *       - in: path
+ *         name: businessId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: servicePointId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       302:
+ *         description: Redirects to frontend customer menu flow with table token
+ *       404:
+ *         description: Business or Service Point not found
+ */
 router.get("/:businessId/:servicePointId", async (req, res) => {
   try {
     const { businessId, servicePointId } = req.params

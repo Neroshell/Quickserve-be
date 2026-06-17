@@ -1,7 +1,84 @@
 import Business from "../models/Business.js";
 import Reservation, { timeStringToMinutes, MIN_DURATION_MINUTES } from "../models/Reservation.js";
 import ServicePoint from "../models/ServicePoint.js";
+import Plan from "../models/Plan.js";
 import { sendReservationRequestEmail, sendReservationRequestReceivedEmail } from "../utils/emailService.js";
+
+const SERVABLE_STATUSES = ["active", "onboarding", "draft"];
+
+/**
+ * GET /public/business-config?businessId=...
+ *
+ * Public, UNauthenticated business configuration for the customer ordering app
+ * (and non-manager staff like waiters). Returns ONLY safe, public-facing config —
+ * never owner, billing, Stripe, or any credential fields.
+ *
+ * This is deliberately separate from the authenticated GET /business/settings,
+ * which returns the full document to managers/owners only.
+ */
+export async function getPublicBusinessConfig(req, res) {
+  try {
+    const businessId = req.query.businessId || req.query.restaurantId;
+    if (!businessId) {
+      return res.status(400).json({ error: "businessId is required" });
+    }
+
+    const business = await Business.findOne({
+      $or: [{ businessId }, { restaurantId: businessId }],
+    }).lean();
+
+    if (!business || !SERVABLE_STATUSES.includes(business.status)) {
+      return res.status(404).json({ error: "Business not found" });
+    }
+
+    // Plan-derived values (same logic as authenticated getSettings)
+    const currentPlan = business.currentPlan || "basic";
+    const planDef = await Plan.findOne({ slug: currentPlan }).lean();
+    const platformFeeRate = planDef ? planDef.offlineCommissionRate : 2.5;
+
+    const canUseBranding = ["growth", "enterprise"].includes(currentPlan);
+    const canRemoveQuickServeBranding = currentPlan === "enterprise";
+
+    let branding = canUseBranding ? business.branding || null : null;
+    if (branding && !canRemoveQuickServeBranding) {
+      branding = { ...branding, removeQuickServeBranding: false };
+    }
+
+    // Offline availability as a boolean only — never expose the underlying billing details.
+    const offlinePaymentsAvailable =
+      business.billingStatus === "active" && !!business.defaultPaymentMethodId;
+
+    return res.json({
+      businessId: business.businessId,
+      name: business.name,
+      displayName: business.displayName,
+      slug: business.slug,
+      logoUrl: business.logoUrl,
+      phoneNumber: business.phoneNumber,
+      address: business.address,
+      country: business.country,
+      currency: business.currency,
+      timezone: business.timezone,
+      language: business.language,
+      businessType: business.businessType,
+      taxRate: business.taxRate,
+      passPlatformFeeToCustomer: business.passPlatformFeeToCustomer,
+      platformFeeLabel: business.platformFeeLabel,
+      platformFeeRate,
+      offlinePaymentsAvailable,
+      operatingHours: business.operatingHours,
+      orderingPreferences: business.orderingPreferences,
+      paymentPreferences: business.paymentPreferences,
+      settings: business.settings,
+      menuCategories: business.menuCategories,
+      branding,
+      brandingAccess: { canUseBranding, canRemoveQuickServeBranding },
+    });
+  } catch (error) {
+    console.error("[publicController.getPublicBusinessConfig] Error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+}
 
 /**
  * Returns a sanitized public DTO for the business hub.

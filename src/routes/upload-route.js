@@ -24,9 +24,38 @@ const upload = multer({
 })
 
 /**
- * POST /upload/image
- * General-purpose upload — returns URL + publicId, no DB write.
- * Body (multipart/form-data): image (file), folder (optional string, default: "quickserve/general")
+ * @openapi
+ * /upload/image:
+ *   post:
+ *     summary: General image upload to Cloudinary (no DB write)
+ *     tags:
+ *       - Uploads
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - image
+ *             properties:
+ *               image:
+ *                 type: string
+ *                 format: binary
+ *               folder:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Image uploaded successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 url:
+ *                   type: string
+ *                 publicId:
+ *                   type: string
  */
 router.post("/image", upload.single("image"), async (req, res) => {
   try {
@@ -47,15 +76,37 @@ router.post("/image", upload.single("image"), async (req, res) => {
 })
 
 /**
- * POST /upload/business-logo
- * Body (multipart/form-data): image (file), businessId (string)
+ * @openapi
+ * /upload/business-logo:
+ *   post:
+ *     summary: Upload and update business logo
+ *     tags:
+ *       - Uploads
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - image
+ *               - businessId
+ *             properties:
+ *               image:
+ *                 type: string
+ *                 format: binary
+ *               businessId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Logo uploaded and saved successfully
  */
 router.post("/business-logo", upload.single("image"), async (req, res) => {
   try {
-    const { businessId } = req.body
-
+    // Always the authenticated user's own business — never a businessId from the body.
+    const businessId = req.session?.user?.businessId
     if (!businessId) {
-      return res.status(400).json({ error: "businessId is required" })
+      return res.status(401).json({ error: "Unauthorized" })
     }
     if (!req.file) {
       return res.status(400).json({ error: "Image file is required" })
@@ -93,11 +144,40 @@ router.post("/business-logo", upload.single("image"), async (req, res) => {
 })
 
 /**
- * POST /upload/menu-item
- * Body (multipart/form-data): image (file), menuItemId (string)
+ * @openapi
+ * /upload/menu-item:
+ *   post:
+ *     summary: Upload and update menu item image
+ *     tags:
+ *       - Uploads
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - image
+ *               - menuItemId
+ *             properties:
+ *               image:
+ *                 type: string
+ *                 format: binary
+ *               menuItemId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Menu item image uploaded and saved successfully
  */
 router.post("/menu-item", upload.single("image"), async (req, res) => {
   try {
+    // Scope to the authenticated user's business so one tenant can't overwrite
+    // (or delete the Cloudinary asset of) another tenant's menu item.
+    const businessId = req.session?.user?.businessId
+    if (!businessId) {
+      return res.status(401).json({ error: "Unauthorized" })
+    }
+
     const { menuItemId } = req.body
 
     if (!menuItemId) {
@@ -107,7 +187,7 @@ router.post("/menu-item", upload.single("image"), async (req, res) => {
       return res.status(400).json({ error: "Image file is required" })
     }
 
-    const menuItem = await MenuItem.findById(menuItemId)
+    const menuItem = await MenuItem.findOne({ _id: menuItemId, businessId })
     if (!menuItem) {
       return res.status(404).json({ error: "Menu item not found" })
     }

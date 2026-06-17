@@ -13,7 +13,39 @@ const checkoutLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// POST /payments/checkout — create a Stripe Checkout Session
+/**
+ * @openapi
+ * /payments/checkout:
+ *   post:
+ *     summary: Create a Stripe Checkout Session for order payment
+ *     tags:
+ *       - Payments
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - orderId
+ *             properties:
+ *               orderId:
+ *                 type: string
+ *               successUrl:
+ *                 type: string
+ *               cancelUrl:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Stripe checkout session URL generated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 url:
+ *                   type: string
+ */
 router.post("/checkout", checkoutLimiter, createCheckoutSession);
 
 export default router;

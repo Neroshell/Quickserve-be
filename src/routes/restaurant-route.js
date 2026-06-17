@@ -7,31 +7,184 @@ const router = express.Router()
 
 const requireManager = [requireAuth, requireRole("owner", "admin", "manager")]
 
-// GET /restaurant/settings
-router.get("/settings", getSettings)
+/**
+ * @openapi
+ * /business/settings:
+ *   get:
+ *     summary: Get business configuration settings (Manager only)
+ *     tags:
+ *       - Business Settings
+ *     responses:
+ *       200:
+ *         description: Current business configurations
+ */
+router.get("/settings", requireManager, getSettings)
 
-// PATCH /restaurant/settings
+/**
+ * @openapi
+ * /business/settings:
+ *   patch:
+ *     summary: Update primary business configuration details (Manager only)
+ *     tags:
+ *       - Business Settings
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               displayName:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Settings updated successfully
+ */
 router.patch("/settings", requireManager, updateSettings)
 
-// PATCH /restaurant/operating-hours
+/**
+ * @openapi
+ * /business/operating-hours:
+ *   patch:
+ *     summary: Update business weekly operating hours (Manager only)
+ *     tags:
+ *       - Business Settings
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: Operating hours updated successfully
+ */
 router.patch("/operating-hours", requireManager, updateOperatingHours)
 
-// PATCH /restaurant/settings/ordering-preferences
+/**
+ * @openapi
+ * /business/settings/ordering-preferences:
+ *   patch:
+ *     summary: Update ordering features/preferences (Manager only)
+ *     tags:
+ *       - Business Settings
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: Ordering preferences updated successfully
+ */
 router.patch("/settings/ordering-preferences", requireManager, updateOrderingPreferences)
 
-// PATCH /restaurant/settings/payment-preferences
+/**
+ * @openapi
+ * /business/settings/payment-preferences:
+ *   patch:
+ *     summary: Update payment channel settings (Manager only)
+ *     tags:
+ *       - Business Settings
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: Payment preferences updated successfully
+ */
 router.patch("/settings/payment-preferences", requireManager, updatePaymentPreferences)
 
-// PATCH /restaurant/settings/table-preferences
+/**
+ * @openapi
+ * /business/settings/table-preferences:
+ *   patch:
+ *     summary: Update table session preferences (Manager only)
+ *     tags:
+ *       - Business Settings
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: Table preferences updated successfully
+ */
 router.patch("/settings/table-preferences", requireManager, updateTablePreferences)
 
-// GET /restaurant/categories
+/**
+ * @openapi
+ * /business/categories:
+ *   get:
+ *     summary: Get all custom menu categories configured
+ *     tags:
+ *       - Business Settings
+ *     parameters:
+ *       - in: query
+ *         name: businessId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: List of categories
+ */
 router.get("/categories", getCategories)
 
-// POST /restaurant/categories
+/**
+ * @openapi
+ * /business/categories:
+ *   post:
+ *     summary: Add a new custom category (Manager only)
+ *     tags:
+ *       - Business Settings
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - category
+ *             properties:
+ *               category:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Category added successfully
+ */
 router.post("/categories", requireManager, addCategory)
 
-// DELETE /restaurant/categories
+/**
+ * @openapi
+ * /business/categories:
+ *   delete:
+ *     summary: Remove a custom category (Manager only)
+ *     tags:
+ *       - Business Settings
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - category
+ *             properties:
+ *               category:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Category removed successfully
+ */
 router.delete("/categories", requireManager, removeCategory)
 
 export default router

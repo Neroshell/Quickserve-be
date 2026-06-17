@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -1 /c/Users/nero/Desktop/ 2>/dev/null | grep -i \"quick\\\\|serve\\\\|qs\\\\|frontend\\\\|fe\\\\|client\\\\|customer\\\\|web\\\\|app\" )",
+      "Read(//c/Users/nero/Desktop//**)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\nero\\Desktop\\Quickserve-bo-vo\\lib",
+      "c:\\Users\\nero\\Desktop\\Quick-serve-qr-menu\\app\\table\\[tableId]\\confirmation"
+    ]
+  }
+}

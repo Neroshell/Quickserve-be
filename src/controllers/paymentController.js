@@ -2,6 +2,7 @@ import Stripe from "stripe";
 import TableSession from "../models/TableSession.js";
 import PendingCheckout from "../models/PendingCheckout.js";
 import Business from "../models/Business.js";
+import MenuItem from "../models/menuItem.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { calculatePlatformFee, getFeeRate } from "../utils/platformFee.js";
@@ -86,8 +87,20 @@ export async function createCheckoutSession(req, res) {
         const finalCurrency = (currency || "eur").toLowerCase();
 
         for (const item of items) {
-            const price = Number(item.price) || 0;
-            const qty = Number(item.quantity) || 1;
+            const qty = Math.max(1, Math.floor(Number(item.quantity) || 1));
+
+            // Price is ALWAYS taken from the database, never from the client.
+            // This prevents checkout manipulation (e.g. sending price: 0.01).
+            const menuItem = await MenuItem.findOne({
+                name: item.itemName,
+                businessId: businessIdToUse,
+            }).lean();
+
+            if (!menuItem) {
+                return res.status(400).json({ message: `Menu item '${item.itemName}' is no longer available.` });
+            }
+
+            const price = Number(menuItem.price) || 0;
             const priceInCents = Math.round(price * 100);
 
             serverTotal += price * qty;
@@ -95,18 +108,18 @@ export async function createCheckoutSession(req, res) {
             lineItems.push({
                 price_data: {
                     currency: finalCurrency,
-                    product_data: { name: item.itemName },
+                    product_data: { name: menuItem.name },
                     unit_amount: priceInCents,
                 },
                 quantity: qty,
             });
 
             enrichedItems.push({
-                itemName: item.itemName,
+                itemName: menuItem.name,
                 quantity: qty,
                 lineTotal: Number((price * qty).toFixed(2)),
-                type: item.orderCategory === "drinks" ? "drinks" : "food",
-                category: item.category || "mains",
+                type: menuItem.type || (item.orderCategory === "drinks" ? "drinks" : "food"),
+                category: menuItem.category || "mains",
                 notes: item.notes || "",
                 allergies: item.allergies || [],
             });

@@ -86,11 +86,15 @@ const BusinessSchema = new mongoose.Schema({
         default: 'incomplete' 
     },
     billingEnabled: { type: Boolean, default: false },
-    currentPlan: { 
-        type: String, 
-        enum: ['basic', 'growth', 'enterprise'], 
-        default: 'basic' 
+    currentPlan: {
+        type: String,
+        enum: ['basic', 'growth', 'enterprise'],
+        default: 'basic'
     },
+    // Plan assignment used by the admin backoffice (createBusiness / dashboard stats).
+    // `plan` is the legacy string name; `planId` references the Plan collection.
+    plan: { type: String, default: null },
+    planId: { type: mongoose.Schema.Types.ObjectId, ref: "Plan", default: null },
     planActivatedAt: { type: Date },
     billingCycle: { type: String, enum: ['monthly'], default: 'monthly' },
     nextBillingDate: { type: Date },
@@ -154,9 +158,9 @@ const BusinessSchema = new mongoose.Schema({
         default: "pending" 
     },
     ownerPasswordHash: { type: String },
-    inviteToken: { type: String, index: true },
+    inviteToken: { type: String, index: true, select: false },
     inviteTokenExpires: { type: Date },
-    passwordResetToken: { type: String, index: true },
+    passwordResetToken: { type: String, index: true, select: false },
     passwordResetExpires: { type: Date },
     operatingHours: { type: OperatingHoursSchema, default: () => ({}) },
     // Legacy fields for backward compatibility

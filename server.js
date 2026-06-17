@@ -23,6 +23,7 @@ import helmet from "helmet"
 import { sessionMiddleware } from "./src/config/session.js"
 import { connectSessionRedis } from "./src/config/sessionRedisClient.js"
 import rateLimit from "express-rate-limit"
+import { setupSwagger } from "./src/config/swagger.js"
 
 const app = express()
 app.set("trust proxy", 1) // required for secure cookies behind proxies like vercel
@@ -34,8 +35,23 @@ const PORT = process.env.PORT || 5000
 
 app.use("/webhook", webhookRoute)
 
-// Global middleware
-app.use(helmet())
+// Global middleware with scoped Helmet CSP exceptions for Swagger UI
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api-docs")) {
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+          "script-src": ["'self'", "'unsafe-inline'"],
+          "style-src": ["'self'", "'unsafe-inline'"],
+          "img-src": ["'self'", "data:", "https://validator.swagger.io"],
+        },
+      },
+    })(req, res, next)
+  } else {
+    helmet()(req, res, next)
+  }
+})
 app.use(express.json())
 
 const globalLimiter = rateLimit({
@@ -52,6 +68,8 @@ const origins = [
   process.env.FRONTEND_BASE_URL || "http://localhost:3000",
   "http://localhost:3001"
 ];
+// Platform admin backoffice (separate app/origin). Uses Authorization Bearer, not cookies.
+if (process.env.BACKOFFICE_BASE_URL) origins.push(process.env.BACKOFFICE_BASE_URL)
 app.use(cors({ origin: origins, credentials: true }))
 app.use(sessionMiddleware)
 
@@ -76,6 +94,9 @@ app.use("/upload", uploadRoute)
 app.use("/feedback", feedbackRoute)
 app.use("/public", publicRoute)
 app.use(sseRoute)
+
+// Setup Swagger UI and Spec endpoints
+setupSwagger(app)
 
 // Global error handler to swallow 500 stack traces and prevent information leakage (CWE-209)
 app.use((err, req, res, next) => {

@@ -36,12 +36,22 @@ export async function listOrders(req, res) {
       return res.status(400).json({ message: "businessId is required" })
     }
 
-    const filter = { businessId }
-    if (sessionId) filter.sessionId = sessionId
-    if (tableNumber) filter.tableNumber = tableNumber
+    // Staff of this business may browse by table; customers may only ever see
+    // their own device's orders (scoped by their unguessable sessionId).
+    const isStaff = !!req.session?.user?.businessId && req.session.user.businessId === businessId
 
-    if (!sessionId && !tableNumber) {
-      return res.status(400).json({ message: "Provide sessionId or tableNumber" })
+    const filter = { businessId }
+    if (isStaff) {
+      if (sessionId) filter.sessionId = sessionId
+      if (tableNumber) filter.tableNumber = tableNumber
+      if (!sessionId && !tableNumber) {
+        return res.status(400).json({ message: "Provide sessionId or tableNumber" })
+      }
+    } else {
+      if (!sessionId) {
+        return res.status(400).json({ message: "sessionId is required" })
+      }
+      filter.sessionId = sessionId
     }
 
     const orders = await Order.find(filter).sort({ createdAt: -1 }).lean()
@@ -56,7 +66,7 @@ export async function listOrders(req, res) {
       }
     }
 
-    return res.json(orders)
+    return res.json(orders.map(toOrderDTO))
   } catch (err) {
     console.error("List orders error:", err)
     return res.status(500).json({ message: "Server error" })
@@ -67,9 +77,13 @@ export async function listOrders(req, res) {
 export async function createOrder(req, res) {
   try {
     const {
-      tableNumber, items, sessionId, tableSessionToken, orderType, total, currency,
-      paymentChannel, paymentStatus, paidVia, receiptEmail
+      tableNumber, items, sessionId, tableSessionToken, orderType, currency,
+      receiptEmail
     } = req.body
+
+    // Payment state is NEVER trusted from the client. Orders created here are
+    // always offline + unpaid; payment is confirmed later by staff (markPaid)
+    // or, for online payments, exclusively by the Stripe webhook.
 
     const isWaiter = req.session?.user?.role === "waiter" || req.session?.user?.role === "owner" || req.session?.user?.role === "manager"
 
@@ -147,9 +161,8 @@ export async function createOrder(req, res) {
       })
     }
 
-    // ✅ Guard: Offline payment setup
-    const isOffline = (!paymentChannel || paymentChannel === "offline")
-    if (isOffline && !canUseOfflinePayments(business)) {
+    // ✅ Guard: Offline payment setup (this endpoint only ever creates offline orders)
+    if (!canUseOfflinePayments(business)) {
       return res.status(403).json({
         code: "OFFLINE_BILLING_NOT_SETUP",
         message: "Offline payments are not available. This business has not completed billing setup."
@@ -236,9 +249,9 @@ export async function createOrder(req, res) {
       platformFeeTotal,
       total: finalTotal,
       currency: currency || "EUR",
-      paymentChannel: paymentChannel || "offline",
-      paymentStatus: paymentStatus || "unpaid",
-      paidVia: paidVia || null,
+      paymentChannel: "offline",
+      paymentStatus: "unpaid",
+      paidVia: null,
       receiptEmail: receiptEmail || null,
       planApplied: currentPlan,
       commissionRateApplied: commissionRate,
@@ -290,7 +303,16 @@ export async function getOrderById(req, res) {
     const order = await Order.findOne({ orderId, businessId }).lean()
     if (!order) return res.status(404).json({ message: "Order not found" })
 
-    // Hydrate display name
+    // Authorization: staff of this business, or the customer device that placed
+    // the order (matched by its unguessable sessionId). Prevents IDOR on orderId.
+    const isStaff = !!req.session?.user?.businessId && req.session.user.businessId === order.businessId
+    const requesterSessionId = req.query.sessionId || req.body?.sessionId
+    const isOwnerDevice = !!requesterSessionId && !!order.sessionId && requesterSessionId === order.sessionId
+    if (!isStaff && !isOwnerDevice) {
+      return res.status(403).json({ message: "Forbidden" })
+    }
+
+    // Hydrate display name (fallback for legacy orders missing tableLabel)
     if (order.tableNumber && order.tableNumber.startsWith("sp_")) {
       const sp = await ServicePoint.findOne({ servicePointId: order.tableNumber, businessId }).lean()
       if (sp) {
@@ -298,7 +320,7 @@ export async function getOrderById(req, res) {
       }
     }
 
-    return res.json(order)
+    return res.json(toOrderDTO(order))
   } catch (err) {
     console.error("Get order error:", err)
     return res.status(500).json({ message: "Server error" })
@@ -330,10 +352,11 @@ export async function updateOrderStatus(req, res) {
   try {
     const { orderId } = req.params
     const { status: nextStatus } = req.body
-    const businessId = resolveBusinessId(req)
-
+    // Staff-only action: businessId is taken from the authenticated session,
+    // never from the request, so a staffer can't touch another business's orders.
+    const businessId = req.session?.user?.businessId
     if (!businessId) {
-      return res.status(400).json({ error: "businessId is required" })
+      return res.status(401).json({ error: "Unauthorized" })
     }
 
     const VALID_STATUSES = ["placed", "in_progress", "ready", "completed"]
@@ -400,10 +423,11 @@ export async function markPaid(req, res) {
   try {
     const { orderId } = req.params
     const { paidVia } = req.body
-    const businessId = resolveBusinessId(req)
-
+    // Staff-only action: businessId is taken from the authenticated session,
+    // never from the request, so a staffer can't mark another business's orders paid.
+    const businessId = req.session?.user?.businessId
     if (!businessId) {
-      return res.status(400).json({ message: "businessId is required" })
+      return res.status(401).json({ message: "Unauthorized" })
     }
 
     const ALLOWED_PAID_VIA = ["pos_card", "cash"]
@@ -516,11 +540,19 @@ export async function sendReceipt(req, res) {
     const { orderId } = req.params;
     const { email } = req.body;
 
+    // Staff-only action: scope the order to the authenticated staffer's business
+    // so a receipt can't be triggered for another business's order, and the
+    // order lookup can't be used to email arbitrary recipients across tenants.
+    const businessId = req.session?.user?.businessId;
+    if (!businessId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
     if (!email) {
       return res.status(400).json({ message: "Email is required" });
     }
 
-    const order = await Order.findOne({ orderId }).lean();
+    const order = await Order.findOne({ orderId, businessId }).lean();
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
@@ -533,7 +565,7 @@ export async function sendReceipt(req, res) {
 
     if (emailSent) {
       await Order.findOneAndUpdate(
-        { orderId },
+        { orderId, businessId },
         { receiptSent: true, receiptEmail: email }
       );
       return res.status(200).json({ success: true, message: "Receipt sent successfully" });
@@ -549,10 +581,15 @@ export async function sendReceipt(req, res) {
 export async function saveReceiptEmail(req, res) {
   try {
     const { orderId } = req.params;
-    const { email } = req.body;
+    const { email, sessionId } = req.body;
 
     if (!email) {
       return res.status(400).json({ message: "Email is required" });
+    }
+    // Bind to the customer device that placed the order (or a staff session).
+    // Prevents an attacker from setting a victim's receipt email on any order.
+    if (!sessionId) {
+      return res.status(400).json({ message: "sessionId is required" });
     }
 
     const order = await Order.findOne({ orderId });
@@ -560,11 +597,19 @@ export async function saveReceiptEmail(req, res) {
       // If the webhook hasn't fired yet, save the email to PendingCheckout
       const pending = await PendingCheckout.findOne({ orderId });
       if (pending) {
+        if (pending.sessionId !== sessionId) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
         pending.receiptEmail = email;
         await pending.save();
         return res.status(200).json({ success: true, message: "Receipt email saved for pending checkout successfully" });
       }
       return res.status(404).json({ message: "Order not found" });
+    }
+
+    const isStaff = !!req.session?.user?.businessId && req.session.user.businessId === order.businessId;
+    if (!isStaff && order.sessionId !== sessionId) {
+      return res.status(403).json({ message: "Forbidden" });
     }
 
     order.receiptEmail = email;

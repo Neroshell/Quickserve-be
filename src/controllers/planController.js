@@ -2,7 +2,7 @@ import Plan from "../models/Plan.js"
 
 export async function getPlans(req, res) {
     try {
-        const plans = await Plan.find().sort({ monthlyFee: 1 })
+        const plans = await Plan.find().sort({ monthlyPrice: 1 })
         return res.json(plans)
     } catch (err) {
         console.error("Get plans error:", err)
@@ -13,17 +13,19 @@ export async function getPlans(req, res) {
 export async function updatePlan(req, res) {
     try {
         const { id } = req.params
-        const { commissionPercentage, monthlyFee, isActive } = req.body
+        const { offlineCommissionRate, monthlyPrice, currency, isActive } = req.body
+
+        // Only set fields that were actually provided, so a partial update
+        // doesn't wipe other values.
+        const updates = {}
+        if (offlineCommissionRate !== undefined) updates.offlineCommissionRate = offlineCommissionRate
+        if (monthlyPrice !== undefined) updates.monthlyPrice = monthlyPrice
+        if (currency !== undefined) updates.currency = currency
+        if (isActive !== undefined) updates.isActive = isActive
 
         const plan = await Plan.findByIdAndUpdate(
             id,
-            { 
-                $set: { 
-                    commissionPercentage, 
-                    monthlyFee, 
-                    isActive 
-                } 
-            },
+            { $set: updates },
             { new: true, runValidators: true }
         )
 

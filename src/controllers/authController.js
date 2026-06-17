@@ -3,6 +3,7 @@ import Staff from "../models/Staff.js";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { sendAuthEmail } from "../utils/emailService.js";
+import { hashToken } from "../utils/tokenHash.js";
 
 /**
  * Validate an invitation token
@@ -17,20 +18,20 @@ export async function validateInviteToken(req, res) {
         }
 
         const business = await Business.findOne({
-            inviteToken: token,
+            inviteToken: hashToken(token),
             inviteTokenExpires: { $gt: new Date() },
             ownerStatus: "pending"
         });
 
         if (!business) {
-            return res.status(404).json({ 
-                valid: false, 
-                message: "Invitation link is invalid, expired, or has already been used." 
+            return res.status(404).json({
+                valid: false,
+                message: "Invitation link is invalid, expired, or has already been used."
             });
         }
 
-        return res.json({ 
-            valid: true, 
+        return res.json({
+            valid: true,
             ownerName: business.ownerName,
             ownerEmail: business.ownerEmail,
             businessName: business.displayName,
@@ -56,14 +57,14 @@ export async function validateStaffToken(req, res) {
         }
 
         const staff = await Staff.findOne({
-            inviteToken: token,
+            inviteToken: hashToken(token),
             inviteTokenExpires: { $gt: new Date() },
             accountStatus: "pending"
         });
 
         if (!staff) {
-            return res.status(404).json({ 
-                valid: false, 
+            return res.status(404).json({
+                valid: false,
                 message: "Invitation link is invalid, expired, or has already been used." 
             });
         }
@@ -101,7 +102,7 @@ export async function setupOwnerPassword(req, res) {
         }
 
         const business = await Business.findOne({
-            inviteToken: token,
+            inviteToken: hashToken(token),
             inviteTokenExpires: { $gt: new Date() },
             ownerStatus: "pending"
         });
@@ -145,7 +146,7 @@ export async function setupStaffPassword(req, res) {
         }
 
         const staff = await Staff.findOne({
-            inviteToken: token,
+            inviteToken: hashToken(token),
             inviteTokenExpires: { $gt: new Date() },
             accountStatus: "pending"
         });
@@ -410,11 +411,11 @@ export async function requestPasswordReset(req, res) {
 
         // Save token to correct model
         if (userType === "owner") {
-            user.passwordResetToken = resetToken;
+            user.passwordResetToken = hashToken(resetToken); // store hash; raw token only goes in the email
             user.passwordResetExpires = resetTokenExpires;
             await user.save();
         } else {
-            user.passwordResetToken = resetToken;
+            user.passwordResetToken = hashToken(resetToken); // store hash; raw token only goes in the email
             user.passwordResetExpires = resetTokenExpires;
             await user.save();
         }
@@ -451,14 +452,14 @@ export async function resetPassword(req, res) {
 
         // Try to find the user with the valid token
         let user = await Business.findOne({
-            passwordResetToken: token,
+            passwordResetToken: hashToken(token),
             passwordResetExpires: { $gt: new Date() }
         });
         let userType = "owner";
 
         if (!user) {
             user = await Staff.findOne({
-                passwordResetToken: token,
+                passwordResetToken: hashToken(token),
                 passwordResetExpires: { $gt: new Date() }
             });
             userType = "staff";

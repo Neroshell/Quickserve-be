@@ -4,16 +4,53 @@ import Plan from "../models/Plan.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
 import { generateSlugFromName } from "../utils/slugify.js"
+import { hashToken } from "../utils/tokenHash.js"
 
 function generateBusinessId() {
     return `rest_${crypto.randomBytes(7).toString("hex")}`
 }
 
+// Secret / credential fields that must NEVER be returned by any API response,
+// including platform-admin responses. Also used to block them from $set updates.
+const SENSITIVE_BUSINESS_FIELDS = [
+    "ownerPasswordHash",
+    "passwordResetToken",
+    "passwordResetExpires",
+    "inviteToken",
+    "inviteTokenExpires",
+]
+
+// Mongoose .select() string that excludes the sensitive fields above.
+const SAFE_BUSINESS_PROJECTION = SENSITIVE_BUSINESS_FIELDS.map((f) => `-${f}`).join(" ")
+
+/** Strip secret fields from a Business object (plain or Mongoose doc) before sending it out. */
+function sanitizeBusiness(biz) {
+    if (!biz) return biz
+    const obj = typeof biz.toObject === "function" ? biz.toObject() : { ...biz }
+    for (const field of SENSITIVE_BUSINESS_FIELDS) delete obj[field]
+    return obj
+}
+
+// Profile/config fields a tenant manager may edit via PATCH /business/settings.
+// Deliberately EXCLUDES plan/billing/owner/stripe/status fields so a tenant
+// cannot escalate their plan, bypass billing, or hijack ownership.
+const ALLOWED_SETTINGS_UPDATE_FIELDS = [
+    "name", "displayName", "slug", "address", "phoneNumber", "contactEmail",
+    "currency", "timezone", "country", "language", "taxRate", "businessType",
+    "logoUrl", "logoPublicId", "platformFeeLabel", "passPlatformFeeToCustomer",
+    "menuCategories",
+]
+
 export async function getSettings(req, res) {
     try {
-        const businessId = req.query.businessId || req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
+        // businessId is derived from the authenticated session only — never from
+        // the request — to prevent cross-tenant reads and secret leakage.
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
 
-        const business = await Business.findOne({ businessId })
+        const business = await Business.findOne({ businessId }).select(SAFE_BUSINESS_PROJECTION)
 
         if (!business) {
             return res.status(404).json({ message: "Business not found" })
@@ -59,16 +96,19 @@ export async function getSettings(req, res) {
 
 export async function updateSettings(req, res) {
     try {
-        const { settings, ...updates } = req.body
-        const businessId = req.body.businessId || req.body.restaurantId
-
+        const { settings } = req.body
+        const businessId = req.session?.user?.businessId
         if (!businessId) {
-            return res.status(400).json({ message: "businessId is required" })
+            return res.status(401).json({ message: "Unauthorized" })
         }
 
-        const updateObj = { ...updates }
+        // Only allow known, non-privileged profile fields to be updated.
+        const updateObj = {}
+        for (const field of ALLOWED_SETTINGS_UPDATE_FIELDS) {
+            if (req.body[field] !== undefined) updateObj[field] = req.body[field]
+        }
 
-        // Handle nested settings if provided
+        // Handle nested settings if provided (schema-enforced boolean flags only)
         if (settings && typeof settings === 'object') {
             for (const [key, value] of Object.entries(settings)) {
                 updateObj[`settings.${key}`] = value
@@ -76,24 +116,24 @@ export async function updateSettings(req, res) {
         }
 
         // Slug validation if being updated explicitly
-        if (updates.slug) {
+        if (updateObj.slug) {
             const slugRegex = /^[a-z0-9-]+$/
-            if (!slugRegex.test(updates.slug)) {
+            if (!slugRegex.test(updateObj.slug)) {
                 return res.status(400).json({ message: "Slug: lowercase, letters, numbers, hyphens only" })
             }
-            if (updates.slug.length < 3 || updates.slug.length > 40) {
+            if (updateObj.slug.length < 3 || updateObj.slug.length > 40) {
                 return res.status(400).json({ message: "Slug must be between 3 and 40 characters" })
             }
 
-            const existing = await Business.findOne({ slug: updates.slug, businessId: { $ne: businessId } })
+            const existing = await Business.findOne({ slug: updateObj.slug, businessId: { $ne: businessId } })
             if (existing) {
                 return res.status(400).json({ message: "Slug already in use" })
             }
-        } else if (updates.displayName || updates.name) {
+        } else if (updateObj.displayName || updateObj.name) {
             // Auto-generate slug once if missing or still using the old rest_ format
             const existingBiz = await Business.findOne({ businessId });
             if (existingBiz && (!existingBiz.slug || existingBiz.slug.startsWith('rest_'))) {
-                const baseSlug = generateSlugFromName(updates.displayName || updates.name);
+                const baseSlug = generateSlugFromName(updateObj.displayName || updateObj.name);
                 let newSlug = baseSlug;
                 let counter = 1;
                 while (await Business.exists({ slug: newSlug, businessId: { $ne: businessId } })) {
@@ -108,7 +148,7 @@ export async function updateSettings(req, res) {
             { businessId },
             { $set: updateObj },
             { new: true, runValidators: true }
-        )
+        ).select(SAFE_BUSINESS_PROJECTION)
 
         if (!business) {
             return res.status(404).json({ message: "Business not found" })
@@ -124,17 +164,19 @@ export async function updateSettings(req, res) {
 export async function updateOperatingHours(req, res) {
     try {
         const { operatingHours } = req.body
-        const businessId = req.body.businessId || req.body.restaurantId
-
-        if (!businessId || !operatingHours) {
-            return res.status(400).json({ message: "businessId and operatingHours are required" })
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+        if (!operatingHours) {
+            return res.status(400).json({ message: "operatingHours is required" })
         }
 
         const business = await Business.findOneAndUpdate(
             { businessId },
             { $set: { operatingHours } },
             { new: true, runValidators: true }
-        )
+        ).select(SAFE_BUSINESS_PROJECTION)
 
         if (!business) {
             return res.status(404).json({ message: "Business not found" })
@@ -150,10 +192,12 @@ export async function updateOperatingHours(req, res) {
 export async function updateOrderingPreferences(req, res) {
     try {
         const { orderingPreferences, settings } = req.body
-        const businessId = req.body.businessId || req.body.restaurantId
-
-        if (!businessId || !orderingPreferences) {
-            return res.status(400).json({ message: "businessId and orderingPreferences are required" })
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+        if (!orderingPreferences) {
+            return res.status(400).json({ message: "orderingPreferences is required" })
         }
 
         // Only allow the known boolean fields to be updated
@@ -190,10 +234,12 @@ export async function updateOrderingPreferences(req, res) {
 export async function updatePaymentPreferences(req, res) {
     try {
         const { paymentPreferences } = req.body
-        const businessId = req.body.businessId || req.body.restaurantId
-
-        if (!businessId || !paymentPreferences) {
-            return res.status(400).json({ message: "businessId and paymentPreferences are required" })
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+        if (!paymentPreferences) {
+            return res.status(400).json({ message: "paymentPreferences is required" })
         }
 
         const { acceptOnlinePayments, acceptOfflinePayments, acceptCash, acceptPosCard } = paymentPreferences
@@ -223,10 +269,12 @@ export async function updatePaymentPreferences(req, res) {
 export async function updateTablePreferences(req, res) {
     try {
         const { tablePreferences } = req.body
-        const businessId = req.body.businessId || req.body.restaurantId
-
-        if (!businessId || !tablePreferences) {
-            return res.status(400).json({ message: "businessId and tablePreferences are required" })
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+        if (!tablePreferences) {
+            return res.status(400).json({ message: "tablePreferences is required" })
         }
 
         const { sessionExpiryMinutes, maxActiveSessionsPerTable } = tablePreferences
@@ -341,7 +389,7 @@ export async function createBusiness(req, res) {
             status: "draft"
         })
 
-        return res.status(201).json(business)
+        return res.status(201).json(sanitizeBusiness(business))
     } catch (err) {
         if (err.code === 11000) {
             const field = Object.keys(err.keyPattern || {})[0]
@@ -385,14 +433,14 @@ export async function createAdminOwner(req, res) {
 
         const updatedBusiness = await Business.findOneAndUpdate(
             { businessId },
-            { 
-                $set: { 
-                    ownerName, 
+            {
+                $set: {
+                    ownerName,
                     ownerEmail: normalizedOwnerEmail,
                     ownerStatus: "pending",
-                    inviteToken,
+                    inviteToken: hashToken(inviteToken), // store hash; raw token only goes in the email
                     inviteTokenExpires
-                } 
+                }
             },
             { new: true }
         )
@@ -404,7 +452,7 @@ export async function createAdminOwner(req, res) {
             console.error(`[createAdminOwner] Failed to send invitation email to ${ownerEmail}:`, err)
         })
 
-        return res.status(201).json(updatedBusiness)
+        return res.status(201).json(sanitizeBusiness(updatedBusiness))
     } catch (err) {
         console.error("Create admin owner error:", err)
         return res.status(500).json({ message: "Server error creating owner" })
@@ -413,7 +461,7 @@ export async function createAdminOwner(req, res) {
 
 export async function getAdminBusinesses(req, res) {
     try {
-        const businesses = await Business.find().populate("planId").lean()
+        const businesses = await Business.find().select(SAFE_BUSINESS_PROJECTION).populate("planId").lean()
 
         const enrichedBusinesses = await Promise.all(businesses.map(async (biz) => {
             // Aggregate metrics from orders
@@ -437,7 +485,7 @@ export async function getAdminBusinesses(req, res) {
             const metrics = stats[0] || { totalSales: 0, lastOrderDate: biz.createdAt, count: 0 }
             
             // Calculate commission based on assigned plan or default to 10%
-            const commissionRate = biz.planId?.commissionPercentage ?? 10
+            const commissionRate = biz.planId?.offlineCommissionRate ?? 0
             const commission = metrics.totalSales * (commissionRate / 100)
 
             return {
@@ -489,7 +537,7 @@ export async function getAdminOwners(req, res) {
 export async function getAdminBusinessById(req, res) {
     try {
         const { businessId: paramId } = req.params
-        const business = await Business.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] }).populate("planId").lean()
+        const business = await Business.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] }).select(SAFE_BUSINESS_PROJECTION).populate("planId").lean()
 
         if (!business) {
             return res.status(404).json({ message: "Business not found" })
@@ -516,7 +564,7 @@ export async function getAdminBusinessById(req, res) {
         const metrics = stats[0] || { totalSales: 0, lastOrderDate: business.createdAt, count: 0 }
         
         // Calculate commission based on assigned plan or default to 10%
-        const commissionRate = business.planId?.commissionPercentage ?? 10
+        const commissionRate = business.planId?.offlineCommissionRate ?? 0
         const commission = metrics.totalSales * (commissionRate / 100)
 
         const enrichedBusiness = {
@@ -545,7 +593,10 @@ export async function getAdminBusinessById(req, res) {
 export async function updateAdminBusiness(req, res) {
     try {
         const { businessId: paramId } = req.params
-        const updateData = req.body
+        const updateData = { ...req.body }
+
+        // Never allow credential/secret fields to be set through the admin API.
+        for (const field of SENSITIVE_BUSINESS_FIELDS) delete updateData[field]
 
         const business = await Business.findOneAndUpdate(
             { $or: [{ businessId: paramId }, { restaurantId: paramId }] },
@@ -557,7 +608,7 @@ export async function updateAdminBusiness(req, res) {
             return res.status(404).json({ message: "Business not found" })
         }
 
-        return res.json(business)
+        return res.json(sanitizeBusiness(business))
     } catch (err) {
         console.error("Update business error:", err)
         return res.status(500).json({ message: "Server error updating business" })
@@ -723,11 +774,14 @@ export async function getCategories(req, res) {
 
 export async function addCategory(req, res) {
     try {
-        const businessId = req.body.businessId || req.body.restaurantId || req.user?.businessId || req.user?.restaurantId
+        const businessId = req.session?.user?.businessId
         const { category } = req.body
 
-        if (!businessId || !category) {
-            return res.status(400).json({ message: "businessId and category are required" })
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+        if (!category) {
+            return res.status(400).json({ message: "category is required" })
         }
 
         const trimmedCategory = category.trim().toLowerCase()
@@ -754,11 +808,14 @@ export async function addCategory(req, res) {
 
 export async function removeCategory(req, res) {
     try {
-        const businessId = req.query.businessId || req.query.restaurantId || req.body.businessId || req.body.restaurantId || req.user?.businessId || req.user?.restaurantId
+        const businessId = req.session?.user?.businessId
         const category = req.query.category || req.body.category
 
-        if (!businessId || !category) {
-            return res.status(400).json({ message: "businessId and category are required" })
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+        if (!category) {
+            return res.status(400).json({ message: "category is required" })
         }
 
         const trimmedCategory = category.trim().toLowerCase()

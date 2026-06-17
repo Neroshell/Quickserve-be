@@ -1,6 +1,7 @@
 import Staff from "../models/Staff.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
+import { hashToken } from "../utils/tokenHash.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
 
@@ -165,7 +166,7 @@ export async function createStaff(req, res) {
             accountStatus: "pending",
             presenceStatus: "offline",
             status: "offline",
-            inviteToken,
+            inviteToken: hashToken(inviteToken), // store hash; raw token only goes in the email
             inviteTokenExpires
         })
 
