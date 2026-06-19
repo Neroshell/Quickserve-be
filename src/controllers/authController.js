@@ -341,7 +341,7 @@ export async function getMe(req, res) {
         const { role, email } = req.session.user;
 
         // Optionally, grab fresh data from DB to ensure user isn't disabled
-        if (role === 'owner' || role === 'admin') {
+        if (role === 'owner') {
             const business = await Business.findOne({ ownerEmail: email, ownerStatus: "active" }).select('-ownerPasswordHash');
             if (!business) return res.status(401).json({ message: "Account disabled or not found." });
             return res.json({ 

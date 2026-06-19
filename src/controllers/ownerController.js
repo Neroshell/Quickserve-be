@@ -27,7 +27,7 @@ function getBusinessDayRange() {
 export async function ownerOrders(req, res) {
     try {
         const { range = "today", from, to, status = "all", search = "" } = req.query
-        const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
+        const businessId = req.session?.user?.businessId
 
         if (!businessId) {
             return res.status(400).json({ error: "businessId is required" })
@@ -224,7 +224,7 @@ export async function ownerOrders(req, res) {
 
 export async function getTableSessionsOverview(req, res) {
     try {
-        const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId || process.env.NEXT_PUBLIC_RESTAURANT_ID || "default-restaurant-id"
+        const businessId = req.session?.user?.businessId
 
         const now = new Date()
 
@@ -285,7 +285,7 @@ export async function getTableSessionsOverview(req, res) {
 export async function ownerAnalytics(req, res) {
     try {
         const { range = "today", from, to } = req.query
-        const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
+        const businessId = req.session?.user?.businessId
 
         if (!businessId) {
             return res.status(400).json({ error: "businessId is required" })
@@ -902,7 +902,7 @@ import MenuItem from "../models/menuItem.js"
 
 export async function getDashboardData(req, res) {
     try {
-        const businessId = req.session?.user?.businessId || req.query.businessId
+        const businessId = req.session?.user?.businessId
         if (!businessId) return res.status(400).json({ error: "businessId is required" })
 
         const { start: todayStart, end: todayEnd } = getBusinessDayRange()

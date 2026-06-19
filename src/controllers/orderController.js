@@ -10,6 +10,7 @@ import ServicePoint from "../models/ServicePoint.js"
 import Business from "../models/Business.js"
 import Plan from "../models/Plan.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
+import { calculateOfflineCommission } from "../utils/platformFee.js"
 
 function canUseOfflinePayments(business) {
   return business.billingStatus === "active" && !!business.defaultPaymentMethodId
@@ -217,20 +218,17 @@ export async function createOrder(req, res) {
     const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2))
 
     // Platform fee: only when the owner has opted to pass it to the customer
-    const currentPlan = business.currentPlan || "basic"
-    const planDef = await Plan.findOne({ slug: currentPlan }).lean()
-    const commissionRate = planDef ? planDef.offlineCommissionRate : 2.5
+    const totalInCentsForFee = Math.round(subtotal * 100)
+    const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOfflineCommission(totalInCentsForFee, business.currentPlan || "basic")
     
     let platformFeeTotal = 0
     if (business.passPlatformFeeToCustomer) {
-      platformFeeTotal = Number((subtotal * (commissionRate / 100)).toFixed(2))
+      platformFeeTotal = Number((subtotal * (commissionRateApplied / 100)).toFixed(2))
     }
 
-    let commissionAmountCents = 0
+    let finalCommissionAmountCents = commissionAmountCents
     if (business.passPlatformFeeToCustomer && platformFeeTotal > 0) {
-      commissionAmountCents = Math.round(platformFeeTotal * 100)
-    } else {
-      commissionAmountCents = Math.round(subtotal * (commissionRate / 100) * 100)
+      finalCommissionAmountCents = Math.round(platformFeeTotal * 100)
     }
 
     const finalTotal = Number((subtotal + taxAmount + platformFeeTotal).toFixed(2))
@@ -253,9 +251,9 @@ export async function createOrder(req, res) {
       paymentStatus: "unpaid",
       paidVia: null,
       receiptEmail: receiptEmail || null,
-      planApplied: currentPlan,
-      commissionRateApplied: commissionRate,
-      commissionAmountCents,
+      planApplied,
+      commissionRateApplied,
+      commissionAmountCents: finalCommissionAmountCents,
       orderSource: isWaiter ? "waitstaff" : "self",
     })
 
@@ -329,11 +327,16 @@ export async function getOrderById(req, res) {
 
 export async function deleteOrdersBySession(req, res) {
   try {
-    const businessId = req.body.businessId || req.body.restaurantId
+    // Manager-only, destructive: businessId from session so one business can't
+    // delete another's order records.
+    const businessId = req.session?.user?.businessId
     const { sessionId } = req.body
 
-    if (!sessionId || !businessId) {
-      return res.status(400).json({ message: "sessionId and businessId are required" })
+    if (!businessId) {
+      return res.status(401).json({ message: "Unauthorized" })
+    }
+    if (!sessionId) {
+      return res.status(400).json({ message: "sessionId is required" })
     }
 
     const result = await Order.deleteMany({ sessionId, businessId })
@@ -461,17 +464,17 @@ export async function markPaid(req, res) {
 
     // Lock commission rate if not already set (legacy order backfill)
     if (order.commissionRateApplied == null) {
-      const planDef = await Plan.findOne({ slug: business.currentPlan || 'basic' }).lean()
-      const rate = planDef?.offlineCommissionRate ?? 2.5
-      let commAmountCents = 0
+      const totalInCentsForFee = Math.round((order.subtotal || 0) * 100)
+      const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOfflineCommission(totalInCentsForFee, business.currentPlan || "basic")
+
+      let finalCommissionAmountCents = commissionAmountCents
       if (order.platformFeeTotal > 0) {
-        commAmountCents = Math.round(order.platformFeeTotal * 100)
-      } else {
-        commAmountCents = Math.round((order.subtotal || 0) * (rate / 100) * 100)
+        finalCommissionAmountCents = Math.round(order.platformFeeTotal * 100)
       }
-      updateObj.planApplied = business.currentPlan || 'basic'
-      updateObj.commissionRateApplied = rate
-      updateObj.commissionAmountCents = commAmountCents
+
+      updateObj.planApplied = planApplied
+      updateObj.commissionRateApplied = commissionRateApplied
+      updateObj.commissionAmountCents = finalCommissionAmountCents
     }
 
     const updatedOrder = await Order.findOneAndUpdate(

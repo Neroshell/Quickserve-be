@@ -33,11 +33,6 @@ function createClient(role) {
     client.on("close", () => console.warn(`[Redis:${role}] ⚠️ Connection closed`))
     client.on("reconnecting", () => console.warn(`[Redis:${role}] 🔄 Reconnecting...`))
 
-    // DEBUG: trace commands to find syntax error
-    client.on("command", (cmd) => {
-        console.log(`[Redis:${role}] CMD: ${cmd.name}`, cmd.args);
-    });
-
     return client
 }
 

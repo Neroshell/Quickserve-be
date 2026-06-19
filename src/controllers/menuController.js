@@ -86,9 +86,17 @@ export async function updateMenuItem(req, res) {
             }
         }
 
+        // Whitelist updatable fields — never $set raw req.body (prevents moving the
+        // item to another businessId or writing arbitrary fields).
+        const ALLOWED_FIELDS = ["name", "price", "category", "type", "description", "imageUrl", "imagePublicId", "isAvailable"]
+        const updates = {}
+        for (const field of ALLOWED_FIELDS) {
+            if (req.body[field] !== undefined) updates[field] = req.body[field]
+        }
+
         const item = await MenuItem.findOneAndUpdate(
             { _id: id, businessId },
-            { $set: req.body },
+            { $set: updates },
             { new: true, runValidators: true }
         )
 

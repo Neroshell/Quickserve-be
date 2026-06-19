@@ -215,8 +215,19 @@ export async function createReservation(req, res) {
       return res.status(400).json({ error: "Reservations are only available during business hours." });
     }
 
-    // Conflict check for specific service points
+    // Validate + conflict-check for specific service points
     if (servicePointId) {
+      // The point must actually belong to this business and be reservable/active.
+      const sp = await ServicePoint.findOne({
+        servicePointId,
+        businessId: business.businessId,
+        isActive: { $ne: false },
+        reservable: { $ne: false },
+      }).lean();
+      if (!sp) {
+        return res.status(400).json({ error: "The selected service point is not available for reservations." });
+      }
+
       const existingReservation = await Reservation.findOne({
         businessId: business.businessId,
         servicePointId,

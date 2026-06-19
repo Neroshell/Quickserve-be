@@ -20,6 +20,21 @@
 import { redisPub, REDIS_CHANNEL } from "../config/redisClient.js"
 import TableSession from "../models/TableSession.js"
 
+// Which SSE channel(s) a given authenticated staff role is allowed to subscribe to.
+// The channel is derived from the session role — NOT the client-supplied query —
+// so a kitchen/bar staffer can't spoof role=waiter to read the full order stream.
+// (Staff role enum is waiter/kitchen/manager/bartender/co_owner/owner; the SSE
+// channel names are kitchen/bar/waiter — note bartender → "bar".)
+const SSE_CHANNELS_BY_ROLE = {
+    kitchen: ["kitchen"],
+    bartender: ["bar"],
+    waiter: ["waiter"],
+    manager: ["kitchen", "bar", "waiter"],
+    owner: ["kitchen", "bar", "waiter"],
+    co_owner: ["kitchen", "bar", "waiter"],
+    admin: ["kitchen", "bar", "waiter"],
+}
+
 // ── Local client registry ────────────────────────────────────────────────────
 const clients = new Set()
 
@@ -39,7 +54,7 @@ function removeClient(client) {
 
 // ── SSE HTTP handler ─────────────────────────────────────────────────────────
 export async function sseHandler(req, res) {
-    const role = req.query.role || "anon"
+    let role = req.query.role || "anon"
     const businessId = req.query.businessId || req.query.restaurantId
     const token = req.query.token
 
@@ -57,12 +72,22 @@ export async function sseHandler(req, res) {
             return res.status(403).end("Invalid or expired table session")
         }
     } else {
-        // Staff roles (waiter, kitchen, bar, owner, etc.)
+        // Staff roles (waiter, kitchen, bartender, owner, etc.)
         if (!req.session || !req.session.user) {
             return res.status(401).end("Unauthorized. Please log in.")
         }
         if (req.session.user.businessId !== businessId) {
             return res.status(403).end("Forbidden. businessId mismatch.")
+        }
+
+        // Anti-spoofing: pin the channel to what this session role is allowed to
+        // receive. A staffer cannot read another role's stream by changing ?role=.
+        const allowedChannels = SSE_CHANNELS_BY_ROLE[req.session.user.role] || []
+        if (allowedChannels.length === 0) {
+            return res.status(403).end("Forbidden. Role not permitted for live updates.")
+        }
+        if (!allowedChannels.includes(role)) {
+            role = allowedChannels[0]
         }
     }
 

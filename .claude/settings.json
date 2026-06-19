@@ -6,7 +6,8 @@
     ],
     "additionalDirectories": [
       "c:\\Users\\nero\\Desktop\\Quickserve-bo-vo\\lib",
-      "c:\\Users\\nero\\Desktop\\Quick-serve-qr-menu\\app\\table\\[tableId]\\confirmation"
+      "c:\\Users\\nero\\Desktop\\Quick-serve-qr-menu\\app\\table\\[tableId]\\confirmation",
+      "c:\\Users\\nero\\Desktop\\Quick-serve-qr-menu\\app\\waiter-request"
     ]
   }
 }

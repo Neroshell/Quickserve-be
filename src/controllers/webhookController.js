@@ -182,10 +182,13 @@ export async function handleStripeWebhook(req, res) {
                 // Stripe Connect split metadata
                 stripePaymentIntentId:    pending.stripePaymentIntentId || session.payment_intent || null,
                 stripeConnectedAccountId: pending.stripeConnectedAccountId || null,
-                platformFeeAmount:        pending.platformFeeAmount   ?? null,
-                platformFeePercent:       pending.platformFeePercent  ?? null,
                 grossAmount:              pending.grossAmount          ?? null,
                 netToBusinessAmount:      pending.netToBusinessAmount  ?? null,
+
+                // Frozen commission fields
+                planApplied:              pending.planApplied           ?? null,
+                commissionRateApplied:    pending.commissionRateApplied ?? null,
+                commissionAmountCents:    pending.commissionAmountCents ?? 0,
 
                 receiptEmail: customerEmail,
                 receiptSent: false,

@@ -8,6 +8,7 @@ import { generateOrderId } from "../utils/orderId.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
+import { calculateOfflineCommission } from "../utils/platformFee.js"
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -38,10 +39,10 @@ export async function waiterOrders(req, res) {
         const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
 
         const status = String(req.query.status || "ready")
-        const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
+        const businessId = req.session?.user?.businessId
 
         if (!businessId) {
-            return res.status(400).json({ error: "businessId is required" })
+            return res.status(401).json({ error: "Unauthorized" })
         }
 
         // Surface the waiter-ordering setting so the dashboard can show/hide the
@@ -258,20 +259,17 @@ export async function createWaiterOrder(req, res) {
     const taxRate = business.taxRate || 0
     const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2))
 
-    const currentPlan = business.currentPlan || "basic"
-    const planDef = await Plan.findOne({ slug: currentPlan }).lean()
-    const commissionRate = planDef ? planDef.offlineCommissionRate : 2.5
+    const totalInCentsForFee = Math.round(subtotal * 100)
+    const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOfflineCommission(totalInCentsForFee, business.currentPlan || "basic")
     
     let platformFeeTotal = 0
     if (business.passPlatformFeeToCustomer) {
-      platformFeeTotal = Number((subtotal * (commissionRate / 100)).toFixed(2))
+      platformFeeTotal = Number((subtotal * (commissionRateApplied / 100)).toFixed(2))
     }
 
-    let commissionAmountCents = 0
+    let finalCommissionAmountCents = commissionAmountCents
     if (business.passPlatformFeeToCustomer && platformFeeTotal > 0) {
-      commissionAmountCents = Math.round(platformFeeTotal * 100)
-    } else {
-      commissionAmountCents = Math.round(subtotal * (commissionRate / 100) * 100)
+      finalCommissionAmountCents = Math.round(platformFeeTotal * 100)
     }
 
     const finalTotal = Number((subtotal + taxAmount + platformFeeTotal).toFixed(2))
@@ -293,9 +291,9 @@ export async function createWaiterOrder(req, res) {
       paymentChannel: "offline",
       paymentStatus: "unpaid",
       paidVia: null,
-      planApplied: currentPlan,
-      commissionRateApplied: commissionRate,
-      commissionAmountCents,
+      planApplied,
+      commissionRateApplied,
+      commissionAmountCents: finalCommissionAmountCents,
       orderSource: "waitstaff",
       createdBy: "staff",
       createdByStaffId: staffId

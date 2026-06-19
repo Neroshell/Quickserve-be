@@ -28,16 +28,26 @@ export async function submitFeedback(req, res) {
             overallRating,
             tags,
             comment,
-            wouldRecommend
+            wouldRecommend,
+            sessionId
         } = req.body;
 
         if (!orderId || !businessId || !overallRating) {
             return res.status(400).json({ error: "Missing required fields: orderId, businessId, overallRating" });
         }
+        if (!sessionId) {
+            return res.status(400).json({ error: "sessionId is required" });
+        }
 
         const order = await Order.findOne({ orderId, businessId }).lean();
         if (!order) {
             return res.status(404).json({ error: "Order not found" });
+        }
+
+        // Ownership: only the device that placed the order may review it.
+        // Prevents scripted/spoofed reviews against guessed orderIds.
+        if (order.sessionId !== sessionId) {
+            return res.status(403).json({ error: "Forbidden" });
         }
 
         if (order.status !== "completed") {
@@ -82,7 +92,7 @@ export async function submitFeedback(req, res) {
 export async function getOwnerFeedbackAnalytics(req, res) {
     try {
         const { range = "today", from, to } = req.query;
-        const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId;
+        const businessId = req.session?.user?.businessId;
 
         if (!businessId) {
             return res.status(400).json({ error: "businessId is required" });

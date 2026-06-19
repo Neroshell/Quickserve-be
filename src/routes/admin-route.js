@@ -1,6 +1,6 @@
 import express from "express"
 import { createBusiness, getAdminBusinesses, getAdminOwners, createAdminOwner, getAdminBusinessById, updateAdminBusiness, getAdminDashboardStats, deleteAdminBusiness } from "../controllers/businessController.js"
-import { getPlans, updatePlan, seedPlans } from "../controllers/planController.js"
+import { getPlans, updatePlan } from "../controllers/planController.js"
 
 import { requirePlatformAdmin } from "../middleware/platformAdminAuth.js"
 
@@ -268,19 +268,6 @@ router.get("/plans", getPlans)
  */
 router.patch("/plans/:id", updatePlan)
 
-/**
- * @openapi
- * /admin/plans/seed:
- *   post:
- *     summary: Seed default pricing plans (Platform Admin Only)
- *     tags:
- *       - Admin
- *     security:
- *       - BearerAuth: []
- *     responses:
- *       200:
- *         description: Plans seeded successfully
- */
-router.post("/plans/seed", seedPlans)
+
 
 export default router

@@ -1,10 +1,20 @@
 import express from "express"
+import rateLimit from "express-rate-limit"
 import crypto from "crypto"
 import TableSession from "../models/TableSession.js"
 import Business from "../models/Business.js"
 import ServicePoint from "../models/ServicePoint.js"
 
 const router = express.Router()
+
+// Cap table-session creation per IP to prevent scripted session spam / DB bloat.
+const tableSessionLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests. Please try again shortly." },
+})
 
 function randomToken() {
   return crypto.randomBytes(24).toString("base64url")
@@ -43,7 +53,7 @@ function randomToken() {
  *       404:
  *         description: Business or Service Point not found
  */
-router.get("/:businessId/:servicePointId", async (req, res) => {
+router.get("/:businessId/:servicePointId", tableSessionLimiter, async (req, res) => {
   try {
     const { businessId, servicePointId } = req.params
     console.log(`QR request for ${businessId}, servicePointId: ${servicePointId}`)

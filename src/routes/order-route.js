@@ -97,7 +97,7 @@ router.post("/", createOrder)
  *       200:
  *         description: Orders session deleted
  */
-router.delete("/session", deleteOrdersBySession)
+router.delete("/session", requireAuth, requireRole("owner", "admin", "manager"), deleteOrdersBySession)
 
 /**
  * @openapi

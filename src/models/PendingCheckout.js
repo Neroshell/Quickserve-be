@@ -40,10 +40,13 @@ const PendingCheckoutSchema = new mongoose.Schema(
         // Stripe Connect split metadata — populated at checkout session creation
         stripePaymentIntentId:    { type: String, default: null },
         stripeConnectedAccountId: { type: String, default: null },
-        platformFeeAmount:        { type: Number, default: null }, // cents
-        platformFeePercent:       { type: Number, default: null }, // e.g. 2.0
         grossAmount:              { type: Number, default: null }, // cents
         netToBusinessAmount:      { type: Number, default: null }, // cents
+
+        // Commission locking — rate is frozen at checkout creation
+        planApplied:             { type: String, default: null },
+        commissionRateApplied:   { type: Number, default: null },   // e.g. 2.5 (percentage)
+        commissionAmountCents:   { type: Number, default: 0 },      // pre-calculated commission in cents
 
         // TTL: auto-delete abandoned checkouts after 1 hour
         expiresAt: {

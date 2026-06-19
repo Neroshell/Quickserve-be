@@ -1,7 +1,17 @@
 import express from "express"
+import rateLimit from "express-rate-limit"
 import { submitFeedback } from "../controllers/feedbackController.js"
 
 const router = express.Router()
+
+// Anti-spam: feedback is public (no login), so cap submissions per IP.
+const feedbackLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many feedback submissions. Please try again later." },
+})
 
 /**
  * @openapi
@@ -35,6 +45,6 @@ const router = express.Router()
  *       201:
  *         description: Feedback submitted successfully
  */
-router.post("/", submitFeedback)
+router.post("/", feedbackLimiter, submitFeedback)
 
 export default router

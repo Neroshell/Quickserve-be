@@ -40,27 +40,4 @@ export async function updatePlan(req, res) {
     }
 }
 
-// Internal seeding helper
-export async function seedPlans(req, res) {
-    try {
-        const defaultPlans = [
-            { name: "Basic", slug: "basic", offlineCommissionRate: 2.5, monthlyPrice: 0 },
-            { name: "Growth", slug: "growth", offlineCommissionRate: 3.0, monthlyPrice: 0 },
-            { name: "Enterprise", slug: "enterprise", offlineCommissionRate: 4.0, monthlyPrice: 0 },
-        ]
 
-        for (const p of defaultPlans) {
-            await Plan.findOneAndUpdate(
-                { name: p.name },
-                { $setOnInsert: p },
-                { upsert: true, new: true }
-            )
-        }
-
-        const plans = await Plan.find()
-        return res.json({ message: "Plans seeded successfully", plans })
-    } catch (err) {
-        console.error("Seed plans error:", err)
-        return res.status(500).json({ message: "Server error seeding plans" })
-    }
-}

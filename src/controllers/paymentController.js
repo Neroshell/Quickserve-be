@@ -5,7 +5,7 @@ import Business from "../models/Business.js";
 import MenuItem from "../models/menuItem.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { generateOrderId } from "../utils/orderId.js";
-import { calculatePlatformFee, getFeeRate } from "../utils/platformFee.js";
+import { calculateOnlineCommission } from "../utils/platformFee.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
@@ -170,11 +170,7 @@ export async function createCheckoutSession(req, res) {
 
         // --- Compute platform fee (plan-based rate) ---
         const totalInCents = Math.round(serverTotal * 100);
-        const applicationFeeAmount = calculatePlatformFee(totalInCents, business.plan);
-
-        console.log(
-            `[createCheckoutSession] Plan=${business.plan}, total=${totalInCents}c, fee=${applicationFeeAmount}c (${((applicationFeeAmount / totalInCents) * 100).toFixed(2)}%)`
-        );
+        const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOnlineCommission(totalInCents, business.plan);
 
         // --- Create Stripe Checkout Session (Connect destination charge) ---
         const stripeSessionConfig = {
@@ -189,7 +185,7 @@ export async function createCheckoutSession(req, res) {
             },
             // Route payment to connected account; platform fee stays with QuickServe
             payment_intent_data: {
-                application_fee_amount: applicationFeeAmount,
+                application_fee_amount: commissionAmountCents,
                 transfer_data: {
                     destination: business.stripeAccountId,
                 },
@@ -211,14 +207,14 @@ export async function createCheckoutSession(req, res) {
         console.log(`[checkout] Stripe session created — sessionId=${stripeSession.id}`);
 
         // Save Stripe session ID + full split metadata on the pending record
-        const feeRate = getFeeRate(business.plan);
         pending.stripeSessionId          = stripeSession.id;
         pending.stripePaymentIntentId    = stripeSession.payment_intent || null;
         pending.stripeConnectedAccountId = business.stripeAccountId;
-        pending.platformFeeAmount        = applicationFeeAmount;
-        pending.platformFeePercent       = Number((feeRate * 100).toFixed(4));
+        pending.commissionAmountCents    = commissionAmountCents;
+        pending.commissionRateApplied    = commissionRateApplied;
+        pending.planApplied              = planApplied;
         pending.grossAmount              = totalInCents;
-        pending.netToBusinessAmount      = totalInCents - applicationFeeAmount;
+        pending.netToBusinessAmount      = totalInCents - commissionAmountCents;
         await pending.save();
 
         return res.status(201).json({

@@ -24,10 +24,13 @@ import { sessionMiddleware } from "./src/config/session.js"
 import { connectSessionRedis } from "./src/config/sessionRedisClient.js"
 import rateLimit from "express-rate-limit"
 import { setupSwagger } from "./src/config/swagger.js"
+import { validateOrigin } from "./src/middleware/originValidation.js"
 
 const app = express()
 app.set("trust proxy", 1) // required for secure cookies behind proxies like vercel
 const PORT = process.env.PORT || 5000
+
+
 
 // ⚠️ IMPORTANT: Webhook route must be registered BEFORE express.json()
 // because Stripe signature verification requires the raw body buffer.
@@ -72,6 +75,11 @@ const origins = [
 if (process.env.BACKOFFICE_BASE_URL) origins.push(process.env.BACKOFFICE_BASE_URL)
 app.use(cors({ origin: origins, credentials: true }))
 app.use(sessionMiddleware)
+
+// CSRF defense-in-depth: reject state-changing requests whose browser Origin/Referer
+// isn't in our allowlist. Runs after the Stripe webhook (registered above), which is
+// exempt. (CSRF tokens will be layered on top of this later.)
+app.use(validateOrigin(origins))
 
 import menuRoute from "./src/routes/menu-route.js"
 import restaurantScopedRoute from "./src/routes/restaurant-scoped-route.js"

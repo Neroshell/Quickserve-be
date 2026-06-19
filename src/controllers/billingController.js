@@ -3,6 +3,7 @@ import Business from "../models/Business.js"
 import Plan from "../models/Plan.js"
 import Order from "../models/order.js"
 import BillingInvoice from "../models/BillingInvoice.js"
+import { getPlanOfflineCommissionRate } from "../utils/platformFee.js"
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 
@@ -414,8 +415,7 @@ export async function getCommissionSummary(req, res) {
         if (!biz) return res.status(404).json({ message: "Business not found" })
 
         const currentPlan = biz.currentPlan || 'basic'
-        const planDef = await Plan.findOne({ slug: currentPlan }).lean()
-        const offlineCommissionRate = planDef?.offlineCommissionRate ?? 2.5
+        const offlineCommissionRate = await getPlanOfflineCommissionRate(currentPlan)
         const commissionMultiplier = offlineCommissionRate / 100
 
         // Only aggregate orders NOT yet reported to Stripe — prevents unbounded accumulation
@@ -574,8 +574,7 @@ export async function updatePlatformFeeSettings(req, res) {
 
         // Look up the plan rate to return to the frontend
         const currentPlan = biz.currentPlan || "basic"
-        const planDef = await Plan.findOne({ slug: currentPlan }).lean()
-        const platformFeeRate = planDef ? planDef.offlineCommissionRate : 2.5
+        const platformFeeRate = await getPlanOfflineCommissionRate(currentPlan)
 
         res.json({
             passPlatformFeeToCustomer: biz.passPlatformFeeToCustomer,
@@ -635,8 +634,7 @@ export async function reportOfflineUsage(req, res) {
         }
 
         // Resolve commission rate for this business's current plan
-        const planDef = await Plan.findOne({ slug: biz.currentPlan || "basic" }).lean()
-        const offlineCommissionRate = planDef?.offlineCommissionRate ?? 2.5
+        const offlineCommissionRate = await getPlanOfflineCommissionRate(biz.currentPlan || "basic")
         const commissionMultiplier = offlineCommissionRate / 100
 
         // Calculate total commission in cents (1 unit = 1 cent of commission in Stripe)

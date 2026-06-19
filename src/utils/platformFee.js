@@ -1,35 +1,62 @@
+import Plan from "../models/Plan.js";
+
 /**
- * Platform fee rates by business plan.
- * QuickServe deducts this percentage from every online transaction
- * as application_fee_amount in Stripe Connect destination charges.
+ * Calculates the QuickServe commission for online Stripe payments.
+ * Looks up the given planSlug in the Plan collection and uses `commissionPercentage`.
  *
- * Rates are expressed as decimals (e.g. 0.02 = 2%).
+ * @param {number} totalInCents - The gross order total in cents
+ * @param {string} planSlug - The business's current plan slug (e.g. "growth")
+ * @returns {Promise<{ commissionAmountCents: number, commissionRateApplied: number, planApplied: string }>}
  */
-const PLAN_FEE_RATES = {
-  basic:      0.03,   // 3%
-  starter:    0.025,  // 2.5%
-  growth:     0.015,  // 1.5%
-  enterprise: 0.01,   // 1%
-}
+export async function calculateOnlineCommission(totalInCents, planSlug) {
+  const planDoc = await Plan.findOne({ slug: planSlug?.toLowerCase() || "basic" }).lean();
+  const rate = planDoc?.commissionPercentage ?? 0;
+  
+  const commissionAmountCents = Math.round(totalInCents * (rate / 100));
 
-const DEFAULT_FEE_RATE = 0.02 // 2% fallback
+  console.log(
+    `[platformFee] Online Stripe commission resolved — plan="${planDoc?.slug || planSlug}", sourceField="commissionPercentage", rate=${rate}%, total=${totalInCents}c, quickServeFee=${commissionAmountCents}c`
+  );
+
+  return {
+    commissionAmountCents,
+    commissionRateApplied: rate,
+    planApplied: planDoc?.slug || planSlug || "basic",
+  };
+}
 
 /**
- * Returns the platform fee rate (decimal) for a given plan string.
- * @param {string} plan - Business plan name (e.g. "basic", "growth")
- * @returns {number} fee rate as decimal
+ * Calculates the QuickServe commission for offline cash/POS/waiter orders.
+ * Looks up the given planSlug in the Plan collection and uses `offlineCommissionRate`.
+ *
+ * @param {number} totalInCents - The gross order total in cents
+ * @param {string} planSlug - The business's current plan slug (e.g. "growth")
+ * @returns {Promise<{ commissionAmountCents: number, commissionRateApplied: number, planApplied: string }>}
  */
-export function getFeeRate(plan) {
-  return PLAN_FEE_RATES[plan?.toLowerCase()] ?? DEFAULT_FEE_RATE
+export async function calculateOfflineCommission(totalInCents, planSlug) {
+  const planDoc = await Plan.findOne({ slug: planSlug?.toLowerCase() || "basic" }).lean();
+  const rate = planDoc?.offlineCommissionRate ?? 0;
+
+  const commissionAmountCents = Math.round(totalInCents * (rate / 100));
+
+  console.log(
+    `[platformFee] Offline commission resolved — plan="${planDoc?.slug || planSlug}", sourceField="offlineCommissionRate", rate=${rate}%, total=${totalInCents}c, quickServeCommission=${commissionAmountCents}c`
+  );
+
+  return {
+    commissionAmountCents,
+    commissionRateApplied: rate,
+    planApplied: planDoc?.slug || planSlug || "basic",
+  };
 }
 
-/**
- * Calculates the platform fee in cents for a given total amount.
- * @param {number} totalCents - Total order amount in cents
- * @param {string} plan - Business plan name
- * @returns {number} fee in cents (integer, rounded)
- */
-export function calculatePlatformFee(totalCents, plan) {
-  const rate = getFeeRate(plan)
-  return Math.round(totalCents * rate)
+export async function getPlanOnlineCommissionRate(planSlug) {
+  const planDoc = await Plan.findOne({ slug: planSlug?.toLowerCase() || "basic" }).lean();
+  return planDoc?.commissionPercentage ?? 0;
 }
+
+export async function getPlanOfflineCommissionRate(planSlug) {
+  const planDoc = await Plan.findOne({ slug: planSlug?.toLowerCase() || "basic" }).lean();
+  return planDoc?.offlineCommissionRate ?? 0;
+}
+

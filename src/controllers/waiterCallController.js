@@ -1,7 +1,28 @@
 import WaiterCall from "../models/WaiterCall.js"
 import ServicePoint from "../models/ServicePoint.js"
+import TableSession from "../models/TableSession.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { DateTime } from "luxon"
+
+/**
+ * Resolve the businessId for a waiter-call request from a TRUSTED source:
+ *   - an authenticated staff session, or
+ *   - a valid (non-expired) table-session token presented by a customer device.
+ * Never from a client-supplied businessId. Returns { businessId } or { error, status }.
+ */
+async function resolveCallBusinessId(req, token) {
+  if (req.session?.user?.businessId) {
+    return { businessId: req.session.user.businessId }
+  }
+  if (!token) {
+    return { error: "Missing table session token", status: 401 }
+  }
+  const ts = await TableSession.findOne({ token }).lean()
+  if (!ts || !ts.expiresAt || ts.expiresAt < new Date()) {
+    return { error: "Invalid or expired table session", status: 403 }
+  }
+  return { businessId: ts.businessId }
+}
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -44,12 +65,14 @@ function getRelativeTime(date) {
 export async function createWaiterCall(req, res) {
   try {
     const waiterId = getWaiterId(req) // can be empty for customer calls (that's fine)
-    const { tableNumber, tableLabel = "", tableCode = "", reason = "", note = "", userDeviceId = "" } = req.body || {}
-    const businessId = req.session?.user?.businessId || req.body?.businessId || req.body?.restaurantId
+    const { tableNumber, tableLabel = "", tableCode = "", reason = "", note = "", userDeviceId = "", token } = req.body || {}
 
-    if (!businessId) {
-      return res.status(400).json({ error: "businessId is required" })
+    // businessId comes from the staff session or a valid table token — never the body.
+    const resolved = await resolveCallBusinessId(req, token)
+    if (resolved.error) {
+      return res.status(resolved.status).json({ error: resolved.error })
     }
+    const businessId = resolved.businessId
 
     if (!tableNumber || !String(tableNumber).trim()) {
       return res.status(400).json({ error: "tableNumber is required" })
@@ -113,12 +136,14 @@ export async function createWaiterCall(req, res) {
 
 export async function listWaiterCalls(req, res) {
   try {
-    const { status = "active" } = req.query
-    const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
+    const { status = "active", token } = req.query
 
-    if (!businessId) {
-      return res.status(400).json({ error: "businessId is required" })
+    // businessId comes from the staff session or a valid table token — never the query.
+    const resolved = await resolveCallBusinessId(req, token)
+    if (resolved.error) {
+      return res.status(resolved.status).json({ error: resolved.error })
     }
+    const businessId = resolved.businessId
 
     // status:
     // - "active" => pending + acknowledged
@@ -161,10 +186,9 @@ export async function claimWaiterCall(req, res) {
     }
 
     const { id } = req.params
-    const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
-
+    const businessId = req.session?.user?.businessId
     if (!businessId) {
-      return res.status(400).json({ error: "businessId is required" })
+      return res.status(401).json({ error: "Unauthorized" })
     }
 
     const now = new Date()
@@ -222,10 +246,9 @@ export async function resolveWaiterCall(req, res) {
     }
 
     const { id } = req.params
-    const businessId = req.session?.user?.businessId || req.body.businessId || req.body.restaurantId
-
+    const businessId = req.session?.user?.businessId
     if (!businessId) {
-      return res.status(400).json({ error: "businessId is required" })
+      return res.status(401).json({ error: "Unauthorized" })
     }
 
     const now = new Date()

@@ -25,3 +25,7 @@ mongoose.connect(process.env.MONGODB_URI).then(async () => {
         process.exit(1);
     }
 });
+
+const plan = await Plan.findOne({ slug: "growth" })
+
+console.log(plan.commissionPercentage)

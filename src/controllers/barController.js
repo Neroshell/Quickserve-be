@@ -26,9 +26,9 @@ function getBusinessDayRange() {
 
 export async function barOrders(req, res) {
   try {
-    const businessId = req.session?.user?.businessId || req.query.businessId || req.query.restaurantId
+    const businessId = req.session?.user?.businessId
     if (!businessId) {
-      return res.status(400).json({ error: "businessId is required" })
+      return res.status(401).json({ error: "Unauthorized" })
     }
 
     const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
