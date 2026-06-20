@@ -778,7 +778,7 @@ router.delete("/billing/invoices/:id", requirePrimaryOwner, archiveInvoice)
  *       200:
  *         description: Platforms fees configurations updated
  */
-router.patch("/platform-fee-settings", requirePrimaryOwner, updatePlatformFeeSettings)
+router.patch("/billing/platform-fee-settings", requirePrimaryOwner, updatePlatformFeeSettings)
 
 /**
  * @openapi
@@ -791,6 +791,6 @@ router.patch("/platform-fee-settings", requirePrimaryOwner, updatePlatformFeeSet
  *       200:
  *         description: Usage reported successfully
  */
-router.post("/report-usage", requirePrimaryOwner, reportOfflineUsage)
+router.post("/billing/report-usage", requirePrimaryOwner, reportOfflineUsage)
 
 export default router
