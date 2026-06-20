@@ -125,7 +125,9 @@ export async function createWaiterCall(req, res) {
       createdBy: waiterId || null, // usually null because customer triggers it
     })
 
-    await publishEvent("waiter_call_created", businessId, ["waiter"], { call })
+    // Notify staff and the customer's table stream (per-table scoped). The latter
+    // lets other devices at the same table reflect the new call in real time.
+    await publishEvent("waiter_call_created", businessId, ["waiter", "table", "anon"], { call })
 
     return res.status(201).json({ success: true, call })
   } catch (err) {

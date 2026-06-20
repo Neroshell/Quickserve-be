@@ -35,6 +35,9 @@ const SSE_CHANNELS_BY_ROLE = {
     admin: ["kitchen", "bar", "waiter"],
 }
 
+// Customer-facing SSE roles — these streams are scoped to a single table.
+const CUSTOMER_ROLES = new Set(["table", "anon", "customer"])
+
 // ── Local client registry ────────────────────────────────────────────────────
 const clients = new Set()
 
@@ -63,6 +66,7 @@ export async function sseHandler(req, res) {
     }
 
     // ── Authentication & Authorization ─────────────────────────────────────────
+    let clientTableId = null
     if (role === "table" || role === "anon" || role === "customer") {
         if (!token) {
             return res.status(401).end("Missing session token")
@@ -71,6 +75,9 @@ export async function sseHandler(req, res) {
         if (!ts || ts.expiresAt < new Date()) {
             return res.status(403).end("Invalid or expired table session")
         }
+        // Per-table isolation: this customer stream only receives events for its
+        // own table (see broadcastLocal). Staff streams stay business-wide.
+        clientTableId = ts.tableId || null
     } else {
         // Staff roles (waiter, kitchen, bartender, owner, etc.)
         if (!req.session || !req.session.user) {
@@ -97,7 +104,7 @@ export async function sseHandler(req, res) {
     res.setHeader("X-Accel-Buffering", "no")   // disable nginx proxy buffering
     res.flushHeaders?.()
 
-    const client = { res, role, businessId }
+    const client = { res, role, businessId, tableId: clientTableId }
 
     addClient(client)
 
@@ -140,6 +147,14 @@ export function broadcastLocal(msg) {
     }
 
     const data = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
+
+    // The table this event belongs to, if any. Orders and waiter calls carry the
+    // service-point id in tableNumber; used to scope customer streams below.
+    const msgTableId =
+        payload?.order?.tableNumber ||
+        payload?.call?.tableNumber ||
+        null
+
     let matched = 0
 
     for (const client of clients) {
@@ -148,6 +163,14 @@ export function broadcastLocal(msg) {
 
         // Role targeting — if targets is null/empty every role passes
         if (targets && targets.length > 0 && !targets.includes(client.role)) continue
+
+        // Per-table isolation for customer streams: a diner only receives events
+        // for their own table. Staff channels (kitchen/bar/waiter/owner) are
+        // business-wide and skip this. Falls open if either side lacks a tableId
+        // (e.g. a non-table-specific event) so nothing legitimate is dropped.
+        if (CUSTOMER_ROLES.has(client.role) && msgTableId && client.tableId && msgTableId !== client.tableId) {
+            continue
+        }
 
         try {
             client.res.write(data)
