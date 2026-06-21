@@ -18,6 +18,7 @@ import authRoute from "./src/routes/auth-route.js"
 import uploadRoute from "./src/routes/upload-route.js"
 import feedbackRoute from "./src/routes/feedback-route.js"
 import publicRoute from "./src/routes/public-route.js"
+import guestProfileRoute from "./src/routes/guestProfileRoutes.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 import helmet from "helmet"
 import { sessionMiddleware } from "./src/config/session.js"
@@ -25,6 +26,7 @@ import { connectSessionRedis } from "./src/config/sessionRedisClient.js"
 import rateLimit from "express-rate-limit"
 import { setupSwagger } from "./src/config/swagger.js"
 import { validateOrigin } from "./src/middleware/originValidation.js"
+import { requireAuth, requireRole } from "./src/middleware/authMiddleware.js"
 
 const app = express()
 app.set("trust proxy", 1) // required for secure cookies behind proxies like vercel
@@ -92,6 +94,7 @@ app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)
 app.use("/bar", barRoute)
 app.use("/waiter", waiterRoute)
+app.use("/owner/guests", requireAuth, requireRole("owner", "co_owner", "manager"), guestProfileRoute)
 app.use("/owner", ownerRoute)
 app.use("/menu-items", menuRoute)
 app.use("/business", restaurantRoute)

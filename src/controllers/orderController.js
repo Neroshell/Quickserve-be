@@ -11,6 +11,8 @@ import Business from "../models/Business.js"
 import Plan from "../models/Plan.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
 import { calculateOfflineCommission } from "../utils/platformFee.js"
+import CustomerConsent from "../models/CustomerConsent.js"
+import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js"
 
 function canUseOfflinePayments(business) {
   return business.billingStatus === "active" && !!business.defaultPaymentMethodId
@@ -522,6 +524,14 @@ export async function markPaid(req, res) {
       })()
     }
 
+    if (updatedOrder.receiptEmail) {
+      upsertGuestProfileFromOrder({
+        businessId: updatedOrder.businessId,
+        order: updatedOrder,
+        email: updatedOrder.receiptEmail
+      });
+    }
+
     res.json({
       success: true,
       orderId: order.orderId,
@@ -584,7 +594,7 @@ export async function sendReceipt(req, res) {
 export async function saveReceiptEmail(req, res) {
   try {
     const { orderId } = req.params;
-    const { email, sessionId } = req.body;
+    const { email, sessionId, marketingConsent } = req.body;
 
     if (!email) {
       return res.status(400).json({ message: "Email is required" });
@@ -605,6 +615,23 @@ export async function saveReceiptEmail(req, res) {
         }
         pending.receiptEmail = email;
         await pending.save();
+
+        if (marketingConsent !== undefined) {
+          await CustomerConsent.findOneAndUpdate(
+            { businessId: pending.businessId, email },
+            { marketingConsent, orderId },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+          );
+        }
+
+        upsertGuestProfileFromOrder({
+          businessId: pending.businessId,
+          order: pending,
+          email,
+          marketingConsent,
+          trackVisit: false
+        });
+
         return res.status(200).json({ success: true, message: "Receipt email saved for pending checkout successfully" });
       }
       return res.status(404).json({ message: "Order not found" });
@@ -617,6 +644,22 @@ export async function saveReceiptEmail(req, res) {
 
     order.receiptEmail = email;
     await order.save();
+
+    if (marketingConsent !== undefined) {
+      await CustomerConsent.findOneAndUpdate(
+        { businessId: order.businessId, email },
+        { marketingConsent, orderId },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    }
+
+    upsertGuestProfileFromOrder({
+      businessId: order.businessId,
+      order,
+      email,
+      marketingConsent,
+      trackVisit: order.paymentStatus === "paid"
+    });
 
     return res.status(200).json({ success: true, message: "Receipt email saved successfully" });
   } catch (err) {

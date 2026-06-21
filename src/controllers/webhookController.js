@@ -8,6 +8,7 @@ import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
 import { publishEvent } from "../utils/sseManager.js";
 import { sendReceiptEmail } from "../utils/emailService.js";
+import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -138,21 +139,59 @@ export async function handleStripeWebhook(req, res) {
         let order = await Order.findOne({ businessId, orderId });
 
         if (order) {
+            let updated = false;
+            
+            // If the order existed but wasn't paid yet (offline-to-online flow)
+            if (order.paymentStatus !== "paid") {
+                order.paymentStatus = "paid";
+                order.paymentChannel = "online";
+                order.paidVia = "online_card";
+                order.stripeSessionId = pending.stripeSessionId || session.id;
+                
+                // Stripe Connect split metadata
+                order.stripePaymentIntentId = pending.stripePaymentIntentId || session.payment_intent || null;
+                order.stripeConnectedAccountId = pending.stripeConnectedAccountId || null;
+                if (pending.grossAmount !== undefined) order.grossAmount = pending.grossAmount;
+                if (pending.netToBusinessAmount !== undefined) order.netToBusinessAmount = pending.netToBusinessAmount;
+                if (pending.planApplied !== undefined) order.planApplied = pending.planApplied;
+                if (pending.commissionRateApplied !== undefined) order.commissionRateApplied = pending.commissionRateApplied;
+                if (pending.commissionAmountCents !== undefined) order.commissionAmountCents = pending.commissionAmountCents;
+                
+                updated = true;
+            }
+
             // Re-attempt receipt email if not yet sent
-            const customerEmail = pending.receiptEmail || session.customer_details?.email || null;
+            const customerEmail = pending.receiptEmail || session.customer_details?.email || order.receiptEmail || null;
             if (customerEmail && !order.receiptSent) {
                 try {
                     const emailSent = await sendReceiptEmail(order, customerEmail);
                     if (emailSent) {
-                        await Order.findOneAndUpdate({ businessId, orderId }, { receiptSent: true });
+                        order.receiptSent = true;
+                        updated = true;
                     }
                 } catch (err) {
                     console.error("[webhook] Receipt retry error:", err.message);
                 }
             }
+            
+            if (updated) {
+                await order.save();
+                // Notify waiter/table that the order was paid online
+                const orderDTO = toOrderDTO(order);
+                await publishEvent("order_updated", businessId, ["waiter", "table"], { order: orderDTO });
+            }
+
+            if (customerEmail) {
+                upsertGuestProfileFromOrder({
+                    businessId,
+                    order,
+                    email: customerEmail
+                });
+            }
         } else {
             const hasFood = pending.items.some((i) => i.category === "food" || i.type === "food");
             const initialStatus = hasFood ? "placed" : "ready";
+            // For a brand new order, there's no existing order.receiptEmail to fall back on yet
             const customerEmail = pending.receiptEmail || session.customer_details?.email || null;
 
             // Prefer the label already cached on PendingCheckout (stored at checkout creation).
@@ -207,6 +246,14 @@ export async function handleStripeWebhook(req, res) {
                 } catch (err) {
                     console.error("[webhook] Receipt email error:", err.message);
                 }
+            }
+
+            if (customerEmail) {
+                upsertGuestProfileFromOrder({
+                    businessId,
+                    order,
+                    email: customerEmail
+                });
             }
 
             const orderDTO = toOrderDTO(order);
