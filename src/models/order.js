@@ -74,6 +74,11 @@ const OrderSchema = new mongoose.Schema(
     receiptEmail: { type: String, default: null },
     receiptSent:  { type: Boolean, default: false },
 
+    // CRM Ownership Locks
+    crmEmail: { type: String, default: null },
+    crmProcessed: { type: Boolean, default: false },
+    crmProcessedAt: { type: Date },
+
     // Order creation metadata
     orderSource: { type: String, enum: ["self", "waitstaff"], default: "self", index: true },
     createdBy: { type: String, enum: ["customer", "staff"], default: "customer" },

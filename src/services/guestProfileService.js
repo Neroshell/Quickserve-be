@@ -1,6 +1,7 @@
 import GuestProfile from "../models/GuestProfile.js"
 import GuestVisit from "../models/GuestVisit.js"
 import Business from "../models/Business.js"
+import Order from "../models/order.js"
 
 /**
  * Upsert a guest profile and tracking visits based on an order and receipt email.
@@ -65,9 +66,31 @@ export async function upsertGuestProfileFromOrder({ businessId, order, email, ma
       profile.marketingConsentUpdatedAt = new Date();
     }
 
-    // Only track visits and orders when explicitly requested (markPaid / webhook)
+    // --- CRM Ownership Lock Logic ---
+    if (trackVisit && order.paymentStatus === "paid" && !order.crmProcessed) {
+      // Lock the CRM ownership to this email for the first time
+      order.crmEmail = normalizedEmail;
+      order.crmProcessed = true;
+      order.crmProcessedAt = new Date();
+      
+      await Order.updateOne({ businessId, orderId }, {
+        $set: {
+          crmEmail: normalizedEmail,
+          crmProcessed: true,
+          crmProcessedAt: new Date()
+        }
+      });
+    }
+
+    // Determine if this profile is allowed to track the spend
+    // It is allowed if the email matches the locked crmEmail, OR if it's currently unlocked (though we just locked it above).
+    const isCrmOwner = (order.crmEmail === normalizedEmail) || (!order.crmProcessed);
+    const canTrackSpend = trackVisit && order.paymentStatus === "paid" && isCrmOwner;
+
+
+    // Only track visits and orders when explicitly requested (markPaid / webhook) AND if allowed by CRM Ownership
     let visit = null;
-    if (trackVisit) {
+    if (canTrackSpend) {
       // Get or Create Guest Visit
       visit = await GuestVisit.findOne({ businessId, email: normalizedEmail, visitDate: localDateStr });
       let isNewVisit = false;
@@ -113,9 +136,11 @@ export async function upsertGuestProfileFromOrder({ businessId, order, email, ma
           profile.processedOrderIds = profile.processedOrderIds.slice(-200);
         }
       }
+    }
 
+    if (canTrackSpend) {
       // Process Paid Order (for spend and favourite items)
-      if (order.paymentStatus === "paid" && !profile.processedPaidOrderIds.includes(orderId)) {
+      if (!profile.processedPaidOrderIds.includes(orderId)) {
         
         // Promote to customer
         profile.guestStatus = "customer";
@@ -178,12 +203,12 @@ export async function upsertGuestProfileFromOrder({ businessId, order, email, ma
         profile.averageOrderSpendCents = Math.round(profile.totalSpendCents / profile.paidOrderCount);
       }
 
-      await Promise.all([
-        profile.save(),
-        visit.save()
-      ]);
+      const saves = [profile.save()];
+      if (visit) saves.push(visit.save());
+      
+      await Promise.all(saves);
     } else {
-      // trackVisit is false — only save the profile (for consent / email capture)
+      // canTrackSpend is false — only save the profile (for consent / email capture as Lead)
       await profile.save();
     }
 

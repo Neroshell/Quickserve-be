@@ -1,4 +1,6 @@
 import GuestProfile from "../models/GuestProfile.js";
+import Business from "../models/Business.js";
+import { DateTime } from "luxon";
 
 /**
  * Get paginated guest profiles for the authenticated owner's business
@@ -17,7 +19,10 @@ export async function getGuests(req, res) {
       marketingConsent,
       sortBy = "lastVisitAt",
       sortOrder = "desc",
-      filterBy = "all", // all, consent_only, no_consent, high_spenders, recent, inactive
+      filterBy = "all", // all, consent_only, no_consent, top_spenders, most_orders, highest_visits, recent, inactive
+      dateRange = "all", // all, today, yesterday, last7, thisMonth, custom
+      startDate,
+      endDate
     } = req.query;
 
     const pageNum = parseInt(page, 10);
@@ -25,6 +30,10 @@ export async function getGuests(req, res) {
     
     // Construct query
     const query = { businessId };
+
+    // Fetch business for timezone
+    const business = await Business.findOne({ $or: [{ businessId }, { restaurantId: businessId }] }).lean();
+    const timezone = business?.timezone || "UTC";
 
     // Search by email or name
     if (search) {
@@ -55,6 +64,46 @@ export async function getGuests(req, res) {
         const ninetyDaysAgo = new Date();
         ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
         query.lastVisitAt = { $lt: ninetyDaysAgo };
+      }
+    }
+
+    // Date Range Filtering
+    if (dateRange && dateRange !== "all") {
+      const now = DateTime.now().setZone(timezone);
+      let startBound, endBound;
+
+      switch (dateRange) {
+        case "today":
+          startBound = now.startOf("day");
+          endBound = now.endOf("day");
+          break;
+        case "yesterday":
+          startBound = now.minus({ days: 1 }).startOf("day");
+          endBound = now.minus({ days: 1 }).endOf("day");
+          break;
+        case "last7":
+          startBound = now.minus({ days: 6 }).startOf("day"); // 6 days ago + today = 7 days
+          endBound = now.endOf("day");
+          break;
+        case "thisMonth":
+          startBound = now.startOf("month");
+          endBound = now.endOf("month");
+          break;
+        case "custom":
+          if (startDate) {
+            startBound = DateTime.fromISO(startDate, { zone: timezone }).startOf("day");
+          }
+          if (endDate) {
+            endBound = DateTime.fromISO(endDate, { zone: timezone }).endOf("day");
+          }
+          break;
+      }
+
+      if (startBound || endBound) {
+        const dateField = query.guestStatus === "lead" ? "lastCapturedAt" : "lastVisitAt";
+        query[dateField] = query[dateField] || {};
+        if (startBound) query[dateField].$gte = startBound.toJSDate();
+        if (endBound) query[dateField].$lte = endBound.toJSDate();
       }
     }
 
