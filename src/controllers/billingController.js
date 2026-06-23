@@ -29,7 +29,7 @@ export async function getBillingOverview(req, res) {
         res.json({
             billingStatus: biz.billingStatus || 'incomplete',
             billingEnabled: biz.billingEnabled || false,
-            currentPlan: biz.currentPlan || 'basic',
+            currentPlan: biz.currentPlan === 'enterprise' ? 'pro' : (biz.currentPlan || 'basic'),
             planActivatedAt: biz.planActivatedAt || null,
             billingCycle: biz.billingCycle || 'monthly',
             nextBillingDate: biz.nextBillingDate || null,
@@ -37,7 +37,7 @@ export async function getBillingOverview(req, res) {
             paymentMethodLast4: biz.paymentMethodLast4 || null,
             paymentMethodExpMonth: biz.paymentMethodExpMonth || null,
             paymentMethodExpYear: biz.paymentMethodExpYear || null,
-            scheduledDowngradePlan: biz.scheduledDowngradePlan || null,
+            scheduledDowngradePlan: biz.scheduledDowngradePlan === 'enterprise' ? 'pro' : (biz.scheduledDowngradePlan || null),
             scheduledPlanEffectiveDate: biz.scheduledPlanEffectiveDate || null
         })
     } catch (err) {
@@ -142,7 +142,7 @@ export async function verifyPaymentMethod(req, res) {
         res.json({
             billingStatus: biz.billingStatus || 'incomplete',
             billingEnabled: biz.billingEnabled || false,
-            currentPlan: biz.currentPlan || 'basic',
+            currentPlan: biz.currentPlan === 'enterprise' ? 'pro' : (biz.currentPlan || 'basic'),
             planActivatedAt: biz.planActivatedAt || null,
             billingCycle: biz.billingCycle || 'monthly',
             nextBillingDate: biz.nextBillingDate || null,
@@ -234,7 +234,7 @@ export async function updatePlan(req, res) {
         if (!businessId) return res.status(401).json({ message: "Unauthorized" })
 
         const { planSlug } = req.body
-        const VALID_PLANS = ['basic', 'growth', 'enterprise']
+        const VALID_PLANS = ['basic', 'growth', 'pro']
         if (!VALID_PLANS.includes(planSlug)) {
             return res.status(400).json({ message: "Invalid plan selection" })
         }

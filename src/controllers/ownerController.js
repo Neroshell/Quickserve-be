@@ -1078,7 +1078,7 @@ export async function getBranding(req, res) {
                 accentColor: "#FB923C",
                 removeQuickServeBranding: false
             },
-            currentPlan: business.currentPlan || "basic"
+            currentPlan: business.currentPlan === "enterprise" ? "pro" : (business.currentPlan || "basic")
         })
     } catch (err) {
         console.error("[getBranding]", err)
@@ -1119,11 +1119,11 @@ export async function updateBranding(req, res) {
             return res.status(400).json({ error: "Invalid cover image URL" })
         }
 
-        const currentPlan = business.currentPlan || "basic"
-        const canUseBranding = ["growth", "enterprise"].includes(currentPlan)
+        const currentPlan = business.currentPlan === "enterprise" ? "pro" : (business.currentPlan || "basic")
+        const canUseBranding = ["growth", "pro"].includes(currentPlan)
 
         if (!canUseBranding) {
-            return res.status(403).json({ error: "Branding is available on Growth and Enterprise plans." })
+            return res.status(403).json({ error: "Branding is available on Growth and Pro plans." })
         }
 
         business.branding = {
@@ -1134,7 +1134,7 @@ export async function updateBranding(req, res) {
             secondaryColor: secondaryColor || "#2B304C",
             accentColor: accentColor || "#FB923C",
             backgroundColor: backgroundColor || "#F8F9FA",
-            removeQuickServeBranding: currentPlan === "enterprise" && removeQuickServeBranding === true
+            removeQuickServeBranding: currentPlan === "pro" && removeQuickServeBranding === true
         }
 
         await business.save()

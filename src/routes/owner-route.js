@@ -704,7 +704,7 @@ router.delete("/billing/payment-method", requirePrimaryOwner, deletePaymentMetho
  *             properties:
  *               plan:
  *                 type: string
- *                 enum: [basic, growth, enterprise]
+ *                 enum: [basic, growth, pro]
  *     responses:
  *       200:
  *         description: Plan updated successfully

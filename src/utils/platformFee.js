@@ -9,7 +9,8 @@ import Plan from "../models/Plan.js";
  * @returns {Promise<{ commissionAmountCents: number, commissionRateApplied: number, planApplied: string }>}
  */
 export async function calculateOnlineCommission(totalInCents, planSlug) {
-  const planDoc = await Plan.findOne({ slug: planSlug?.toLowerCase() || "basic" }).lean();
+  let slug = planSlug?.toLowerCase() || "basic";
+  const planDoc = await Plan.findOne({ slug }).lean();
   const rate = planDoc?.commissionPercentage ?? 0;
   
   const commissionAmountCents = Math.round(totalInCents * (rate / 100));
@@ -34,7 +35,8 @@ export async function calculateOnlineCommission(totalInCents, planSlug) {
  * @returns {Promise<{ commissionAmountCents: number, commissionRateApplied: number, planApplied: string }>}
  */
 export async function calculateOfflineCommission(totalInCents, planSlug) {
-  const planDoc = await Plan.findOne({ slug: planSlug?.toLowerCase() || "basic" }).lean();
+  let slug = planSlug?.toLowerCase() || "basic";
+  const planDoc = await Plan.findOne({ slug }).lean();
   const rate = planDoc?.offlineCommissionRate ?? 0;
 
   const commissionAmountCents = Math.round(totalInCents * (rate / 100));
@@ -51,12 +53,14 @@ export async function calculateOfflineCommission(totalInCents, planSlug) {
 }
 
 export async function getPlanOnlineCommissionRate(planSlug) {
-  const planDoc = await Plan.findOne({ slug: planSlug?.toLowerCase() || "basic" }).lean();
+  let slug = planSlug?.toLowerCase() || "basic";
+  const planDoc = await Plan.findOne({ slug }).lean();
   return planDoc?.commissionPercentage ?? 0;
 }
 
 export async function getPlanOfflineCommissionRate(planSlug) {
-  const planDoc = await Plan.findOne({ slug: planSlug?.toLowerCase() || "basic" }).lean();
+  let slug = planSlug?.toLowerCase() || "basic";
+  const planDoc = await Plan.findOne({ slug }).lean();
   return planDoc?.offlineCommissionRate ?? 0;
 }
 

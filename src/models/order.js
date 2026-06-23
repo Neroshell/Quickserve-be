@@ -99,7 +99,7 @@ const OrderSchema = new mongoose.Schema(
     commissionReportedToStripe: { type: Boolean, default: false, index: true },
 
     // Order-level commission locking — rate is frozen at order creation / payment time
-    planApplied:             { type: String, enum: ["basic", "growth", "enterprise"], default: null },
+    planApplied:             { type: String, enum: ["basic", "growth", "pro", "enterprise"], default: null },
     commissionRateApplied:   { type: Number, default: null },   // e.g. 2.5 (percentage)
     commissionAmountCents:   { type: Number, default: 0 },      // pre-calculated commission in cents
     

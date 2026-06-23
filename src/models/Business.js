@@ -88,7 +88,7 @@ const BusinessSchema = new mongoose.Schema({
     billingEnabled: { type: Boolean, default: false },
     currentPlan: {
         type: String,
-        enum: ['basic', 'growth', 'enterprise'],
+        enum: ['basic', 'growth', 'pro', 'enterprise'],
         default: 'basic'
     },
     // Plan assignment used by the admin backoffice (createBusiness / dashboard stats).

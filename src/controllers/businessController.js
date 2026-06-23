@@ -64,14 +64,15 @@ export async function getSettings(req, res) {
             : (bizObj.billingStatus === "past_due" ? "past_due" : "billing_not_setup")
 
         // Resolve platform fee rate from the plan
-        const currentPlan = bizObj.currentPlan || "basic"
+        const currentPlan = bizObj.currentPlan === "enterprise" ? "pro" : (bizObj.currentPlan || "basic")
+        bizObj.currentPlan = currentPlan
         const planDef = await Plan.findOne({ slug: currentPlan }).lean()
         const platformFeeRate = planDef ? planDef.offlineCommissionRate : 2.5
         bizObj.platformFeeRate = platformFeeRate
 
         // Branding Access & Downgrade Protection
-        const canUseBranding = ["growth", "enterprise"].includes(currentPlan)
-        const canRemoveQuickServeBranding = currentPlan === "enterprise"
+        const canUseBranding = ["growth", "pro"].includes(currentPlan)
+        const canRemoveQuickServeBranding = currentPlan === "pro"
         
         bizObj.brandingAccess = {
             canUseBranding,
@@ -310,7 +311,7 @@ export async function updateTablePreferences(req, res) {
 }
 
 const VALID_BUSINESS_TYPES = ["restaurant", "bar_lounge", "hotel_apartment"]
-const VALID_PLANS = ["basic", "starter", "growth", "enterprise"]
+const VALID_PLANS = ["basic", "starter", "growth", "pro"]
 
 export async function createBusiness(req, res) {
     try {

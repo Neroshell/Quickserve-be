@@ -32,12 +32,12 @@ export async function getPublicBusinessConfig(req, res) {
     }
 
     // Plan-derived values (same logic as authenticated getSettings)
-    const currentPlan = business.currentPlan || "basic";
+    const currentPlan = business.currentPlan === "enterprise" ? "pro" : (business.currentPlan || "basic");
     const planDef = await Plan.findOne({ slug: currentPlan }).lean();
     const platformFeeRate = planDef ? planDef.offlineCommissionRate : 2.5;
 
-    const canUseBranding = ["growth", "enterprise"].includes(currentPlan);
-    const canRemoveQuickServeBranding = currentPlan === "enterprise";
+    const canUseBranding = ["growth", "pro"].includes(currentPlan);
+    const canRemoveQuickServeBranding = currentPlan === "pro";
 
     let branding = canUseBranding ? business.branding || null : null;
     if (branding && !canRemoveQuickServeBranding) {
