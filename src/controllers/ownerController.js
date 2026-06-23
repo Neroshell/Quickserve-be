@@ -1078,7 +1078,7 @@ export async function getBranding(req, res) {
                 accentColor: "#FB923C",
                 removeQuickServeBranding: false
             },
-            currentPlan: business.currentPlan === "enterprise" ? "pro" : (business.currentPlan || "basic")
+            currentPlan: business.currentPlan || "basic"
         })
     } catch (err) {
         console.error("[getBranding]", err)
@@ -1119,7 +1119,7 @@ export async function updateBranding(req, res) {
             return res.status(400).json({ error: "Invalid cover image URL" })
         }
 
-        const currentPlan = business.currentPlan === "enterprise" ? "pro" : (business.currentPlan || "basic")
+        const currentPlan = business.currentPlan || "basic";
         const canUseBranding = ["growth", "pro"].includes(currentPlan)
 
         if (!canUseBranding) {

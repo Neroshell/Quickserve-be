@@ -64,7 +64,7 @@ export async function getSettings(req, res) {
             : (bizObj.billingStatus === "past_due" ? "past_due" : "billing_not_setup")
 
         // Resolve platform fee rate from the plan
-        const currentPlan = bizObj.currentPlan === "enterprise" ? "pro" : (bizObj.currentPlan || "basic")
+        const currentPlan = bizObj.currentPlan || "basic";
         bizObj.currentPlan = currentPlan
         const planDef = await Plan.findOne({ slug: currentPlan }).lean()
         const platformFeeRate = planDef ? planDef.offlineCommissionRate : 2.5

@@ -29,7 +29,7 @@ export async function getBillingOverview(req, res) {
         res.json({
             billingStatus: biz.billingStatus || 'incomplete',
             billingEnabled: biz.billingEnabled || false,
-            currentPlan: biz.currentPlan === 'enterprise' ? 'pro' : (biz.currentPlan || 'basic'),
+            currentPlan: biz.currentPlan || 'basic',
             planActivatedAt: biz.planActivatedAt || null,
             billingCycle: biz.billingCycle || 'monthly',
             nextBillingDate: biz.nextBillingDate || null,
@@ -37,7 +37,7 @@ export async function getBillingOverview(req, res) {
             paymentMethodLast4: biz.paymentMethodLast4 || null,
             paymentMethodExpMonth: biz.paymentMethodExpMonth || null,
             paymentMethodExpYear: biz.paymentMethodExpYear || null,
-            scheduledDowngradePlan: biz.scheduledDowngradePlan === 'enterprise' ? 'pro' : (biz.scheduledDowngradePlan || null),
+            scheduledDowngradePlan: biz.scheduledDowngradePlan || null,
             scheduledPlanEffectiveDate: biz.scheduledPlanEffectiveDate || null
         })
     } catch (err) {
