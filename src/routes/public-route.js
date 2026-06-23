@@ -1,6 +1,7 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
 import { getBusinessBySlug, createReservation, getPublicBusinessConfig } from "../controllers/publicController.js";
+import { getPlans } from "../controllers/planController.js";
 
 const router = express.Router();
 
@@ -94,5 +95,18 @@ router.get("/business-config", getPublicBusinessConfig);
  *         description: Reservation requested successfully
  */
 router.post("/reservations", reservationLimiter, createReservation);
+
+/**
+ * @openapi
+ * /public/plans:
+ *   get:
+ *     summary: Get all available plans
+ *     tags:
+ *       - Public
+ *     responses:
+ *       200:
+ *         description: List of plans
+ */
+router.get("/plans", getPlans);
 
 export default router;
