@@ -1,6 +1,7 @@
 import express from "express"
 import rateLimit from "express-rate-limit"
 import { listOrders, createOrder, getOrderById, updateOrderStatus, deleteOrdersBySession, markPaid, sendReceipt, saveReceiptEmail } from "../controllers/orderController.js"
+import { reorderFromOrder } from "../controllers/reorderController.js"
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
 
 const router = express.Router()
@@ -119,6 +120,38 @@ router.delete("/session", requireAuth, requireRole("owner", "admin", "manager"),
  *         description: Order not found
  */
 router.get("/:orderId", getOrderById)
+
+/**
+ * @openapi
+ * /orders/{orderId}/reorder:
+ *   post:
+ *     summary: Validate a previous order against the current menu and return a cart-ready payload
+ *     tags:
+ *       - Orders
+ *     parameters:
+ *       - in: path
+ *         name: orderId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - businessId
+ *             properties:
+ *               businessId:
+ *                 type: string
+ *               sessionId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Reorder payload with available items and unavailable item names
+ */
+router.post("/:orderId/reorder", reorderFromOrder)
 
 /**
  * @openapi

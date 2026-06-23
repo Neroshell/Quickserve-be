@@ -262,17 +262,19 @@ export async function createWaiterOrder(req, res) {
     const totalInCentsForFee = Math.round(subtotal * 100)
     const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOfflineCommission(totalInCentsForFee, business.currentPlan || "basic")
     
-    let platformFeeTotal = 0
-    if (business.passPlatformFeeToCustomer) {
-      platformFeeTotal = Number((subtotal * (commissionRateApplied / 100)).toFixed(2))
-    }
+    let mode = business.platformFeeMode || (business.passPlatformFeeToCustomer ? "customer_pays" : "business_absorbs");
+    let percent = mode === "split" ? (business.customerPlatformFeePercent || 0) : (mode === "customer_pays" ? 100 : 0);
 
-    let finalCommissionAmountCents = commissionAmountCents
-    if (business.passPlatformFeeToCustomer && platformFeeTotal > 0) {
-      finalCommissionAmountCents = Math.round(platformFeeTotal * 100)
-    }
+    const fullPlatformFeeFloat = Number((subtotal * (commissionRateApplied / 100)).toFixed(2));
+    const fullPlatformFeeCents = Math.round(fullPlatformFeeFloat * 100);
 
-    const finalTotal = Number((subtotal + taxAmount + platformFeeTotal).toFixed(2))
+    const customerPlatformFeeCents = Math.round(fullPlatformFeeCents * percent / 100);
+    const customerPlatformFeeFloat = Number((customerPlatformFeeCents / 100).toFixed(2));
+    const businessAbsorbedPlatformFeeCents = fullPlatformFeeCents - customerPlatformFeeCents;
+
+    const finalCommissionAmountCents = fullPlatformFeeCents;
+
+    const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat).toFixed(2))
 
     const saved = await Order.create({
       orderId,
@@ -285,7 +287,12 @@ export async function createWaiterOrder(req, res) {
       status: initialStatus,
       subtotal,
       taxAmount,
-      platformFeeTotal,
+      platformFeeTotal: customerPlatformFeeFloat,
+      platformFeeCents: fullPlatformFeeCents,
+      customerPlatformFeeCents,
+      businessAbsorbedPlatformFeeCents,
+      platformFeeMode: mode,
+      customerPlatformFeePercent: percent,
       total: finalTotal,
       currency: currency || business.currency || "EUR",
       paymentChannel: "offline",

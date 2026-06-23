@@ -219,21 +219,24 @@ export async function createOrder(req, res) {
     const taxRate = business.taxRate || 0
     const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2))
 
-    // Platform fee: only when the owner has opted to pass it to the customer
+    // Platform fee calculation with split logic
     const totalInCentsForFee = Math.round(subtotal * 100)
     const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOfflineCommission(totalInCentsForFee, business.currentPlan || "basic")
     
-    let platformFeeTotal = 0
-    if (business.passPlatformFeeToCustomer) {
-      platformFeeTotal = Number((subtotal * (commissionRateApplied / 100)).toFixed(2))
-    }
+    let mode = business.platformFeeMode || (business.passPlatformFeeToCustomer ? "customer_pays" : "business_absorbs");
+    let percent = mode === "split" ? (business.customerPlatformFeePercent || 0) : (mode === "customer_pays" ? 100 : 0);
 
-    let finalCommissionAmountCents = commissionAmountCents
-    if (business.passPlatformFeeToCustomer && platformFeeTotal > 0) {
-      finalCommissionAmountCents = Math.round(platformFeeTotal * 100)
-    }
+    const fullPlatformFeeFloat = Number((subtotal * (commissionRateApplied / 100)).toFixed(2));
+    const fullPlatformFeeCents = Math.round(fullPlatformFeeFloat * 100);
 
-    const finalTotal = Number((subtotal + taxAmount + platformFeeTotal).toFixed(2))
+    const customerPlatformFeeCents = Math.round(fullPlatformFeeCents * percent / 100);
+    const customerPlatformFeeFloat = Number((customerPlatformFeeCents / 100).toFixed(2));
+    const businessAbsorbedPlatformFeeCents = fullPlatformFeeCents - customerPlatformFeeCents;
+
+    // We store the full fee as the commission amount
+    const finalCommissionAmountCents = fullPlatformFeeCents;
+
+    const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat).toFixed(2))
 
     const saved = await Order.create({
       orderId,
@@ -246,7 +249,12 @@ export async function createOrder(req, res) {
       status: initialStatus,
       subtotal,
       taxAmount,
-      platformFeeTotal,
+      platformFeeTotal: customerPlatformFeeFloat,
+      platformFeeCents: fullPlatformFeeCents,
+      customerPlatformFeeCents,
+      businessAbsorbedPlatformFeeCents,
+      platformFeeMode: mode,
+      customerPlatformFeePercent: percent,
       total: finalTotal,
       currency: currency || "EUR",
       paymentChannel: "offline",
@@ -470,7 +478,9 @@ export async function markPaid(req, res) {
       const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOfflineCommission(totalInCentsForFee, business.currentPlan || "basic")
 
       let finalCommissionAmountCents = commissionAmountCents
-      if (order.platformFeeTotal > 0) {
+      if (order.platformFeeCents != null && order.platformFeeCents > 0) {
+        finalCommissionAmountCents = order.platformFeeCents
+      } else if (order.platformFeeTotal > 0) {
         finalCommissionAmountCents = Math.round(order.platformFeeTotal * 100)
       }
 
@@ -512,12 +522,8 @@ export async function markPaid(req, res) {
     if (updatedOrder.receiptEmail && !updatedOrder.receiptSent) {
       ; (async () => {
         try {
-          const emailSent = await sendReceiptEmail(updatedOrder, updatedOrder.receiptEmail)
-          if (emailSent) {
-            await Order.findOneAndUpdate({ _id: updatedOrder._id }, { $set: { receiptSent: true } })
-          } else {
-            console.warn(`[markPaid] ⚠️ sendReceiptEmail returned false for order ${orderId} — email not sent`)
-          }
+          await sendReceiptEmail(updatedOrder, updatedOrder.receiptEmail)
+          await Order.findOneAndUpdate({ _id: updatedOrder._id }, { $set: { receiptSent: true, receiptSentAt: new Date() } })
         } catch (emailErr) {
           console.error(`[markPaid] ❌ Background receipt email failed for order ${orderId}:`, emailErr)
         }
@@ -540,7 +546,7 @@ export async function markPaid(req, res) {
     })
 
     // ✅ Step 4: Fire-and-forget receipt email — runs AFTER response is sent
-    // This will never block the HTTP response, even if SMTP hangs in production
+    // This will not block the HTTP response, even if SMTP hangs in production
 
   } catch (err) {
     console.error("[markPaid] Error:", err)
@@ -570,16 +576,14 @@ export async function sendReceipt(req, res) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    if (order.receiptSent && order.receiptEmail === email) {
-      return res.status(200).json({ message: "Receipt already sent to this email" });
-    }
+
 
     const emailSent = await sendReceiptEmail(order, email);
 
     if (emailSent) {
-      await Order.findOneAndUpdate(
-        { orderId, businessId },
-        { receiptSent: true, receiptEmail: email }
+      await Order.updateOne(
+        { businessId, orderId },
+        { receiptSent: true, receiptSentAt: new Date(), receiptEmail: email }
       );
       return res.status(200).json({ success: true, message: "Receipt sent successfully" });
     } else {

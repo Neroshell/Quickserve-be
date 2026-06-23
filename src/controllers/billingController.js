@@ -453,7 +453,11 @@ export async function getCommissionSummary(req, res) {
             const taxAmount = o.taxAmount || 0
             totalGrossCents += Math.round((subtotal + taxAmount) * 100)
 
-            if (o.commissionAmountCents != null) {
+            if (o.platformFeeCents != null) {
+                // New split logic
+                totalCustomerPaidFeesCents += (o.customerPlatformFeeCents || 0)
+                totalBusinessOwedCommissionCents += (o.businessAbsorbedPlatformFeeCents || 0)
+            } else if (o.commissionAmountCents != null) {
                 if (o.platformFeeTotal > 0) {
                     totalCustomerPaidFeesCents += o.commissionAmountCents
                 } else {
@@ -550,11 +554,17 @@ export async function updatePlatformFeeSettings(req, res) {
         const businessId = resolveBusinessId(req)
         if (!businessId) return res.status(401).json({ message: "Unauthorized" })
 
-        const { passPlatformFeeToCustomer, platformFeeLabel } = req.body
+        const { passPlatformFeeToCustomer, platformFeeLabel, platformFeeMode, customerPlatformFeePercent } = req.body
         const updateObj = {}
 
         if (typeof passPlatformFeeToCustomer === "boolean") {
             updateObj.passPlatformFeeToCustomer = passPlatformFeeToCustomer
+        }
+        if (["business_absorbs", "customer_pays", "split"].includes(platformFeeMode)) {
+            updateObj.platformFeeMode = platformFeeMode
+        }
+        if (typeof customerPlatformFeePercent === "number" && customerPlatformFeePercent >= 0 && customerPlatformFeePercent <= 100) {
+            updateObj.customerPlatformFeePercent = customerPlatformFeePercent
         }
         if (typeof platformFeeLabel === "string" && platformFeeLabel.trim().length > 0) {
             updateObj.platformFeeLabel = platformFeeLabel.trim().substring(0, 50)
@@ -578,6 +588,8 @@ export async function updatePlatformFeeSettings(req, res) {
 
         res.json({
             passPlatformFeeToCustomer: biz.passPlatformFeeToCustomer,
+            platformFeeMode: biz.platformFeeMode || "business_absorbs",
+            customerPlatformFeePercent: biz.customerPlatformFeePercent || 0,
             platformFeeLabel: biz.platformFeeLabel,
             platformFeeRate
         })

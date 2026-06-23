@@ -73,6 +73,7 @@ const OrderSchema = new mongoose.Schema(
     // Receipt details
     receiptEmail: { type: String, default: null },
     receiptSent:  { type: Boolean, default: false },
+    receiptSentAt: { type: Date, default: null },
 
     // CRM Ownership Locks
     crmEmail: { type: String, default: null },
@@ -101,6 +102,14 @@ const OrderSchema = new mongoose.Schema(
     planApplied:             { type: String, enum: ["basic", "growth", "enterprise"], default: null },
     commissionRateApplied:   { type: Number, default: null },   // e.g. 2.5 (percentage)
     commissionAmountCents:   { type: Number, default: 0 },      // pre-calculated commission in cents
+    
+    // Platform Fee Split details
+    platformFeeCents: { type: Number, default: 0 },
+    customerPlatformFeeCents: { type: Number, default: 0 },
+    businessAbsorbedPlatformFeeCents: { type: Number, default: 0 },
+    platformFeeMode: { type: String, enum: ["business_absorbs", "customer_pays", "split"], default: "business_absorbs" },
+    customerPlatformFeePercent: { type: Number, default: 0 },
+    
     stripeUsageReportedAt:   { type: Date, default: null },
     
     // Customer Feedback

@@ -124,6 +124,8 @@ export async function ownerOrders(req, res) {
                 paymentStatus: 1,
                 paidVia: 1,
                 receiptEmail: 1,
+                receiptSent: 1,
+                receiptSentAt: 1,
                 completedBy: 1,
             }
         )
@@ -195,6 +197,8 @@ export async function ownerOrders(req, res) {
                 paymentStatus: o.paymentStatus,
                 paidVia: o.paidVia,
                 receiptEmail: o.receiptEmail,
+                receiptSent: o.receiptSent,
+                receiptSentAt: o.receiptSentAt,
                 items: (o.items || []).map((it) => ({
                     itemName: it.itemName,
                     quantity: it.quantity,

@@ -156,6 +156,13 @@ export async function handleStripeWebhook(req, res) {
                 if (pending.planApplied !== undefined) order.planApplied = pending.planApplied;
                 if (pending.commissionRateApplied !== undefined) order.commissionRateApplied = pending.commissionRateApplied;
                 if (pending.commissionAmountCents !== undefined) order.commissionAmountCents = pending.commissionAmountCents;
+
+                if (pending.platformFeeCents !== undefined) order.platformFeeCents = pending.platformFeeCents;
+                if (pending.customerPlatformFeeCents !== undefined) order.customerPlatformFeeCents = pending.customerPlatformFeeCents;
+                if (pending.businessAbsorbedPlatformFeeCents !== undefined) order.businessAbsorbedPlatformFeeCents = pending.businessAbsorbedPlatformFeeCents;
+                if (pending.platformFeeMode !== undefined) order.platformFeeMode = pending.platformFeeMode;
+                if (pending.customerPlatformFeePercent !== undefined) order.customerPlatformFeePercent = pending.customerPlatformFeePercent;
+                if (pending.customerPlatformFeeCents !== undefined) order.platformFeeTotal = Number((pending.customerPlatformFeeCents / 100).toFixed(2));
                 
                 updated = true;
             }
@@ -167,6 +174,7 @@ export async function handleStripeWebhook(req, res) {
                     const emailSent = await sendReceiptEmail(order, customerEmail);
                     if (emailSent) {
                         order.receiptSent = true;
+                        order.receiptSentAt = new Date();
                         updated = true;
                     }
                 } catch (err) {
@@ -229,6 +237,17 @@ export async function handleStripeWebhook(req, res) {
                 commissionRateApplied:    pending.commissionRateApplied ?? null,
                 commissionAmountCents:    pending.commissionAmountCents ?? 0,
 
+                // Platform fee split fields
+                platformFeeCents:                 pending.platformFeeCents                 ?? 0,
+                customerPlatformFeeCents:         pending.customerPlatformFeeCents         ?? 0,
+                businessAbsorbedPlatformFeeCents: pending.businessAbsorbedPlatformFeeCents ?? 0,
+                platformFeeMode:                  pending.platformFeeMode                  ?? "business_absorbs",
+                customerPlatformFeePercent:       pending.customerPlatformFeePercent       ?? 0,
+                platformFeeTotal:                 pending.customerPlatformFeeCents ? Number((pending.customerPlatformFeeCents / 100).toFixed(2)) : 0,
+
+                subtotal: pending.subtotal || pending.total,
+                taxAmount: pending.taxAmount || 0,
+
                 receiptEmail: customerEmail,
                 receiptSent: false,
             });
@@ -239,7 +258,7 @@ export async function handleStripeWebhook(req, res) {
                 try {
                     const emailSent = await sendReceiptEmail(order, customerEmail);
                     if (emailSent) {
-                        await Order.findOneAndUpdate({ businessId, orderId }, { receiptSent: true });
+                        await Order.findOneAndUpdate({ businessId, orderId }, { receiptSent: true, receiptSentAt: new Date() });
                     } else {
                         console.error(`[webhook] Receipt email failed for orderId=${orderId}`);
                     }

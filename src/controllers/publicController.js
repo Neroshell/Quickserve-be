@@ -63,6 +63,8 @@ export async function getPublicBusinessConfig(req, res) {
       businessType: business.businessType,
       taxRate: business.taxRate,
       passPlatformFeeToCustomer: business.passPlatformFeeToCustomer,
+      platformFeeMode: business.platformFeeMode || "business_absorbs",
+      customerPlatformFeePercent: business.customerPlatformFeePercent || 0,
       platformFeeLabel: business.platformFeeLabel,
       platformFeeRate,
       offlinePaymentsAvailable,

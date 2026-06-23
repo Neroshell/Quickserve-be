@@ -155,6 +155,22 @@ export async function createCheckoutSession(req, res) {
         const now = new Date();
         const orderId = generateOrderId(tableCode, now);
 
+        const subtotal = Number(serverTotal.toFixed(2));
+        const taxRate = business.taxRate || 0;
+        const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2));
+        const taxAmountCents = Math.round(taxAmount * 100);
+
+        if (taxAmountCents > 0) {
+            lineItems.push({
+                price_data: {
+                    currency: finalCurrency,
+                    product_data: { name: "Tax" },
+                    unit_amount: taxAmountCents,
+                },
+                quantity: 1,
+            });
+        }
+
         const pending = await PendingCheckout.create({
             businessId: businessIdToUse,
             orderId,
@@ -163,7 +179,9 @@ export async function createCheckoutSession(req, res) {
             orderType: finalOrderType,
             sessionId,
             items: enrichedItems,
-            total: Number(serverTotal.toFixed(2)),
+            subtotal,
+            taxAmount,
+            total: subtotal + taxAmount, // This will be updated again below with customerPlatformFeeFloat
             currency: finalCurrency.toUpperCase(),
             receiptEmail: receiptEmail || null,
         });
@@ -171,6 +189,24 @@ export async function createCheckoutSession(req, res) {
         // --- Compute platform fee (plan-based rate) ---
         const totalInCents = Math.round(serverTotal * 100);
         const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOnlineCommission(totalInCents, business.plan);
+
+        // --- Platform Fee Split logic ---
+        let mode = business.platformFeeMode || (business.passPlatformFeeToCustomer ? "customer_pays" : "business_absorbs");
+        let percent = mode === "split" ? (business.customerPlatformFeePercent || 0) : (mode === "customer_pays" ? 100 : 0);
+
+        const customerPlatformFeeCents = Math.round(commissionAmountCents * percent / 100);
+        const businessAbsorbedPlatformFeeCents = commissionAmountCents - customerPlatformFeeCents;
+
+        if (customerPlatformFeeCents > 0) {
+            lineItems.push({
+                price_data: {
+                    currency: finalCurrency,
+                    product_data: { name: business.platformFeeLabel || "Platform Fee" },
+                    unit_amount: customerPlatformFeeCents,
+                },
+                quantity: 1,
+            });
+        }
 
         // --- Create Stripe Checkout Session (Connect destination charge) ---
         const stripeSessionConfig = {
@@ -206,15 +242,22 @@ export async function createCheckoutSession(req, res) {
 
         console.log(`[checkout] Stripe session created — sessionId=${stripeSession.id}`);
 
-        // Save Stripe session ID + full split metadata on the pending record
         pending.stripeSessionId          = stripeSession.id;
         pending.stripePaymentIntentId    = stripeSession.payment_intent || null;
         pending.stripeConnectedAccountId = business.stripeAccountId;
         pending.commissionAmountCents    = commissionAmountCents;
         pending.commissionRateApplied    = commissionRateApplied;
         pending.planApplied              = planApplied;
-        pending.grossAmount              = totalInCents;
-        pending.netToBusinessAmount      = totalInCents - commissionAmountCents;
+        
+        pending.platformFeeCents                 = commissionAmountCents;
+        pending.customerPlatformFeeCents         = customerPlatformFeeCents;
+        pending.businessAbsorbedPlatformFeeCents = businessAbsorbedPlatformFeeCents;
+        pending.platformFeeMode                  = mode;
+        pending.customerPlatformFeePercent       = percent;
+
+        pending.grossAmount              = totalInCents + taxAmountCents + customerPlatformFeeCents;
+        pending.netToBusinessAmount      = totalInCents + taxAmountCents - businessAbsorbedPlatformFeeCents;
+        pending.total                    = subtotal + taxAmount + Number((customerPlatformFeeCents / 100).toFixed(2));
         await pending.save();
 
         return res.status(201).json({

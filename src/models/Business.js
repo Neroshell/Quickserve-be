@@ -100,6 +100,8 @@ const BusinessSchema = new mongoose.Schema({
     nextBillingDate: { type: Date },
     
     passPlatformFeeToCustomer: { type: Boolean, default: false },
+    platformFeeMode: { type: String, enum: ["business_absorbs", "customer_pays", "split"], default: "business_absorbs" },
+    customerPlatformFeePercent: { type: Number, default: 0, min: 0, max: 100 },
     platformFeeLabel: { type: String, default: "Platform Fee" },
     
     // Stripe Payment Method (Safe display metadata only)
