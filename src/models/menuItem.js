@@ -4,6 +4,16 @@ const MenuItemSchema = new mongoose.Schema({
     businessId: { type: String, required: true, index: true },
     name: { type: String, required: true, maxlength: 30 },
     price: { type: Number, required: true },
+    prepTimeMinutes: {
+        type: Number,
+        required: true,
+        min: 1,
+        default: 10,
+        validate: {
+            validator: Number.isInteger,
+            message: "Preparation time must be a whole number of minutes"
+        }
+    },
     category: {
         type: String, // UI display category: "appetizers", "mains", "desserts", "beverages"
         required: true,

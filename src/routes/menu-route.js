@@ -70,6 +70,7 @@ router.get("/", getMenuItems)
  *               - businessId
  *               - name
  *               - price
+ *               - prepTimeMinutes
  *               - category
  *               - type
  *             properties:
@@ -79,6 +80,10 @@ router.get("/", getMenuItems)
  *                 type: string
  *               price:
  *                 type: number
+ *               prepTimeMinutes:
+ *                 type: integer
+ *                 minimum: 1
+ *                 description: Estimated preparation time in whole minutes
  *               category:
  *                 type: string
  *               type:
@@ -116,6 +121,10 @@ router.post("/", requireManager, createMenuItem)
  *                 type: string
  *               price:
  *                 type: number
+ *               prepTimeMinutes:
+ *                 type: integer
+ *                 minimum: 1
+ *                 description: Estimated preparation time in whole minutes
  *               description:
  *                 type: string
  *               isAvailable:

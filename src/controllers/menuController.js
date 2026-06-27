@@ -12,6 +12,12 @@ function resolveBusinessId(req) {
     )
 }
 
+function normalizePrepTimeMinutes(value) {
+    const minutes = Number(value)
+    if (!Number.isInteger(minutes) || minutes < 1) return null
+    return minutes
+}
+
 // GET /menu-items?businessId=...
 export async function getMenuItems(req, res) {
     try {
@@ -34,10 +40,15 @@ export async function getMenuItems(req, res) {
 export async function createMenuItem(req, res) {
     try {
         const businessId = resolveBusinessId(req)
-        const { name, price, category, type, description, imageUrl, isAvailable, trackStock, stockQuantity, lowStockThreshold } = req.body
+        const { name, price, prepTimeMinutes, category, type, description, imageUrl, isAvailable, trackStock, stockQuantity, lowStockThreshold } = req.body
 
-        if (!businessId || !name || price === undefined || !category || !type) {
-            return res.status(400).json({ error: "Missing required fields (businessId, name, price, category, type)" })
+        if (!businessId || !name || price === undefined || prepTimeMinutes === undefined || !category || !type) {
+            return res.status(400).json({ error: "Missing required fields (businessId, name, price, prepTimeMinutes, category, type)" })
+        }
+
+        const normalizedPrepTimeMinutes = normalizePrepTimeMinutes(prepTimeMinutes)
+        if (normalizedPrepTimeMinutes === null) {
+            return res.status(400).json({ error: "Preparation time must be a whole number of minutes." })
         }
 
         // Validate description word count
@@ -52,6 +63,7 @@ export async function createMenuItem(req, res) {
             businessId,
             name,
             price,
+            prepTimeMinutes: normalizedPrepTimeMinutes,
             category,
             type,
             description,
@@ -89,9 +101,17 @@ export async function updateMenuItem(req, res) {
             }
         }
 
+        if (req.body.prepTimeMinutes !== undefined) {
+            const normalizedPrepTimeMinutes = normalizePrepTimeMinutes(req.body.prepTimeMinutes)
+            if (normalizedPrepTimeMinutes === null) {
+                return res.status(400).json({ error: "Preparation time must be a whole number of minutes." })
+            }
+            req.body.prepTimeMinutes = normalizedPrepTimeMinutes
+        }
+
         // Whitelist updatable fields — never $set raw req.body (prevents moving the
         // item to another businessId or writing arbitrary fields).
-        const ALLOWED_FIELDS = ["name", "price", "category", "type", "description", "imageUrl", "imagePublicId", "isAvailable", "trackStock", "stockQuantity", "lowStockThreshold"]
+        const ALLOWED_FIELDS = ["name", "price", "prepTimeMinutes", "category", "type", "description", "imageUrl", "imagePublicId", "isAvailable", "trackStock", "stockQuantity", "lowStockThreshold"]
         const updates = {}
         for (const field of ALLOWED_FIELDS) {
             if (req.body[field] !== undefined) updates[field] = req.body[field]
