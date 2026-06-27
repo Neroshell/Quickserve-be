@@ -34,7 +34,7 @@ export async function getMenuItems(req, res) {
 export async function createMenuItem(req, res) {
     try {
         const businessId = resolveBusinessId(req)
-        const { name, price, category, type, description, imageUrl, isAvailable } = req.body
+        const { name, price, category, type, description, imageUrl, isAvailable, trackStock, stockQuantity, lowStockThreshold } = req.body
 
         if (!businessId || !name || price === undefined || !category || !type) {
             return res.status(400).json({ error: "Missing required fields (businessId, name, price, category, type)" })
@@ -56,7 +56,10 @@ export async function createMenuItem(req, res) {
             type,
             description,
             imageUrl,
-            isAvailable: isAvailable !== undefined ? isAvailable : true
+            isAvailable: isAvailable !== undefined ? isAvailable : true,
+            trackStock: trackStock !== undefined ? trackStock : false,
+            stockQuantity: stockQuantity !== undefined ? stockQuantity : null,
+            lowStockThreshold: lowStockThreshold !== undefined ? lowStockThreshold : 5
         })
 
         await newItem.save()
@@ -88,7 +91,7 @@ export async function updateMenuItem(req, res) {
 
         // Whitelist updatable fields — never $set raw req.body (prevents moving the
         // item to another businessId or writing arbitrary fields).
-        const ALLOWED_FIELDS = ["name", "price", "category", "type", "description", "imageUrl", "imagePublicId", "isAvailable"]
+        const ALLOWED_FIELDS = ["name", "price", "category", "type", "description", "imageUrl", "imagePublicId", "isAvailable", "trackStock", "stockQuantity", "lowStockThreshold"]
         const updates = {}
         for (const field of ALLOWED_FIELDS) {
             if (req.body[field] !== undefined) updates[field] = req.body[field]

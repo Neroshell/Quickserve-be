@@ -4,11 +4,13 @@ import Business from "../models/Business.js";
 import Order from "../models/order.js";
 import ServicePoint from "../models/ServicePoint.js";
 import Plan from "../models/Plan.js";
+import MenuItem from "../models/menuItem.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
 import { publishEvent } from "../utils/sseManager.js";
 import { sendReceiptEmail } from "../utils/emailService.js";
 import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js";
+import { deductTrackedStock } from "../services/inventoryService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -284,6 +286,20 @@ export async function handleStripeWebhook(req, res) {
             }
 
             await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO });
+        }
+
+        // Deduct stock for tracked items using shared helper
+        if (!order.inventoryDeducted) {
+            try {
+                const anyDeducted = await deductTrackedStock(order);
+                if (anyDeducted) {
+                    order.inventoryDeducted = true;
+                    order.inventoryDeductedAt = new Date();
+                    await order.save();
+                }
+            } catch (err) {
+                console.error(`[Inventory][Online] Failed to deduct stock for order ${orderId}:`, err);
+            }
         }
 
         await PendingCheckout.findByIdAndDelete(pendingCheckoutId);

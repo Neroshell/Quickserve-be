@@ -1,5 +1,5 @@
 import express from "express"
-import { waiterOrders, createWaiterOrder } from "../controllers/waiterOrdersController.js"
+import { waiterOrders, createWaiterOrder, cancelWaiterOrder } from "../controllers/waiterOrdersController.js"
 import { updateOrderStatus } from "../controllers/kitchenController.js"
 import { markPaid } from "../controllers/orderController.js"
 import {
@@ -188,6 +188,27 @@ router.patch("/orders/:orderId/status", updateOrderStatus)
  *         description: Order marked as paid
  */
 router.patch("/orders/:orderId/mark-paid", markPaid)
+
+/**
+ * @openapi
+ * /waiter/orders/{orderId}/cancel:
+ *   post:
+ *     summary: Cancel an offline order before preparation begins
+ *     tags:
+ *       - Waiter
+ *     parameters:
+ *       - in: path
+ *         name: orderId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Order cancelled successfully
+ *       400:
+ *         description: Cannot cancel order (already started, online payment, etc)
+ */
+router.post("/orders/:orderId/cancel", cancelWaiterOrder)
 
 /**
  * @openapi

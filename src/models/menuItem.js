@@ -18,7 +18,10 @@ const MenuItemSchema = new mongoose.Schema({
     description: { type: String, default: "" },
     imageUrl: { type: String, default: "" },
     imagePublicId: { type: String, default: "" },
-    isAvailable: { type: Boolean, default: true }
+    isAvailable: { type: Boolean, default: true },
+    trackStock: { type: Boolean, default: false },
+    stockQuantity: { type: Number, default: null },
+    lowStockThreshold: { type: Number, default: 5 }
 }, { timestamps: true })
 
 export default mongoose.models.MenuItem || mongoose.model("MenuItem", MenuItemSchema)

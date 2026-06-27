@@ -10,6 +10,7 @@ import mongoose from "mongoose"
 
 const PendingItemSchema = new mongoose.Schema(
     {
+        menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: false },
         itemName: { type: String, required: true },
         quantity: { type: Number, required: true, min: 1 },
         lineTotal: { type: Number, required: true },

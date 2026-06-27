@@ -3,6 +3,7 @@ import TableSession from "../models/TableSession.js"
 import PendingCheckout from "../models/PendingCheckout.js"
 import { generateOrderId } from "../utils/orderId.js"
 import MenuItem from "../models/menuItem.js"
+import { validateTrackedStock, deductTrackedStock } from "../services/inventoryService.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { sendReceiptEmail } from "../utils/emailService.js"
@@ -180,6 +181,15 @@ export async function createOrder(req, res) {
     const now = new Date()
     const orderId = generateOrderId(tableCode, now)
 
+    // Pre-validate stock before calculating prices
+    const stockFailures = await validateTrackedStock(items, businessId)
+    if (stockFailures.length > 0) {
+      return res.status(400).json({
+        message: "Some items are no longer available in the requested quantity.",
+        items: stockFailures,
+      })
+    }
+
     // Enrich items with category and unitPrice from DB (authoritative)
     let calculatedTotal = 0
     const enrichedItems = await Promise.all(
@@ -188,6 +198,7 @@ export async function createOrder(req, res) {
         if (!menuItem) {
           throw new Error(`Menu item '${item.itemName}' is no longer available.`)
         }
+
         // Authoritative from DB, strictly ignoring client price
         const unitPrice = menuItem.price || 0
         const itemType = menuItem.type || (item.orderCategory === "drinks" ? "drinks" : "food")
@@ -267,6 +278,16 @@ export async function createOrder(req, res) {
       orderSource: isWaiter ? "waitstaff" : "self",
     })
 
+    // --- Offline Inventory Deduction ---
+    try {
+      await deductTrackedStock(saved)
+      saved.inventoryDeducted = true
+      await saved.save()
+    } catch (err) {
+      console.error("[createOrder] Failed to deduct stock:", err)
+      // We don't fail the order if deduction fails, we just don't mark it deducted.
+    }
+
     const orderDTO = toOrderDTO(saved)
 
     // --- SSE via Redis pub/sub ---
@@ -291,9 +312,6 @@ export async function createOrder(req, res) {
     return res.status(201).json({ orderId: saved.orderId, businessId: saved.businessId, status: saved.status })
   } catch (err) {
     console.error("Create order error:", err)
-    if (err.message && err.message.includes("is no longer available")) {
-      return res.status(400).json({ error: err.message })
-    }
     return res.status(500).json({ message: "Server error" })
   }
 }

@@ -6,6 +6,7 @@ import MenuItem from "../models/menuItem.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { calculateOnlineCommission } from "../utils/platformFee.js";
+import { validateTrackedStock } from "../services/inventoryService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
@@ -115,6 +116,7 @@ export async function createCheckoutSession(req, res) {
             });
 
             enrichedItems.push({
+                menuItemId: menuItem._id,
                 itemName: menuItem.name,
                 quantity: qty,
                 lineTotal: Number((price * qty).toFixed(2)),
@@ -122,6 +124,15 @@ export async function createCheckoutSession(req, res) {
                 category: menuItem.category || "mains",
                 notes: item.notes || "",
                 allergies: item.allergies || [],
+            });
+        }
+
+        // --- Validate stock before touching Stripe or PendingCheckout ---
+        const stockFailures = await validateTrackedStock(enrichedItems, businessIdToUse);
+        if (stockFailures.length > 0) {
+            return res.status(400).json({
+                message: "Some items are no longer available in the requested quantity.",
+                items: stockFailures,
             });
         }
 

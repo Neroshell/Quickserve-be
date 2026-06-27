@@ -2,6 +2,7 @@ import mongoose from "mongoose"
 
 const OrderItemSchema = new mongoose.Schema(
   {
+    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: false },
     itemName: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
 
@@ -30,7 +31,7 @@ const OrderSchema = new mongoose.Schema(
     tableLabel: { type: String, default: "" }, // human-friendly display label, e.g. "Table 12"
     orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in", index: true },
     sessionId: { type: String, index: true },
-    status: { type: String, enum: ["placed", "in_progress", "ready", "completed"], default: "placed", index: true },
+    status: { type: String, enum: ["placed", "in_progress", "ready", "completed", "cancelled"], default: "placed", index: true },
     items: { type: [OrderItemSchema], required: true },
     subtotal: { type: Number, default: 0 },
     taxAmount: { type: Number, default: 0 },
@@ -111,6 +112,16 @@ const OrderSchema = new mongoose.Schema(
     customerPlatformFeePercent: { type: Number, default: 0 },
     
     stripeUsageReportedAt:   { type: Date, default: null },
+    
+    // Inventory Tracking
+    inventoryDeducted: { type: Boolean, default: false },
+    inventoryDeductedAt: { type: Date, default: null },
+    inventoryRestored: { type: Boolean, default: false },
+    inventoryRestoredAt: { type: Date, default: null },
+
+    // Cancellation
+    cancelledAt: { type: Date, default: null },
+    cancelledByStaffId: { type: String, default: null, index: true },
     
     // Customer Feedback
     feedbackSubmitted: { type: Boolean, default: false },

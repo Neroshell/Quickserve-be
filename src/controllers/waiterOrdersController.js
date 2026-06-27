@@ -9,6 +9,7 @@ import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
 import { calculateOfflineCommission } from "../utils/platformFee.js"
+import { validateTrackedStock, deductTrackedStock, restoreTrackedStock } from "../services/inventoryService.js"
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -223,6 +224,15 @@ export async function createWaiterOrder(req, res) {
     const now = new Date()
     const orderId = generateOrderId(tableCode, now)
 
+    // Pre-validate stock before calculating prices
+    const stockFailures = await validateTrackedStock(items, businessId)
+    if (stockFailures.length > 0) {
+      return res.status(400).json({
+        message: "Some items are no longer available in the requested quantity.",
+        items: stockFailures,
+      })
+    }
+
     let calculatedTotal = 0
     const enrichedItems = await Promise.all(
       items.map(async (item) => {
@@ -306,6 +316,16 @@ export async function createWaiterOrder(req, res) {
       createdByStaffId: staffId
     })
 
+    // --- Offline Inventory Deduction ---
+    try {
+      await deductTrackedStock(saved)
+      saved.inventoryDeducted = true
+      await saved.save()
+    } catch (err) {
+      console.error("[createWaiterOrder] Failed to deduct stock:", err)
+      // We don't fail the order if deduction fails, we just don't mark it deducted.
+    }
+
     const orderDTO = toOrderDTO(saved)
 
     const foodItems = saved.items.filter(i => i.type === "food")
@@ -326,9 +346,62 @@ export async function createWaiterOrder(req, res) {
     return res.status(201).json({ orderId: saved.orderId, businessId: saved.businessId, status: saved.status })
   } catch (err) {
     console.error("Create waiter order error:", err)
-    if (err.message && err.message.includes("is no longer available")) {
-      return res.status(400).json({ error: err.message })
+    return res.status(500).json({ message: "Server error" })
+  }
+}
+
+export async function cancelWaiterOrder(req, res) {
+  try {
+    const businessId = req.session?.user?.businessId
+    const staffId = req.session?.user?.staffId || req.session?.user?.id
+    const { orderId } = req.params
+
+    if (!businessId) {
+      return res.status(401).json({ error: "Unauthorized" })
     }
+
+    const order = await Order.findOne({ orderId, businessId })
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" })
+    }
+
+    if (order.paymentChannel !== "offline") {
+      return res.status(400).json({ error: "Only offline orders can be cancelled directly by staff." })
+    }
+
+    if (order.status !== "placed") {
+      return res.status(400).json({ error: "Order has already started preparation and cannot be cancelled." })
+    }
+
+    if (order.status === "cancelled") {
+      return res.status(400).json({ error: "Order is already cancelled." })
+    }
+
+    order.status = "cancelled"
+    order.cancelledAt = new Date()
+    order.cancelledByStaffId = staffId
+
+    // Restore inventory only if it was actually deducted
+    if (order.inventoryDeducted && !order.inventoryRestored) {
+      try {
+        await restoreTrackedStock(order)
+        order.inventoryRestored = true
+        order.inventoryRestoredAt = new Date()
+      } catch (err) {
+        console.error(`[cancelWaiterOrder] Failed to restore inventory for order ${orderId}:`, err)
+        // We still save the order as cancelled, even if inventory restore fails, 
+        // to prevent blocking the business operation.
+      }
+    }
+
+    await order.save()
+
+    const orderDTO = toOrderDTO(order)
+    await publishEvent("order_updated", businessId, ["waiter", "kitchen", "bar", "table"], { order: orderDTO })
+
+    return res.json({ success: true, orderId: order.orderId, status: order.status })
+  } catch (err) {
+    console.error("[cancelWaiterOrder] Error:", err)
     return res.status(500).json({ message: "Server error" })
   }
 }
