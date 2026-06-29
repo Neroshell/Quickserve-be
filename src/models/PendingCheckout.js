@@ -14,6 +14,7 @@ const PendingItemSchema = new mongoose.Schema(
         itemName: { type: String, required: true },
         quantity: { type: Number, required: true, min: 1 },
         lineTotal: { type: Number, required: true },
+        prepTimeMinutes: { type: Number, default: null },
         category: { type: String, default: "mains" },
         type: { type: String, enum: ["food", "drinks"], default: "food" },
         notes: { type: String, default: "" },

@@ -11,6 +11,7 @@ import { publishEvent } from "../utils/sseManager.js";
 import { sendReceiptEmail } from "../utils/emailService.js";
 import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js";
 import { deductTrackedStock } from "../services/inventoryService.js";
+import { buildOrderEstimate } from "../utils/orderEstimate.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -169,6 +170,20 @@ export async function handleStripeWebhook(req, res) {
                 updated = true;
             }
 
+            const readyMs = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : NaN;
+            const createdMs = order.createdAt ? new Date(order.createdAt).getTime() : NaN;
+            const estimateExpiredOrInvalid =
+                !Number.isFinite(readyMs) ||
+                readyMs <= Date.now() ||
+                (Number.isFinite(createdMs) && readyMs <= createdMs);
+
+            if (estimateExpiredOrInvalid) {
+                const estimate = buildOrderEstimate(order.items?.length ? order.items : pending.items, new Date());
+                order.estimatedPrepMinutes = estimate.estimatedPrepMinutes;
+                order.estimatedReadyAt = estimate.estimatedReadyAt;
+                updated = true;
+            }
+
             // Re-attempt receipt email if not yet sent
             const customerEmail = pending.receiptEmail || session.customer_details?.email || order.receiptEmail || null;
             if (customerEmail && !order.receiptSent) {
@@ -201,6 +216,9 @@ export async function handleStripeWebhook(req, res) {
         } else {
             const hasFood = pending.items.some((i) => i.category === "food" || i.type === "food");
             const initialStatus = hasFood ? "placed" : "ready";
+            // Match offline order creation: the ETA starts when the real Order is created.
+            const orderCreatedAt = new Date();
+            const estimate = buildOrderEstimate(pending.items, orderCreatedAt);
             // For a brand new order, there's no existing order.receiptEmail to fall back on yet
             const customerEmail = pending.receiptEmail || session.customer_details?.email || null;
 
@@ -221,6 +239,9 @@ export async function handleStripeWebhook(req, res) {
                 sessionId: pending.sessionId,
                 items: pending.items,
                 status: initialStatus,
+                createdAt: orderCreatedAt,
+                estimatedPrepMinutes: estimate.estimatedPrepMinutes,
+                estimatedReadyAt: estimate.estimatedReadyAt,
                 total: pending.total,
                 currency: pending.currency,
                 paymentChannel: "online",

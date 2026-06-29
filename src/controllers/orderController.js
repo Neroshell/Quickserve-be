@@ -14,6 +14,7 @@ import { isBusinessOpen } from "../utils/operatingHours.js"
 import { calculateOfflineCommission } from "../utils/platformFee.js"
 import CustomerConsent from "../models/CustomerConsent.js"
 import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js"
+import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
 
 function canUseOfflinePayments(business) {
   return business.billingStatus === "active" && !!business.defaultPaymentMethodId
@@ -212,6 +213,7 @@ export async function createOrder(req, res) {
           itemName: item.itemName,
           quantity: item.quantity,
           lineTotal: itemLineTotal,
+          prepTimeMinutes: getItemPrepTimeMinutes(menuItem),
           type: itemType,
           category: displayCategory,
           notes: item.notes || "",
@@ -249,6 +251,8 @@ export async function createOrder(req, res) {
 
     const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat).toFixed(2))
 
+    const estimate = buildOrderEstimate(enrichedItems, now)
+
     const saved = await Order.create({
       orderId,
       businessId,
@@ -258,6 +262,8 @@ export async function createOrder(req, res) {
       sessionId,
       items: enrichedItems,
       status: initialStatus,
+      estimatedPrepMinutes: estimate.estimatedPrepMinutes,
+      estimatedReadyAt: estimate.estimatedReadyAt,
       subtotal,
       taxAmount,
       platformFeeTotal: customerPlatformFeeFloat,

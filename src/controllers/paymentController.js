@@ -7,6 +7,7 @@ import ServicePoint from "../models/ServicePoint.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { calculateOnlineCommission } from "../utils/platformFee.js";
 import { validateTrackedStock } from "../services/inventoryService.js";
+import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
@@ -120,6 +121,7 @@ export async function createCheckoutSession(req, res) {
                 itemName: menuItem.name,
                 quantity: qty,
                 lineTotal: Number((price * qty).toFixed(2)),
+                prepTimeMinutes: getItemPrepTimeMinutes(menuItem),
                 type: menuItem.type || (item.orderCategory === "drinks" ? "drinks" : "food"),
                 category: menuItem.category || "mains",
                 notes: item.notes || "",

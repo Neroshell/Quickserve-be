@@ -10,6 +10,7 @@ import { publishEvent } from "../utils/sseManager.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
 import { calculateOfflineCommission } from "../utils/platformFee.js"
 import { validateTrackedStock, deductTrackedStock, restoreTrackedStock } from "../services/inventoryService.js"
+import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -253,6 +254,7 @@ export async function createWaiterOrder(req, res) {
           itemName: item.itemName,
           quantity: item.quantity,
           lineTotal: itemLineTotal,
+          prepTimeMinutes: getItemPrepTimeMinutes(menuItem),
           type: itemType,
           category: displayCategory,
           notes: item.notes || "",
@@ -286,6 +288,8 @@ export async function createWaiterOrder(req, res) {
 
     const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat).toFixed(2))
 
+    const estimate = buildOrderEstimate(enrichedItems, now)
+
     const saved = await Order.create({
       orderId,
       businessId,
@@ -295,6 +299,8 @@ export async function createWaiterOrder(req, res) {
       sessionId: `waiter_${staffId}_${Date.now()}`,
       items: enrichedItems,
       status: initialStatus,
+      estimatedPrepMinutes: estimate.estimatedPrepMinutes,
+      estimatedReadyAt: estimate.estimatedReadyAt,
       subtotal,
       taxAmount,
       platformFeeTotal: customerPlatformFeeFloat,

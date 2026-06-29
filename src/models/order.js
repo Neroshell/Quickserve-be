@@ -18,6 +18,7 @@ const OrderItemSchema = new mongoose.Schema(
     notes: { type: String, default: "" },
     image: { type: String, default: "" },
     lineTotal: { type: Number, required: true },
+    prepTimeMinutes: { type: Number, default: null },
     allergies: { type: [String], default: [] },
   },
   { _id: false }
@@ -60,6 +61,8 @@ const OrderSchema = new mongoose.Schema(
 
     readyAt: { type: Date, default: null, index: true },
     completedAt: { type: Date, default: null, index: true },
+    estimatedPrepMinutes: { type: Number, default: null, min: 0 },
+    estimatedReadyAt: { type: Date, default: null, index: true },
 
     // Stripe fields (online payments only)
     stripeSessionId: { type: String, default: null },
