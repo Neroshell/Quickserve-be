@@ -167,6 +167,10 @@ const BusinessSchema = new mongoose.Schema({
     inviteTokenExpires: { type: Date },
     passwordResetToken: { type: String, index: true, select: false },
     passwordResetExpires: { type: Date },
+    // Pending email change (verified via magic link before committing)
+    pendingEmailChange: { type: String, default: null },
+    emailChangeToken: { type: String, index: true, select: false },
+    emailChangeTokenExpires: { type: Date, default: null },
     operatingHours: { type: OperatingHoursSchema, default: () => ({}) },
     // Legacy fields for backward compatibility
     orderingPreferences: { type: OrderingPreferencesSchema, default: () => ({}) },

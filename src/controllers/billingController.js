@@ -1127,6 +1127,14 @@ async function getRevenueSummary(businessId) {
                 _id: "$paymentChannel",
                 revenue: { $sum: { $ifNull: ["$total", 0] } },
                 orders: { $sum: 1 },
+                fees: {
+                    $sum: {
+                        $ifNull: [
+                            { $divide: ["$commissionAmountCents", 100] },
+                            { $ifNull: ["$platformFeeTotal", 0] }
+                        ]
+                    }
+                }
             },
         },
     ])
@@ -1135,19 +1143,23 @@ async function getRevenueSummary(businessId) {
         onlineRevenueProcessed: 0,
         offlineRevenueProcessed: 0,
         totalOrdersProcessed: 0,
+        totalQuickServeFeesProcessed: 0,
     }
 
     for (const row of rows) {
         if (row._id === "online") summary.onlineRevenueProcessed = row.revenue || 0
         if (row._id === "offline") summary.offlineRevenueProcessed = row.revenue || 0
         summary.totalOrdersProcessed += row.orders || 0
+        summary.totalQuickServeFeesProcessed += row.fees || 0
     }
 
     const totalRevenueProcessed = summary.onlineRevenueProcessed + summary.offlineRevenueProcessed
+    const netRevenueProcessed = totalRevenueProcessed - summary.totalQuickServeFeesProcessed
 
     return {
         ...summary,
         totalRevenueProcessed,
+        netRevenueProcessed,
         averageOrderValue: summary.totalOrdersProcessed > 0
             ? totalRevenueProcessed / summary.totalOrdersProcessed
             : 0,

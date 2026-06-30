@@ -2,7 +2,7 @@ import Business from "../models/Business.js";
 import Staff from "../models/Staff.js";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
-import { sendAuthEmail } from "../utils/emailService.js";
+import { sendAuthEmail, sendEmailChangeVerification, sendEmailChangeNotification } from "../utils/emailService.js";
 import { hashToken } from "../utils/tokenHash.js";
 
 /**
@@ -489,5 +489,215 @@ export async function resetPassword(req, res) {
     } catch (err) {
         console.error("Reset password error:", err);
         return res.status(500).json({ message: "Server error resetting password" });
+    }
+}
+
+/**
+ * Change currently logged-in user's password
+ * POST /auth/change-password
+ */
+export async function changePassword(req, res) {
+    try {
+        if (!req.session || !req.session.user) {
+            return res.status(401).json({ message: "Not authenticated" });
+        }
+
+        const { currentPassword, newPassword } = req.body;
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ message: "Current password and new password are required" });
+        }
+
+        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+        if (!passwordRegex.test(newPassword)) {
+            return res.status(400).json({ message: "New password must be at least 8 characters long, and contain at least one uppercase letter, one lowercase letter, and one number." });
+        }
+
+        const { role, email } = req.session.user;
+        let user;
+        let userType = "owner";
+        
+        if (role === 'owner') {
+            user = await Business.findOne({ ownerEmail: email });
+        } else {
+            user = await Staff.findOne({ email });
+            userType = "staff";
+        }
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        const isMatch = await bcrypt.compare(currentPassword, userType === "owner" ? user.ownerPasswordHash : user.passwordHash);
+        if (!isMatch) {
+            return res.status(401).json({ message: "Incorrect current password" });
+        }
+
+        const saltRounds = 10;
+        const passwordHash = await bcrypt.hash(newPassword, saltRounds);
+
+        if (userType === "owner") {
+            user.ownerPasswordHash = passwordHash;
+        } else {
+            user.passwordHash = passwordHash;
+        }
+
+        await user.save();
+
+        return res.json({ message: "Password updated successfully" });
+    } catch (err) {
+        console.error("Change password error:", err);
+        return res.status(500).json({ message: "Server error changing password" });
+    }
+}
+
+/**
+ * Request an email change via magic link (does NOT change email immediately)
+ * POST /auth/request-email-change
+ */
+export async function changeEmail(req, res) {
+    try {
+        if (!req.session || !req.session.user) {
+            return res.status(401).json({ message: "Not authenticated" });
+        }
+
+        const { newEmail, currentPassword } = req.body;
+        if (!newEmail || !currentPassword) {
+            return res.status(400).json({ message: "New email and current password are required" });
+        }
+
+        const normalizedEmail = newEmail.trim().toLowerCase();
+
+        // Basic email format validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(normalizedEmail)) {
+            return res.status(400).json({ message: "Invalid email format" });
+        }
+
+        const { role, email: currentEmail } = req.session.user;
+
+        if (normalizedEmail === currentEmail) {
+            return res.status(400).json({ message: "New email must be different from your current email" });
+        }
+
+        // Only owners can use this flow currently
+        if (role !== 'owner') {
+            return res.status(403).json({ message: "Email change is only available for owner accounts" });
+        }
+
+        const user = await Business.findOne({ ownerEmail: currentEmail });
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        // Verify current password
+        const isMatch = await bcrypt.compare(currentPassword, user.ownerPasswordHash);
+        if (!isMatch) {
+            return res.status(401).json({ message: "Incorrect current password" });
+        }
+
+        // Check uniqueness of the requested new email
+        const existingBusiness = await Business.findOne({ ownerEmail: normalizedEmail });
+        const existingStaff = await Staff.findOne({ email: normalizedEmail });
+        if (existingBusiness || existingStaff) {
+            return res.status(400).json({ message: "Email address is already in use by another account" });
+        }
+
+        // Generate a cryptographically secure token
+        const rawToken = crypto.randomBytes(32).toString('hex');
+        const hashedToken = hashToken(rawToken);
+        const expires = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+
+        user.pendingEmailChange = normalizedEmail;
+        user.emailChangeToken = hashedToken;
+        user.emailChangeTokenExpires = expires;
+        await user.save();
+
+        // Fire-and-forget: send verification email to the NEW address
+        // The link must go to the BACKEND endpoint which verifies the token,
+        // then redirects to the frontend with success/error params.
+        const backendBase = process.env.BACKEND_BASE_URL || `${req.protocol}://${req.get('host')}`;
+        const confirmLink = `${backendBase}/auth/confirm-email-change?token=${rawToken}`;
+        sendEmailChangeVerification({
+            to: normalizedEmail,
+            userName: user.ownerName,
+            confirmLink,
+            oldEmail: currentEmail,
+            newEmail: normalizedEmail
+        }).catch(err => console.error("[changeEmail] Failed to send verification email:", err));
+
+        return res.status(202).json({ message: "Verification email sent. Please check your new inbox and click the link to confirm." });
+    } catch (err) {
+        console.error("Request email change error:", err);
+        return res.status(500).json({ message: "Server error requesting email change" });
+    }
+}
+
+/**
+ * Confirm email change via magic link token
+ * GET /auth/confirm-email-change?token=...
+ */
+export async function confirmEmailChange(req, res) {
+    try {
+        const { token } = req.query;
+        if (!token) {
+            return res.status(400).json({ message: "Token is required" });
+        }
+
+        const user = await Business.findOne({
+            emailChangeToken: hashToken(token),
+            emailChangeTokenExpires: { $gt: new Date() }
+        }).select('+emailChangeToken');
+
+        if (!user) {
+            // Redirect to a friendly error page
+            const frontendBase = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+            return res.redirect(`${frontendBase}/owner/confirm-email?error=invalid`);
+        }
+
+        const oldEmail = user.ownerEmail;
+        const newEmail = user.pendingEmailChange;
+        const userName = user.ownerName;
+
+        // Double-check uniqueness at confirmation time (race-condition safety)
+        const existingBusiness = await Business.findOne({ ownerEmail: newEmail, _id: { $ne: user._id } });
+        const existingStaff = await Staff.findOne({ email: newEmail });
+        if (existingBusiness || existingStaff) {
+            user.pendingEmailChange = null;
+            user.emailChangeToken = undefined;
+            user.emailChangeTokenExpires = undefined;
+            await user.save();
+            const frontendBase = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+            return res.redirect(`${frontendBase}/owner/confirm-email?error=taken`);
+        }
+
+        // Commit the email change
+        user.ownerEmail = newEmail;
+        user.pendingEmailChange = null;
+        user.emailChangeToken = undefined;
+        user.emailChangeTokenExpires = undefined;
+        await user.save();
+
+        // Update active session if the owner is logged in on this device
+        if (req.session?.user?.email === oldEmail) {
+            req.session.user.email = newEmail;
+            req.session.save((err) => {
+                if (err) console.error("[confirmEmailChange] Session save error:", err);
+            });
+        }
+
+        // Fire-and-forget: notify old email of the change
+        sendEmailChangeNotification({
+            to: oldEmail,
+            userName,
+            oldEmail,
+            newEmail
+        }).catch(err => console.error("[confirmEmailChange] Failed to send notification email:", err));
+
+        const frontendBase = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+        return res.redirect(`${frontendBase}/owner/confirm-email?success=true`);
+    } catch (err) {
+        console.error("Confirm email change error:", err);
+        const frontendBase = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+        return res.redirect(`${frontendBase}/owner/confirm-email?error=server`);
     }
 }

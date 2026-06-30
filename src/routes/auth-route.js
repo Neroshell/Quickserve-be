@@ -1,12 +1,12 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { validateInviteToken, setupOwnerPassword, loginUser, getMe, requestPasswordReset, resetPassword } from "../controllers/authController.js";
+import { validateInviteToken, setupOwnerPassword, loginUser, getMe, requestPasswordReset, resetPassword, changePassword, changeEmail, confirmEmailChange } from "../controllers/authController.js";
 
 const router = express.Router();
 
 // Strict rate limiter for sensitive auth endpoints
 const authLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 15-minute window
+  windowMs: 5 * 60 * 1000, // 15-minute window
   max: 5, // Max 5 attempts per IP per window
   message: { message: "Too many attempts. Please try again in 15 minutes." },
   standardHeaders: true,
@@ -252,5 +252,35 @@ router.post("/forgot-password", authLimiter, requestPasswordReset);
  *         description: Invalid or expired token
  */
 router.post("/reset-password", authLimiter, resetPassword);
+
+/**
+ * @openapi
+ * /auth/change-password:
+ *   post:
+ *     summary: Change password for currently authenticated user
+ *     tags:
+ *       - Auth
+ */
+router.post("/change-password", authLimiter, changePassword);
+
+/**
+ * @openapi
+ * /auth/request-email-change:
+ *   post:
+ *     summary: Request email change — sends verification link to new address
+ *     tags:
+ *       - Auth
+ */
+router.post("/request-email-change", authLimiter, changeEmail);
+
+/**
+ * @openapi
+ * /auth/confirm-email-change:
+ *   get:
+ *     summary: Confirm email change via magic link token (redirects to frontend)
+ *     tags:
+ *       - Auth
+ */
+router.get("/confirm-email-change", confirmEmailChange);
 
 export default router;

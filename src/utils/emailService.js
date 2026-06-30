@@ -9,6 +9,7 @@ import ReservationRequestEmail from "../../emails/ReservationRequestEmail.js";
 import ReservationRequestReceivedEmail from "../../emails/ReservationRequestReceivedEmail.js";
 import ReservationConfirmedEmail from "../../emails/ReservationConfirmedEmail.js";
 import ReservationCancelledEmail from "../../emails/ReservationCancelledEmail.js";
+import EmailChangeEmail from "../../emails/EmailChangeEmail.js";
 import Business from "../models/Business.js";
 
 dotenv.config();
@@ -194,6 +195,35 @@ export async function sendReservationCancelledEmail({ to, businessName, business
     return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
   } catch (error) {
     console.error("[EmailService]  Error in sendReservationCancelledEmail:", error);
+    return false;
+  }
+}
+/**
+ * Send email change verification link to the new email address.
+ */
+export async function sendEmailChangeVerification({ to, userName, confirmLink, oldEmail, newEmail }) {
+  try {
+    const html = await render(React.createElement(EmailChangeEmail, { mode: "verify", userName, confirmLink, oldEmail, newEmail }));
+    const subject = "Confirm your new QuickServe login email";
+    const from = process.env.EMAIL_FROM_AUTH || "QuickServe Auth <auth@quickservehq.com>";
+    return await sendEmail({ to, subject, html, from });
+  } catch (error) {
+    console.error("[EmailService] Error in sendEmailChangeVerification:", error);
+    return false;
+  }
+}
+
+/**
+ * Send security notification to the old email after a successful email change.
+ */
+export async function sendEmailChangeNotification({ to, userName, oldEmail, newEmail }) {
+  try {
+    const html = await render(React.createElement(EmailChangeEmail, { mode: "notify", userName, oldEmail, newEmail }));
+    const subject = "Your QuickServe login email has been changed";
+    const from = process.env.EMAIL_FROM_AUTH || "QuickServe Auth <auth@quickservehq.com>";
+    return await sendEmail({ to, subject, html, from });
+  } catch (error) {
+    console.error("[EmailService] Error in sendEmailChangeNotification:", error);
     return false;
   }
 }
