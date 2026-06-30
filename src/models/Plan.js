@@ -13,6 +13,15 @@ const PlanSchema = new mongoose.Schema({
         unique: true,
         trim: true
     },
+
+
+
+
+
+
+
+
+
     commissionPercentage: {
         type: Number,
         required: true,

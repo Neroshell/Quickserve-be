@@ -164,3 +164,88 @@ export async function getStripeDashboardLink(req, res) {
     return res.status(500).json({ error: err.message || "Failed to create Stripe dashboard link" })
   }
 }
+function sumBalanceByCurrency(rows = []) {
+  const totals = new Map()
+
+  for (const row of rows) {
+    const currency = (row.currency || "eur").toUpperCase()
+    totals.set(currency, (totals.get(currency) || 0) + (Number(row.amount) || 0))
+  }
+
+  return Array.from(totals.entries()).map(([currency, amount]) => ({
+    currency,
+    amount,
+    amountMajor: amount / 100,
+  }))
+}
+
+function formatStripePayout(payout) {
+  return {
+    id: payout.id,
+    amount: payout.amount,
+    amountMajor: (Number(payout.amount) || 0) / 100,
+    currency: (payout.currency || "eur").toUpperCase(),
+    status: payout.status,
+    arrivalDate: payout.arrival_date ? new Date(payout.arrival_date * 1000) : null,
+    createdAt: payout.created ? new Date(payout.created * 1000) : null,
+    method: payout.method || null,
+    type: payout.type || null,
+  }
+}
+
+/**
+ * GET /owner/stripe/payout-summary
+ *
+ * Returns real Stripe Connect balance and payout information for the linked
+ * Express account.
+ */
+export async function getPayoutSummary(req, res) {
+  try {
+    const businessId = req.session?.user?.businessId
+    if (!businessId) {
+      return res.status(401).json({ error: "Unauthorized" })
+    }
+
+    const business = await Business.findOne({
+      $or: [{ businessId }, { restaurantId: businessId }],
+    }).lean()
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+
+    if (!business.stripeAccountId) {
+      return res.json({
+        connected: false,
+        payoutsEnabled: false,
+        availableBalance: [],
+        pendingBalance: [],
+        nextPayout: null,
+        recentPayouts: [],
+      })
+    }
+
+    const [balance, payoutList] = await Promise.all([
+      stripe.balance.retrieve({ stripeAccount: business.stripeAccountId }),
+      stripe.payouts.list(
+        { limit: 10 },
+        { stripeAccount: business.stripeAccountId }
+      ),
+    ])
+
+    const recentPayouts = payoutList.data.map(formatStripePayout)
+    const nextPayout =
+      recentPayouts.find((payout) => ["pending", "in_transit"].includes(payout.status)) || null
+
+    return res.json({
+      connected: true,
+      payoutsEnabled: business.stripePayoutsEnabled === true,
+      availableBalance: sumBalanceByCurrency(balance.available),
+      pendingBalance: sumBalanceByCurrency(balance.pending),
+      nextPayout,
+      recentPayouts: recentPayouts.slice(0, 5),
+    })
+  } catch (err) {
+    console.error("[getPayoutSummary] Error:", err)
+    return res.status(500).json({ error: err.message || "Failed to retrieve payout summary" })
+  }
+}

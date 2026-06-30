@@ -63,7 +63,7 @@ const BusinessSchema = new mongoose.Schema({
     logoUrl: { type: String, default: "" },
     logoPublicId: { type: String, default: "" },
 
-    // Stripe Connect — linked Express account for this business
+    // Stripe Connect â€” linked Express account for this business
     stripeAccountId: { type: String, default: null },
     stripeOnboardingComplete: { type: Boolean, default: false },
     stripeChargesEnabled: { type: Boolean, default: false },
@@ -97,7 +97,10 @@ const BusinessSchema = new mongoose.Schema({
     planId: { type: mongoose.Schema.Types.ObjectId, ref: "Plan", default: null },
     planActivatedAt: { type: Date },
     billingCycle: { type: String, enum: ['monthly'], default: 'monthly' },
-    nextBillingDate: { type: Date },
+    nextBillingDate: { type: Date }, // Backward-compatible alias for nextInvoiceDate
+    currentPeriodStart: { type: Date, default: null },
+    currentPeriodEnd: { type: Date, default: null },
+    nextInvoiceDate: { type: Date, default: null },
     
     passPlatformFeeToCustomer: { type: Boolean, default: false },
     platformFeeMode: { type: String, enum: ["business_absorbs", "customer_pays", "split"], default: "business_absorbs" },
@@ -171,5 +174,5 @@ const BusinessSchema = new mongoose.Schema({
     tablePreferences: { type: TablePreferencesSchema, default: () => ({}) }
 }, { timestamps: true })
 
-// Explicitly bind to the existing "restaurants" collection — no data migration needed
+// Explicitly bind to the existing "restaurants" collection â€” no data migration needed
 export default mongoose.models.Business || mongoose.model("Business", BusinessSchema, "restaurants")

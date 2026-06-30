@@ -78,7 +78,9 @@ export async function inviteCoOwner(req, res) {
 
         const coOwner = await Staff.create({
             businessId,
+            restaurantId: businessId, // legacy alias required by old waiters collection indexes
             staffId,
+            waiterId: staffId, // legacy alias required by old waiters collection indexes
             role: "co_owner",
             name,
             email,
@@ -103,6 +105,8 @@ export async function inviteCoOwner(req, res) {
             email: coOwner.email,
             accountStatus: coOwner.accountStatus,
             businessId: coOwner.businessId,
+            restaurantId: coOwner.restaurantId || coOwner.businessId,
+            waiterId: coOwner.waiterId,
             createdAt: coOwner.createdAt
         })
     } catch (err) {

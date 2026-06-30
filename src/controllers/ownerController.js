@@ -127,6 +127,9 @@ export async function ownerOrders(req, res) {
                 receiptSent: 1,
                 receiptSentAt: 1,
                 completedBy: 1,
+                platformFeeCents: 1,
+                customerPlatformFeeCents: 1,
+                businessAbsorbedPlatformFeeCents: 1,
             }
         )
             .sort({ updatedAt: -1, createdAt: -1 })
@@ -211,6 +214,9 @@ export async function ownerOrders(req, res) {
                 total: o.total,
                 currency: o.currency || "EUR",
                 completedBy: o.completedBy || null,
+                platformFeeCents: o.platformFeeCents || 0,
+                customerPlatformFeeCents: o.customerPlatformFeeCents || 0,
+                businessAbsorbedPlatformFeeCents: o.businessAbsorbedPlatformFeeCents || 0,
             }
         })
 
@@ -392,7 +398,7 @@ export async function ownerAnalytics(req, res) {
                 }
             ]),
 
-            // Table performance — uses the same owner reporting range as all other analytics
+            // Table performance â€” uses the same owner reporting range as all other analytics
             Order.aggregate([
                 {
                     $match: {
@@ -490,7 +496,7 @@ export async function ownerAnalytics(req, res) {
                 }
             ]),
 
-            // Per-staff orders served (waiter clicked Mark Served → completed)
+            // Per-staff orders served (waiter clicked Mark Served â†’ completed)
             Order.aggregate([
                 {
                     $match: {
@@ -747,7 +753,7 @@ export async function ownerAnalytics(req, res) {
             }
         ]
 
-        // ─── Shape serviceCalls ───────────────────────────────────────────
+        // â”€â”€â”€ Shape serviceCalls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const scFacet = serviceCallsAgg?.[0] || {}
 
         const scByStatus = {}
@@ -776,7 +782,7 @@ export async function ownerAnalytics(req, res) {
             avgResolutionTimeSeconds: Math.round(scFacet.resolutionTimes?.[0]?.avg || 0)
         }
 
-        // ─── Shape tablePerformance ───────────────────────────────────────
+        // â”€â”€â”€ Shape tablePerformance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Enrich aggregated rows with ServicePoint metadata (label, code, type)
         const spIds = tableAgg
             .map(t => t._id)
@@ -811,7 +817,7 @@ export async function ownerAnalytics(req, res) {
             }
         })
 
-        // ─── Shape waitstaffPerformance ────────────────────────────────────
+        // â”€â”€â”€ Shape waitstaffPerformance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const staffMap = {}
 
         function ensureStaff(id, name) {
@@ -896,9 +902,9 @@ export async function ownerAnalytics(req, res) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /owner/dashboard  — Command Center: single aggregated payload
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// GET /owner/dashboard  â€” Command Center: single aggregated payload
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import Business from "../models/Business.js"
 import Feedback from "../models/Feedback.js"
 import Staff from "../models/Staff.js"
@@ -914,7 +920,7 @@ export async function getDashboardData(req, res) {
         const endDateJS   = todayEnd.toJSDate()
         const dateFilter  = { businessId, createdAt: { $gte: startDateJS, $lt: endDateJS } }
 
-        // ── Run all queries in parallel ──────────────────────────────────────
+        // â”€â”€ Run all queries in parallel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const [
             todayOrdersRaw,
             business,
@@ -942,7 +948,7 @@ export async function getDashboardData(req, res) {
             MenuItem.countDocuments({ businessId }),
         ])
 
-        // ── Today's KPIs ─────────────────────────────────────────────────────
+        // â”€â”€ Today's KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const completedOrders = todayOrdersRaw.filter(o => o.status === "completed")
         const paidOrders      = todayOrdersRaw.filter(o => o.paymentStatus === "paid")
         const todayRevenue    = paidOrders.reduce((sum, o) => sum + (o.total || 0), 0)
@@ -950,7 +956,7 @@ export async function getDashboardData(req, res) {
         const tablesServed    = completedOrders.length
         const activeOrders    = todayOrdersRaw.filter(o => ["placed","in_progress","ready"].includes(o.status)).length
 
-        // ── Hourly Revenue (today) ───────────────────────────────────────────
+        // â”€â”€ Hourly Revenue (today) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const hourlyMap = new Map()
         for (let i = 0; i < 24; i++) {
             const h = i > 12 ? i - 12 : (i === 0 ? 12 : i)
@@ -964,13 +970,13 @@ export async function getDashboardData(req, res) {
         }
         const hourlyRevenue = Array.from(hourlyMap.entries()).map(([hour, revenue]) => ({ hour, revenue }))
 
-        // ── Business Health ──────────────────────────────────────────────────
+        // â”€â”€ Business Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const onlinePaymentsOk  = business?.stripeChargesEnabled === true
         const billingStatus     = business?.billingStatus || "incomplete"
-        const hasMenu           = true // Placeholder — could query MenuItem count
+        const hasMenu           = true // Placeholder â€” could query MenuItem count
         const staffOnlineCount  = activeStaff.length
 
-        // ── Action Items ─────────────────────────────────────────────────────
+        // â”€â”€ Action Items â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const actionItems = []
 
         if (billingStatus === "incomplete") {
@@ -998,7 +1004,7 @@ export async function getDashboardData(req, res) {
             actionItems.push({ type: "staff", severity: "info", message: "No staff members are currently active.", href: "/owner/waiters" })
         }
 
-        // ── Recent Activity (latest orders + feedback) ────────────────────────
+        // â”€â”€ Recent Activity (latest orders + feedback) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const recentActivity = []
 
         // Latest 10 orders as activity events
@@ -1009,23 +1015,23 @@ export async function getDashboardData(req, res) {
         for (const o of latestOrders) {
             const label = o.tableLabel || o.tableNumber || ""
             if (o.paymentStatus === "paid") {
-                recentActivity.push({ type: "payment", icon: "💳", message: `Order ${o.orderId} paid`, sub: label, time: o.createdAt })
+                recentActivity.push({ type: "payment", icon: "ðŸ’³", message: `Order ${o.orderId} paid`, sub: label, time: o.createdAt })
             } else {
-                const statusEmoji = { placed: "🆕", in_progress: "🍳", ready: "✅", completed: "🎉" }
-                recentActivity.push({ type: "order", icon: statusEmoji[o.status] || "📋", message: `Order ${o.orderId} ${o.status.replace("_", " ")}`, sub: label ? `${label} · ${o.orderType}` : o.orderType, time: o.createdAt })
+                const statusEmoji = { placed: "ðŸ†•", in_progress: "ðŸ³", ready: "âœ…", completed: "ðŸŽ‰" }
+                recentActivity.push({ type: "order", icon: statusEmoji[o.status] || "ðŸ“‹", message: `Order ${o.orderId} ${o.status.replace("_", " ")}`, sub: label ? `${label} Â· ${o.orderType}` : o.orderType, time: o.createdAt })
             }
         }
 
         // Recent feedback as activity events
         for (const f of recentFeedback.slice(0, 3)) {
-            recentActivity.push({ type: "feedback", icon: "⭐", message: `New feedback received (${f.overallRating}★)`, sub: f.comment ? f.comment.slice(0, 60) : "No comment", time: f.createdAt })
+            recentActivity.push({ type: "feedback", icon: "â­", message: `New feedback received (${f.overallRating}â˜…)`, sub: f.comment ? f.comment.slice(0, 60) : "No comment", time: f.createdAt })
         }
 
         // Sort and cap at 10
         recentActivity.sort((a, b) => new Date(b.time) - new Date(a.time))
         const activityFeed = recentActivity.slice(0, 10)
 
-        // ── Shape recentFeedback for preview ─────────────────────────────────
+        // â”€â”€ Shape recentFeedback for preview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const feedbackPreview = recentFeedback.map(f => ({
             id: f._id,
             rating: f.overallRating,
@@ -1059,7 +1065,7 @@ export async function getDashboardData(req, res) {
     }
 }
 
-// ─── Branding ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Branding â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function getBranding(req, res) {
     try {

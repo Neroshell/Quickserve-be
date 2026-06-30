@@ -281,6 +281,9 @@ export async function createOrder(req, res) {
       planApplied,
       commissionRateApplied,
       commissionAmountCents: finalCommissionAmountCents,
+      planAtOrder: planApplied,
+      commissionRateAtOrder: commissionRateApplied,
+      platformFeeRateAtOrder: commissionRateApplied,
       orderSource: isWaiter ? "waitstaff" : "self",
     })
 
@@ -490,7 +493,8 @@ export async function markPaid(req, res) {
     // ✅ ATOMIC UPDATE: Prevent double mark-paid race condition
     const updateObj = {
       paymentStatus: "paid",
-      paidVia
+      paidVia,
+      paidAt: new Date()
     }
     // Stamp which staff member confirmed this payment (waiter analytics)
     if (req.session?.user?.staffId) updateObj.paidByStaffId = req.session.user.staffId
@@ -512,6 +516,12 @@ export async function markPaid(req, res) {
       updateObj.commissionRateApplied = commissionRateApplied
       updateObj.commissionAmountCents = finalCommissionAmountCents
     }
+
+    const lockedPlan = updateObj.planApplied || order.planApplied || business.currentPlan || "basic"
+    const lockedRate = updateObj.commissionRateApplied ?? order.commissionRateApplied ?? null
+    if (!order.planAtOrder) updateObj.planAtOrder = lockedPlan
+    if (order.commissionRateAtOrder == null) updateObj.commissionRateAtOrder = lockedRate
+    if (order.platformFeeRateAtOrder == null) updateObj.platformFeeRateAtOrder = lockedRate
 
     const updatedOrder = await Order.findOneAndUpdate(
       { orderId, businessId, paymentStatus: { $ne: "paid" } },

@@ -15,6 +15,31 @@ import { buildOrderEstimate } from "../utils/orderEstimate.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+function getSubscriptionPeriodFromStripe(subscription) {
+    if (!subscription?.current_period_start || !subscription?.current_period_end) return null;
+
+    const start = new Date(subscription.current_period_start * 1000);
+    const invoiceAt = new Date(subscription.current_period_end * 1000);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(invoiceAt.getTime())) return null;
+
+    return {
+        start,
+        end: new Date(invoiceAt.getTime() - 1),
+        invoiceAt,
+    };
+}
+
+function getSubscriptionPeriodUpdate(subscription) {
+    const period = getSubscriptionPeriodFromStripe(subscription);
+    if (!period) return {};
+
+    return {
+        currentPeriodStart: period.start,
+        currentPeriodEnd: period.end,
+        nextInvoiceDate: period.invoiceAt,
+        nextBillingDate: period.invoiceAt,
+    };
+}
 
 /**
  * POST /webhook/stripe
@@ -53,64 +78,89 @@ export async function handleStripeWebhook(req, res) {
             const invoice = event.data.object;
             if (invoice.subscription) {
                 const biz = await Business.findOne({ stripeSubscriptionId: invoice.subscription });
-                if (biz && biz.scheduledDowngradePlan) {
-                    console.log(`[webhook] Applying scheduled downgrade for business ${biz.businessId} to ${biz.scheduledDowngradePlan}`);
-                    const targetPlan = await Plan.findOne({ slug: biz.scheduledDowngradePlan }).lean();
-                    
-                    if (targetPlan && targetPlan.stripeMeteredPriceId) {
-                        const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
-                        const baseItem = subscription.items.data.find(i => i.price.recurring?.usage_type !== 'metered');
-                        const meteredItem = subscription.items.data.find(i => i.price.recurring?.usage_type === 'metered');
-                        
-                        const itemsToUpdate = [];
-                        
-                        // Downgrade base item
-                        if (targetPlan.stripeBasePriceId) {
-                            if (baseItem) {
-                                itemsToUpdate.push({ id: baseItem.id, price: targetPlan.stripeBasePriceId });
-                            } else {
-                                itemsToUpdate.push({ price: targetPlan.stripeBasePriceId });
-                            }
-                        } else if (baseItem) {
-                            itemsToUpdate.push({ id: baseItem.id, deleted: true });
-                        }
-                        
-                        // Downgrade metered item
-                        if (meteredItem) {
-                            itemsToUpdate.push({ id: meteredItem.id, price: targetPlan.stripeMeteredPriceId });
-                        } else {
-                            itemsToUpdate.push({ price: targetPlan.stripeMeteredPriceId });
-                        }
-                        
-                        const updated = await stripe.subscriptions.update(invoice.subscription, {
-                            items: itemsToUpdate,
-                            proration_behavior: 'none', // Next cycle has started, no prorations needed
-                            metadata: { quickserve_plan: biz.scheduledDowngradePlan },
-                        });
-                        
-                        const updatedMeteredItem = updated.items.data.find(
-                            i => i.price.id === targetPlan.stripeMeteredPriceId
-                        );
-                        
-                        await Business.findOneAndUpdate(
-                            { _id: biz._id },
-                            {
-                                $set: {
-                                    currentPlan: biz.scheduledDowngradePlan,
-                                    plan: biz.scheduledDowngradePlan,
-                                    stripeMeteredSubscriptionItemId: updatedMeteredItem?.id ?? null,
-                                    scheduledDowngradePlan: null,
-                                    scheduledPlanEffectiveDate: null
+                if (biz) {
+                    let subscription = null;
+                    try {
+                        subscription = await stripe.subscriptions.retrieve(invoice.subscription);
+                    } catch (err) {
+                        console.error(`[webhook] Failed to retrieve subscription ${invoice.subscription}:`, err.message);
+                    }
+
+                    if (biz.scheduledDowngradePlan) {
+                        console.log(`[webhook] Applying scheduled downgrade for business ${biz.businessId} to ${biz.scheduledDowngradePlan}`);
+                        const targetPlan = await Plan.findOne({ slug: biz.scheduledDowngradePlan }).lean();
+
+                        if (subscription && targetPlan && targetPlan.stripeMeteredPriceId) {
+                            const baseItem = subscription.items.data.find(i => i.price.recurring?.usage_type !== 'metered');
+                            const meteredItem = subscription.items.data.find(i => i.price.recurring?.usage_type === 'metered');
+                            const itemsToUpdate = [];
+
+                            if (targetPlan.stripeBasePriceId) {
+                                if (baseItem) {
+                                    itemsToUpdate.push({ id: baseItem.id, price: targetPlan.stripeBasePriceId });
+                                } else {
+                                    itemsToUpdate.push({ price: targetPlan.stripeBasePriceId });
                                 }
+                            } else if (baseItem) {
+                                itemsToUpdate.push({ id: baseItem.id, deleted: true });
                             }
-                        );
-                        console.log(`[webhook] Downgrade complete for business ${biz.businessId}`);
+
+                            if (meteredItem) {
+                                itemsToUpdate.push({ id: meteredItem.id, price: targetPlan.stripeMeteredPriceId });
+                            } else {
+                                itemsToUpdate.push({ price: targetPlan.stripeMeteredPriceId });
+                            }
+
+                            const updated = await stripe.subscriptions.update(invoice.subscription, {
+                                items: itemsToUpdate,
+                                proration_behavior: 'none',
+                                metadata: {
+                                    businessId: biz.businessId,
+                                    planSlug: biz.scheduledDowngradePlan,
+                                    quickserve_plan: biz.scheduledDowngradePlan,
+                                },
+                            });
+
+                            const periodUpdate = getSubscriptionPeriodUpdate(updated);
+                            const updatedMeteredItem = updated.items.data.find(
+                                i => i.price.id === targetPlan.stripeMeteredPriceId
+                            );
+
+                            await Business.findOneAndUpdate(
+                                { _id: biz._id },
+                                {
+                                    $set: {
+                                        currentPlan: biz.scheduledDowngradePlan,
+                                        plan: biz.scheduledDowngradePlan,
+                                        planActivatedAt: periodUpdate.currentPeriodStart || new Date(),
+                                        stripeMeteredSubscriptionItemId: updatedMeteredItem?.id ?? null,
+                                        stripeSubscriptionStatus: updated.status,
+                                        scheduledDowngradePlan: null,
+                                        scheduledPlanEffectiveDate: null,
+                                        ...periodUpdate,
+                                    }
+                                }
+                            );
+                            console.log(`[webhook] Downgrade complete for business ${biz.businessId}`);
+                        }
+                    } else if (subscription) {
+                        const periodUpdate = getSubscriptionPeriodUpdate(subscription);
+                        if (Object.keys(periodUpdate).length > 0) {
+                            await Business.findOneAndUpdate(
+                                { _id: biz._id },
+                                {
+                                    $set: {
+                                        stripeSubscriptionStatus: subscription.status,
+                                        ...periodUpdate,
+                                    }
+                                }
+                            );
+                        }
                     }
                 }
             }
             return res.status(200).send();
         }
-
         if (event.type !== "checkout.session.completed") {
             return res.status(200).send();
         }
@@ -149,6 +199,7 @@ export async function handleStripeWebhook(req, res) {
                 order.paymentStatus = "paid";
                 order.paymentChannel = "online";
                 order.paidVia = "online_card";
+                order.paidAt = order.paidAt || new Date();
                 order.stripeSessionId = pending.stripeSessionId || session.id;
                 
                 // Stripe Connect split metadata
@@ -159,6 +210,9 @@ export async function handleStripeWebhook(req, res) {
                 if (pending.planApplied !== undefined) order.planApplied = pending.planApplied;
                 if (pending.commissionRateApplied !== undefined) order.commissionRateApplied = pending.commissionRateApplied;
                 if (pending.commissionAmountCents !== undefined) order.commissionAmountCents = pending.commissionAmountCents;
+                order.planAtOrder = pending.planAtOrder ?? pending.planApplied ?? order.planAtOrder ?? order.planApplied ?? null;
+                order.commissionRateAtOrder = pending.commissionRateAtOrder ?? pending.commissionRateApplied ?? order.commissionRateAtOrder ?? order.commissionRateApplied ?? null;
+                order.platformFeeRateAtOrder = pending.platformFeeRateAtOrder ?? pending.commissionRateApplied ?? order.platformFeeRateAtOrder ?? order.commissionRateApplied ?? null;
 
                 if (pending.platformFeeCents !== undefined) order.platformFeeCents = pending.platformFeeCents;
                 if (pending.customerPlatformFeeCents !== undefined) order.customerPlatformFeeCents = pending.customerPlatformFeeCents;
@@ -247,6 +301,7 @@ export async function handleStripeWebhook(req, res) {
                 paymentChannel: "online",
                 paymentStatus: "paid",
                 paidVia: "online_card",
+                paidAt: orderCreatedAt,
                 stripeSessionId: pending.stripeSessionId || session.id,
 
                 // Stripe Connect split metadata
@@ -259,6 +314,9 @@ export async function handleStripeWebhook(req, res) {
                 planApplied:              pending.planApplied           ?? null,
                 commissionRateApplied:    pending.commissionRateApplied ?? null,
                 commissionAmountCents:    pending.commissionAmountCents ?? 0,
+                planAtOrder:              pending.planAtOrder           ?? pending.planApplied           ?? null,
+                commissionRateAtOrder:    pending.commissionRateAtOrder ?? pending.commissionRateApplied ?? null,
+                platformFeeRateAtOrder:   pending.platformFeeRateAtOrder ?? pending.commissionRateApplied ?? null,
 
                 // Platform fee split fields
                 platformFeeCents:                 pending.platformFeeCents                 ?? 0,

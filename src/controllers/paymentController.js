@@ -201,7 +201,7 @@ export async function createCheckoutSession(req, res) {
 
         // --- Compute platform fee (plan-based rate) ---
         const totalInCents = Math.round(serverTotal * 100);
-        const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOnlineCommission(totalInCents, business.plan);
+        const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOnlineCommission(totalInCents, business.currentPlan || business.plan || "basic");
 
         // --- Platform Fee Split logic ---
         let mode = business.platformFeeMode || (business.passPlatformFeeToCustomer ? "customer_pays" : "business_absorbs");
@@ -261,6 +261,9 @@ export async function createCheckoutSession(req, res) {
         pending.commissionAmountCents    = commissionAmountCents;
         pending.commissionRateApplied    = commissionRateApplied;
         pending.planApplied              = planApplied;
+        pending.planAtOrder              = planApplied;
+        pending.commissionRateAtOrder    = commissionRateApplied;
+        pending.platformFeeRateAtOrder   = commissionRateApplied;
         
         pending.platformFeeCents                 = commissionAmountCents;
         pending.customerPlatformFeeCents         = customerPlatformFeeCents;

@@ -28,7 +28,7 @@ const OrderSchema = new mongoose.Schema(
   {
     orderId: { type: String, required: true, unique: true, index: true },
     businessId: { type: String, required: true, index: true },
-    tableNumber: { type: String, required: true, index: true }, // internal servicePointId — for routing/lookups only
+    tableNumber: { type: String, required: true, index: true }, // internal servicePointId â€” for routing/lookups only
     tableLabel: { type: String, default: "" }, // human-friendly display label, e.g. "Table 12"
     orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in", index: true },
     sessionId: { type: String, index: true },
@@ -58,6 +58,7 @@ const OrderSchema = new mongoose.Schema(
       enum: ["online_card", "pos_card", "cash"],
       default: null
     },
+    paidAt: { type: Date, default: null, index: true },
 
     readyAt: { type: Date, default: null, index: true },
     completedAt: { type: Date, default: null, index: true },
@@ -68,7 +69,7 @@ const OrderSchema = new mongoose.Schema(
     stripeSessionId: { type: String, default: null },
     stripeCheckoutUrl: { type: String, default: null },
 
-    // Stripe Connect split metadata — copied from PendingCheckout via webhook
+    // Stripe Connect split metadata â€” copied from PendingCheckout via webhook
     stripePaymentIntentId:    { type: String, default: null },
     stripeConnectedAccountId: { type: String, default: null },
     grossAmount:              { type: Number, default: null }, // cents
@@ -99,13 +100,16 @@ const OrderSchema = new mongoose.Schema(
     servedByName:    { type: String, default: null },
     servedAt:        { type: Date,   default: null },
 
-    // Offline commission tracking — prevents duplicate usage reports to Stripe
+    // Offline commission tracking â€” prevents duplicate usage reports to Stripe
     commissionReportedToStripe: { type: Boolean, default: false, index: true },
 
-    // Order-level commission locking — rate is frozen at order creation / payment time
+    // Order-level commission locking â€” rate is frozen at order creation / payment time
     planApplied:             { type: String, enum: ["basic", "growth", "pro", "enterprise"], default: null },
     commissionRateApplied:   { type: Number, default: null },   // e.g. 2.5 (percentage)
     commissionAmountCents:   { type: Number, default: 0 },      // pre-calculated commission in cents
+    planAtOrder:             { type: String, enum: ["basic", "growth", "pro", "enterprise"], default: null },
+    commissionRateAtOrder:   { type: Number, default: null },
+    platformFeeRateAtOrder:  { type: Number, default: null },
     
     // Platform Fee Split details
     platformFeeCents: { type: Number, default: 0 },

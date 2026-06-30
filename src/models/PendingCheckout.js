@@ -27,8 +27,8 @@ const PendingCheckoutSchema = new mongoose.Schema(
     {
         businessId: { type: String, required: true },
         orderId: { type: String, required: true },
-        tableNumber: { type: String, required: true }, // internal servicePointId — e.g. sp_xxxx
-        tableLabel: { type: String, default: "" },      // human-friendly — e.g. "Table 10"
+        tableNumber: { type: String, required: true }, // internal servicePointId â€” e.g. sp_xxxx
+        tableLabel: { type: String, default: "" },      // human-friendly â€” e.g. "Table 10"
         orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in" },
         sessionId: { type: String, required: true },
         items: { type: [PendingItemSchema], required: true },
@@ -41,16 +41,19 @@ const PendingCheckoutSchema = new mongoose.Schema(
         // Stripe reference
         stripeSessionId: { type: String, default: null },
 
-        // Stripe Connect split metadata — populated at checkout session creation
+        // Stripe Connect split metadata â€” populated at checkout session creation
         stripePaymentIntentId:    { type: String, default: null },
         stripeConnectedAccountId: { type: String, default: null },
         grossAmount:              { type: Number, default: null }, // cents
         netToBusinessAmount:      { type: Number, default: null }, // cents
 
-        // Commission locking — rate is frozen at checkout creation
+        // Commission locking â€” rate is frozen at checkout creation
         planApplied:             { type: String, default: null },
         commissionRateApplied:   { type: Number, default: null },   // e.g. 2.5 (percentage)
         commissionAmountCents:   { type: Number, default: 0 },      // pre-calculated commission in cents
+        planAtOrder:             { type: String, default: null },
+        commissionRateAtOrder:   { type: Number, default: null },
+        platformFeeRateAtOrder:  { type: Number, default: null },
 
         // Platform Fee Split details
         platformFeeCents: { type: Number, default: 0 },

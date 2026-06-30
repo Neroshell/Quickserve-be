@@ -28,7 +28,7 @@ import {
 } from "../controllers/reservationController.js"
 
 import { requireAuth, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
-import { connectAccount, getStripeStatus, getStripeDashboardLink } from "../controllers/stripeConnectController.js"
+import { connectAccount, getStripeStatus, getStripeDashboardLink, getPayoutSummary } from "../controllers/stripeConnectController.js"
 import {
     getBillingOverview,
     createSetupIntent,
@@ -620,6 +620,7 @@ router.get("/stripe/status", requirePrimaryOwner, getStripeStatus)
  *         description: Dashboard login link
  */
 router.get("/stripe/dashboard-link", requirePrimaryOwner, getStripeDashboardLink)
+router.get("/stripe/payout-summary", requirePrimaryOwner, getPayoutSummary)
 
 // ─── QuickServe Billing (MVP) ────────────────────────────────────────────────
 

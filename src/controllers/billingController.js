@@ -14,6 +14,1147 @@ function resolveBusinessId(req) {
     return null
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function addMonths(date, months) {
+    const next = new Date(date)
+    const day = next.getDate()
+    next.setDate(1)
+    next.setMonth(next.getMonth() + months)
+    const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate()
+    next.setDate(Math.min(day, lastDay))
+    return next
+}
+
+function toBillingPeriod(start, invoiceAt) {
+    return {
+        start,
+        end: new Date(invoiceAt.getTime() - 1),
+        invoiceAt,
+        daysUntilInvoice: Math.max(0, Math.ceil((invoiceAt.getTime() - Date.now()) / DAY_MS)),
+    }
+}
+
+function getSubscriptionPeriodFromStripe(subscription) {
+    if (!subscription?.current_period_start || !subscription?.current_period_end) return null
+
+    const start = new Date(subscription.current_period_start * 1000)
+    const invoiceAt = new Date(subscription.current_period_end * 1000)
+    if (Number.isNaN(start.getTime()) || Number.isNaN(invoiceAt.getTime())) return null
+
+    return toBillingPeriod(start, invoiceAt)
+}
+
+function getStoredBillingPeriod(biz) {
+    const start = biz.currentPeriodStart ? new Date(biz.currentPeriodStart) : null
+    const invoiceAt = biz.nextInvoiceDate ? new Date(biz.nextInvoiceDate) : (biz.nextBillingDate ? new Date(biz.nextBillingDate) : null)
+    if (!start || !invoiceAt || Number.isNaN(start.getTime()) || Number.isNaN(invoiceAt.getTime())) return null
+    return toBillingPeriod(start, invoiceAt)
+}
+
+function getAnniversaryBillingPeriod(biz, now = new Date()) {
+    let start = biz.planActivatedAt ? new Date(biz.planActivatedAt) : (biz.createdAt ? new Date(biz.createdAt) : new Date(now))
+    if (Number.isNaN(start.getTime())) start = new Date(now)
+
+    while (addMonths(start, 1) <= now) {
+        start = addMonths(start, 1)
+    }
+
+    return toBillingPeriod(start, addMonths(start, 1))
+}
+
+async function getCurrentBillingPeriod(biz, { persist = true } = {}) {
+    if (biz.stripeSubscriptionId) {
+        try {
+            const subscription = await stripe.subscriptions.retrieve(biz.stripeSubscriptionId)
+            const period = getSubscriptionPeriodFromStripe(subscription)
+
+            if (period) {
+                if (persist) {
+                    await Business.updateOne(
+                        { businessId: biz.businessId },
+                        {
+                            $set: {
+                                currentPeriodStart: period.start,
+                                currentPeriodEnd: period.end,
+                                nextInvoiceDate: period.invoiceAt,
+                                nextBillingDate: period.invoiceAt,
+                                stripeSubscriptionStatus: subscription.status,
+                            }
+                        }
+                    )
+                }
+                return period
+            }
+        } catch (err) {
+            console.warn(`[billingPeriod] Failed to sync Stripe subscription ${biz.stripeSubscriptionId}:`, err.message)
+        }
+    }
+
+    const storedPeriod = getStoredBillingPeriod(biz)
+    if (storedPeriod && storedPeriod.invoiceAt > new Date()) return storedPeriod
+
+    return getAnniversaryBillingPeriod(biz)
+}
+
+function getOfflineFeeBreakdown(orders, commissionMultiplier) {
+    let grossCents = 0
+    let customerPaidFeesCents = 0
+    let businessPaidFeesCents = 0
+    let totalFeeCents = 0
+
+    for (const order of orders) {
+        const subtotal = order.subtotal || 0
+        const taxAmount = order.taxAmount || 0
+        grossCents += Math.round((subtotal + taxAmount) * 100)
+
+        let orderFeeCents = 0
+        let orderCustomerPaidCents = 0
+        let orderBusinessPaidCents = 0
+
+        if (order.commissionAmountCents != null) {
+            orderFeeCents = order.commissionAmountCents
+        } else if (order.platformFeeTotal > 0) {
+            orderFeeCents = Math.round(order.platformFeeTotal * 100)
+        } else {
+            orderFeeCents = Math.round(subtotal * 100 * commissionMultiplier)
+        }
+
+        if (order.platformFeeCents != null && order.platformFeeCents > 0) {
+            orderCustomerPaidCents = order.customerPlatformFeeCents || 0
+            orderBusinessPaidCents = order.businessAbsorbedPlatformFeeCents || 0
+        } else if (order.platformFeeTotal > 0) {
+            orderCustomerPaidCents = orderFeeCents
+        } else {
+            orderBusinessPaidCents = orderFeeCents
+        }
+
+        customerPaidFeesCents += orderCustomerPaidCents
+        businessPaidFeesCents += orderBusinessPaidCents
+        totalFeeCents += orderFeeCents
+    }
+
+    return {
+        gross: grossCents / 100,
+        customerPaidFees: customerPaidFeesCents / 100,
+        businessPaidFees: businessPaidFeesCents / 100,
+        totalQuickServeFees: totalFeeCents / 100,
+    }
+}
+
+function paidInPeriodQuery(period) {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+    return {
+        $or: [
+            { paidAt: { $gte: period.start, $lt: period.invoiceAt } },
+            {
+                $and: [
+                    { $or: [{ paidAt: null }, { paidAt: { $exists: false } }] },
+                    { createdAt: { $gte: period.start, $lt: period.invoiceAt } },
+                ]
+            }
+        ]
+    }
+}
+
+async function getRevenueSummary(businessId) {
+    const rows = await Order.aggregate([
+        {
+            $match: {
+                businessId,
+                paymentStatus: "paid",
+                paymentChannel: { $in: ["online", "offline"] },
+                status: { $ne: "cancelled" },
+            },
+        },
+        {
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+            $group: {
+                _id: "$paymentChannel",
+                revenue: { $sum: { $ifNull: ["$total", 0] } },
+                orders: { $sum: 1 },
+            },
+        },
+    ])
+
+    const summary = {
+        onlineRevenueProcessed: 0,
+        offlineRevenueProcessed: 0,
+        totalOrdersProcessed: 0,
+    }
+
+    for (const row of rows) {
+        if (row._id === "online") summary.onlineRevenueProcessed = row.revenue || 0
+        if (row._id === "offline") summary.offlineRevenueProcessed = row.revenue || 0
+        summary.totalOrdersProcessed += row.orders || 0
+    }
+
+    const totalRevenueProcessed = summary.onlineRevenueProcessed + summary.offlineRevenueProcessed
+
+    return {
+        ...summary,
+        totalRevenueProcessed,
+        averageOrderValue: summary.totalOrdersProcessed > 0
+            ? totalRevenueProcessed / summary.totalOrdersProcessed
+            : 0,
+        label: "Since joining QuickServe",
+    }
+}
+
 /**
  * GET /owner/billing
  * Returns the current billing status, plan info, and safe payment method metadata.
@@ -26,13 +1167,20 @@ export async function getBillingOverview(req, res) {
         const biz = await Business.findOne({ businessId }).lean()
         if (!biz) return res.status(404).json({ message: "Business not found" })
 
+        const billingPeriod = await getCurrentBillingPeriod(biz)
+
         res.json({
             billingStatus: biz.billingStatus || 'incomplete',
             billingEnabled: biz.billingEnabled || false,
             currentPlan: biz.currentPlan || 'basic',
             planActivatedAt: biz.planActivatedAt || null,
             billingCycle: biz.billingCycle || 'monthly',
-            nextBillingDate: biz.nextBillingDate || null,
+            currentPeriodStart: billingPeriod.start,
+            currentPeriodEnd: billingPeriod.end,
+            nextInvoiceDate: billingPeriod.invoiceAt,
+            nextBillingDate: billingPeriod.invoiceAt,
+            billingPeriod,
+            daysUntilInvoice: billingPeriod.daysUntilInvoice,
             paymentMethodBrand: biz.paymentMethodBrand || null,
             paymentMethodLast4: biz.paymentMethodLast4 || null,
             paymentMethodExpMonth: biz.paymentMethodExpMonth || null,
@@ -138,6 +1286,8 @@ export async function verifyPaymentMethod(req, res) {
             { new: true }
         ).lean()
 
+        const verifyPaymentMethodBillingPeriod = await getCurrentBillingPeriod(biz)
+
         // Return the updated billing overview
         res.json({
             billingStatus: biz.billingStatus || 'incomplete',
@@ -145,11 +1295,18 @@ export async function verifyPaymentMethod(req, res) {
             currentPlan: biz.currentPlan === 'enterprise' ? 'pro' : (biz.currentPlan || 'basic'),
             planActivatedAt: biz.planActivatedAt || null,
             billingCycle: biz.billingCycle || 'monthly',
-            nextBillingDate: biz.nextBillingDate || null,
+            currentPeriodStart: verifyPaymentMethodBillingPeriod.start,
+            currentPeriodEnd: verifyPaymentMethodBillingPeriod.end,
+            nextInvoiceDate: verifyPaymentMethodBillingPeriod.invoiceAt,
+            nextBillingDate: verifyPaymentMethodBillingPeriod.invoiceAt,
+            billingPeriod: verifyPaymentMethodBillingPeriod,
+            daysUntilInvoice: verifyPaymentMethodBillingPeriod.daysUntilInvoice,
             paymentMethodBrand: biz.paymentMethodBrand || null,
             paymentMethodLast4: biz.paymentMethodLast4 || null,
             paymentMethodExpMonth: biz.paymentMethodExpMonth || null,
-            paymentMethodExpYear: biz.paymentMethodExpYear || null
+            paymentMethodExpYear: biz.paymentMethodExpYear || null,
+            scheduledDowngradePlan: biz.scheduledDowngradePlan || null,
+            scheduledPlanEffectiveDate: biz.scheduledPlanEffectiveDate || null
         })
     } catch (err) {
         console.error("[verifyPaymentMethod] Error:", err)
@@ -253,7 +1410,6 @@ export async function updatePlan(req, res) {
             return res.status(400).json({ message: "You are already on this plan." })
         }
 
-        // Load the target plan definition (must have Stripe Price IDs from seed script)
         const targetPlan = await Plan.findOne({ slug: planSlug }).lean()
         if (!targetPlan) {
             return res.status(404).json({ message: `Plan '${planSlug}' not found in database.` })
@@ -265,107 +1421,81 @@ export async function updatePlan(req, res) {
             })
         }
 
-        // Load the current plan definition to determine direction
         const currentPlan = await Plan.findOne({ slug: biz.currentPlan || 'basic' }).lean()
-        const isUpgrade = targetPlan.monthlyPrice >= (currentPlan?.monthlyPrice ?? 0)
+        const isUpgrade = Number(targetPlan.monthlyPrice || 0) >= Number(currentPlan?.monthlyPrice || 0)
 
         let stripeSubscriptionId = biz.stripeSubscriptionId
         let stripeMeteredSubscriptionItemId = biz.stripeMeteredSubscriptionItemId
         let scheduledDowngradePlan = null
         let effectivePlan = planSlug
         let downgradeScheduled = false
+        let activeSubscription = null
 
-        // ─── Case 1: No existing subscription — create fresh ─────────────────────
         if (!stripeSubscriptionId) {
-            const items = [
-                { price: targetPlan.stripeMeteredPriceId },
-            ]
-            // Only add a base price item for paid plans
-            if (targetPlan.stripeBasePriceId) {
-                items.unshift({ price: targetPlan.stripeBasePriceId })
-            }
-
+            const items = buildSubscriptionItems(targetPlan)
             const subscription = await stripe.subscriptions.create({
                 customer: biz.stripeCustomerId,
                 items,
+                collection_method: 'charge_automatically',
+                payment_settings: {
+                    payment_method_types: ['card'],
+                    save_default_payment_method: 'on_subscription'
+                },
                 metadata: {
                     businessId,
-                    quickserve_plan: planSlug,
-                },
+                    planSlug
+                }
             })
 
+            activeSubscription = subscription
             stripeSubscriptionId = subscription.id
-            // The metered item is the one with usage_type = metered
-            const meteredItem = subscription.items.data.find(
-                i => i.price.id === targetPlan.stripeMeteredPriceId
-            )
-            stripeMeteredSubscriptionItemId = meteredItem?.id ?? null
-
-        // ─── Case 2: Existing subscription — Update plan (Upgrade or Downgrade) ────
+            stripeMeteredSubscriptionItemId = findMeteredItemId(subscription, targetPlan.stripeMeteredPriceId)
         } else {
             const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId)
+            activeSubscription = subscription
 
             if (isUpgrade) {
-                // Identify existing items
-                const baseItem = subscription.items.data.find(i => i.price.recurring?.usage_type !== 'metered');
-                const meteredItem = subscription.items.data.find(i => i.price.recurring?.usage_type === 'metered');
-
-                const itemsToUpdate = [];
-
-                // Update or add base item
-                if (targetPlan.stripeBasePriceId) {
-                    if (baseItem) {
-                        itemsToUpdate.push({ id: baseItem.id, price: targetPlan.stripeBasePriceId });
-                    } else {
-                        itemsToUpdate.push({ price: targetPlan.stripeBasePriceId });
-                    }
-                } else if (baseItem) {
-                    itemsToUpdate.push({ id: baseItem.id, deleted: true });
-                }
-
-                // Update or add metered item
-                if (meteredItem) {
-                    itemsToUpdate.push({ id: meteredItem.id, price: targetPlan.stripeMeteredPriceId });
-                } else {
-                    itemsToUpdate.push({ price: targetPlan.stripeMeteredPriceId });
-                }
-
+                const items = buildSubscriptionUpdateItems(subscription, targetPlan)
                 const updated = await stripe.subscriptions.update(stripeSubscriptionId, {
-                    items: itemsToUpdate,
+                    items,
                     proration_behavior: 'create_prorations',
-                    metadata: { quickserve_plan: planSlug },
+                    metadata: {
+                        businessId,
+                        planSlug
+                    }
                 })
 
-                const updatedMeteredItem = updated.items.data.find(
-                    i => i.price.id === targetPlan.stripeMeteredPriceId
-                )
-                stripeMeteredSubscriptionItemId = updatedMeteredItem?.id ?? null
+                activeSubscription = updated
+                stripeMeteredSubscriptionItemId = findMeteredItemId(updated, targetPlan.stripeMeteredPriceId)
             } else {
-                // Downgrade: Schedule it for the next billing cycle
                 downgradeScheduled = true
-                effectivePlan = biz.currentPlan // Current plan stays active
+                effectivePlan = biz.currentPlan || 'basic'
                 scheduledDowngradePlan = planSlug
             }
         }
 
-        let scheduledPlanEffectiveDate = null
-        if (downgradeScheduled && stripeSubscriptionId) {
-            const sub = await stripe.subscriptions.retrieve(stripeSubscriptionId)
-            scheduledPlanEffectiveDate = new Date(sub.current_period_end * 1000)
+        let subscriptionPeriod = activeSubscription ? getSubscriptionPeriodFromStripe(activeSubscription) : null
+        if (!subscriptionPeriod) {
+            subscriptionPeriod = await getCurrentBillingPeriod(biz, { persist: false })
         }
 
-        // ─── Stripe succeeded — now update the database ──────────────────────────
+        const scheduledPlanEffectiveDate = downgradeScheduled ? subscriptionPeriod.invoiceAt : null
+
         await Business.findOneAndUpdate(
             { businessId },
             {
                 $set: {
                     currentPlan: effectivePlan,
-                    plan: effectivePlan, // Update legacy plan field
+                    plan: effectivePlan,
                     planActivatedAt: downgradeScheduled ? biz.planActivatedAt : new Date(),
                     stripeSubscriptionId,
                     stripeMeteredSubscriptionItemId,
                     scheduledDowngradePlan,
                     scheduledPlanEffectiveDate,
+                    currentPeriodStart: subscriptionPeriod.start,
+                    currentPeriodEnd: subscriptionPeriod.end,
+                    nextInvoiceDate: subscriptionPeriod.invoiceAt,
+                    nextBillingDate: subscriptionPeriod.invoiceAt,
                     billingStatus: 'active',
                     billingEnabled: true,
                 }
@@ -374,14 +1504,19 @@ export async function updatePlan(req, res) {
         )
 
         const responseMessage = downgradeScheduled
-            ? `Downgrade to ${planSlug} scheduled for end of billing period.`
+            ? `Downgrade to ${planSlug} scheduled for ${subscriptionPeriod.invoiceAt.toISOString()}.`
             : `Successfully switched to ${planSlug} plan.`
 
         res.json({
             success: true,
             currentPlan: effectivePlan,
             scheduledDowngradePlan: scheduledDowngradePlan ?? null,
+            scheduledPlanEffectiveDate,
             stripeMeteredSubscriptionItemId,
+            currentPeriodStart: subscriptionPeriod.start,
+            currentPeriodEnd: subscriptionPeriod.end,
+            nextInvoiceDate: subscriptionPeriod.invoiceAt,
+            nextBillingDate: subscriptionPeriod.invoiceAt,
             message: responseMessage,
         })
     } catch (err) {
@@ -391,12 +1526,11 @@ export async function updatePlan(req, res) {
             return res.status(400).json({ message: "Stripe subscription or price not found. Please run the plan seed script." })
         }
         if (stripeCode === "customer_deleted") {
-            return res.status(400).json({ message: "Stripe customer record not found. Please re-add your payment method." })
+            return res.status(400).json({ message: "Stripe customer was deleted. Please re-add your payment method." })
         }
-        res.status(500).json({ message: err.message || "Server error updating plan. Please try again." })
+        res.status(500).json({ message: "Server error updating plan" })
     }
 }
-
 /**
  * GET /owner/billing/commission
  *
@@ -415,73 +1549,64 @@ export async function getCommissionSummary(req, res) {
         if (!biz) return res.status(404).json({ message: "Business not found" })
 
         const currentPlan = biz.currentPlan || 'basic'
+        const currentPlanDoc = await Plan.findOne({ slug: currentPlan }).lean()
+        const subscriptionFee = Number(currentPlanDoc?.monthlyPrice || 0)
         const offlineCommissionRate = await getPlanOfflineCommissionRate(currentPlan)
         const commissionMultiplier = offlineCommissionRate / 100
+        const billingPeriod = await getCurrentBillingPeriod(biz)
 
-        // Only aggregate orders NOT yet reported to Stripe — prevents unbounded accumulation
-        const pendingOrders = await Order.find({
+        const billableOfflineQuery = {
             businessId,
             paymentChannel: 'offline',
             paymentStatus: 'paid',
+            status: { $ne: 'cancelled' },
+        }
+        const unreportedOfflineQuery = {
+            ...billableOfflineQuery,
             commissionReportedToStripe: false,
-        }).lean()
-
-        let pendingCommissionCents = 0
-        for (const o of pendingOrders) {
-            if (o.commissionAmountCents != null) {
-                pendingCommissionCents += o.commissionAmountCents
-            } else if (o.platformFeeTotal > 0) {
-                pendingCommissionCents += Math.round(o.platformFeeTotal * 100)
-            } else {
-                pendingCommissionCents += Math.round((o.subtotal || 0) * 100 * commissionMultiplier)
-            }
         }
 
-        // Historical totals (all time) for display purposes only
-        const allOrders = await Order.find({
-            businessId,
-            paymentChannel: 'offline',
-            paymentStatus: 'paid',
-        }).lean()
+        const periodPaymentQuery = paidInPeriodQuery(billingPeriod)
 
-        let totalGrossCents = 0
-        let totalCustomerPaidFeesCents = 0
-        let totalBusinessOwedCommissionCents = 0
+        const [pendingOrders, currentCycleOrders, allOfflineOrders, revenueSummary] = await Promise.all([
+            Order.find({ ...unreportedOfflineQuery, ...periodPaymentQuery }).lean(),
+            Order.find({ ...billableOfflineQuery, ...periodPaymentQuery }).lean(),
+            Order.find({
+                businessId,
+                paymentChannel: 'offline',
+                paymentStatus: 'paid',
+                status: { $ne: 'cancelled' },
+            }).lean(),
+            getRevenueSummary(businessId),
+        ])
 
-        for (const o of allOrders) {
-            const subtotal = o.subtotal || 0
-            const taxAmount = o.taxAmount || 0
-            totalGrossCents += Math.round((subtotal + taxAmount) * 100)
-
-            if (o.platformFeeCents != null) {
-                // New split logic
-                totalCustomerPaidFeesCents += (o.customerPlatformFeeCents || 0)
-                totalBusinessOwedCommissionCents += (o.businessAbsorbedPlatformFeeCents || 0)
-            } else if (o.commissionAmountCents != null) {
-                if (o.platformFeeTotal > 0) {
-                    totalCustomerPaidFeesCents += o.commissionAmountCents
-                } else {
-                    totalBusinessOwedCommissionCents += o.commissionAmountCents
-                }
-            } else if (o.platformFeeTotal > 0) {
-                totalCustomerPaidFeesCents += Math.round(o.platformFeeTotal * 100)
-            } else {
-                totalBusinessOwedCommissionCents += Math.round(subtotal * 100 * commissionMultiplier)
-            }
-        }
-
-        const totalCommissionCents = totalCustomerPaidFeesCents + totalBusinessOwedCommissionCents
+        const pendingBreakdown = getOfflineFeeBreakdown(pendingOrders, commissionMultiplier)
+        const currentBreakdown = getOfflineFeeBreakdown(currentCycleOrders, commissionMultiplier)
+        const allOfflineBreakdown = getOfflineFeeBreakdown(allOfflineOrders, commissionMultiplier)
 
         res.json({
             currentPlan,
             offlineCommissionRate,
-            totalGross: totalGrossCents / 100,
-            customerPaidFees: totalCustomerPaidFeesCents / 100,
-            businessOwedCommission: totalBusinessOwedCommissionCents / 100,
-            totalCommission: totalCommissionCents / 100,
-            pendingCommission: pendingCommissionCents / 100, // what's owed but not yet reported
-            pendingOrderCount: pendingOrders.length,
+            totalGross: allOfflineBreakdown.gross,
+            customerPaidFees: allOfflineBreakdown.customerPaidFees,
+            businessOwedCommission: allOfflineBreakdown.businessPaidFees,
+            totalCommission: allOfflineBreakdown.totalQuickServeFees,
+            pendingCommission: currentBreakdown.totalQuickServeFees,
+            pendingOrderCount: currentCycleOrders.length,
             billingReady: !!biz.stripeMeteredSubscriptionItemId,
+            billingPeriod,
+            daysUntilInvoice: billingPeriod.daysUntilInvoice,
+            currentBillingCycle: {
+                billingPeriod,
+                customerPaidFees: currentBreakdown.customerPaidFees,
+                businessPaidFees: currentBreakdown.businessPaidFees,
+                totalQuickServeFees: currentBreakdown.totalQuickServeFees,
+                subscriptionFee,
+                offlineCommissionAmount: currentBreakdown.totalQuickServeFees,
+                pendingInvoiceAmount: subscriptionFee + currentBreakdown.totalQuickServeFees,
+                pendingOrderCount: currentCycleOrders.length,
+            },
+            revenueSummary,
         })
     } catch (err) {
         console.error("[getCommissionSummary] Error:", err)
@@ -607,7 +1732,7 @@ export async function updatePlatformFeeSettings(req, res) {
  * and atomically marks all reported orders with commissionReportedToStripe = true.
  *
  * Rules:
- *  - If no stripeMeteredSubscriptionItemId exists, returns a 400 — billing not set up.
+ *  - If no stripeMeteredSubscriptionItemId exists, returns a 400 billing-not-set-up response.
  *  - If there are no pending orders, returns early with a 200 (already up to date).
  *  - Stripe is called FIRST. Only on success are orders marked as reported.
  *  - Idempotent: re-running after a partial failure will retry unreported orders only.
@@ -671,7 +1796,7 @@ export async function reportOfflineUsage(req, res) {
             })
         }
 
-        // ─── Report to Stripe FIRST ────────────────────────────────────────────────
+        // Report to Stripe first. Only mark local orders after Stripe accepts the usage event.
         // We use the new Billing Meters API instead of legacy subscription items.
         // The event_name matches the one created by the seed script.
         const timestamp = Math.floor(Date.now() / 1000)
@@ -684,7 +1809,7 @@ export async function reportOfflineUsage(req, res) {
             timestamp,
         })
 
-        // ─── Stripe succeeded — mark all orders as reported ────────────────────────
+        // Stripe succeeded, so mark all orders as reported.
         const orderIds = unreportedOrders.map(o => o._id)
         await Order.updateMany(
             { _id: { $in: orderIds } },

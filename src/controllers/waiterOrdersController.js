@@ -317,6 +317,9 @@ export async function createWaiterOrder(req, res) {
       planApplied,
       commissionRateApplied,
       commissionAmountCents: finalCommissionAmountCents,
+      planAtOrder: planApplied,
+      commissionRateAtOrder: commissionRateApplied,
+      platformFeeRateAtOrder: commissionRateApplied,
       orderSource: "waitstaff",
       createdBy: "staff",
       createdByStaffId: staffId
