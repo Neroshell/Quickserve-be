@@ -597,11 +597,13 @@ export async function ownerAnalytics(req, res) {
             } else {
                 stats.customerOrderCount++
             }
-
-            // Prep time calculations
-            if (order.createdAt && order.readyAt) {
-                const prepMinutes = DateTime.fromJSDate(order.readyAt).diff(DateTime.fromJSDate(order.createdAt), "minutes").minutes
-                if (prepMinutes > 0 && prepMinutes < 300) { // arbitrary cleanup for weird old data
+            
+            // Prep time calculations: use readyAt if set, fall back to completedAt
+            // Some orders skip the "ready" step and go straight to "completed"
+            const prepEndTime = order.readyAt || order.completedAt
+            if (order.createdAt && prepEndTime) {
+                const prepMinutes = DateTime.fromJSDate(prepEndTime).diff(DateTime.fromJSDate(order.createdAt), "minutes").minutes
+                if (prepMinutes > 0 && prepMinutes < 300) { // filter out bogus data (>5h)
                     totalPrepTimeMinutes += prepMinutes
                     prepTimeCount++
                 }
