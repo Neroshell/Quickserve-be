@@ -1428,13 +1428,16 @@ export async function updatePlan(req, res) {
         }
         if (!targetPlan.stripeMeteredPriceId) {
             return res.status(500).json({
-                code: "PLAN_NOT_SEEDED",
-                message: "Plan pricing has not been configured. Please run the seed script."
+                code: "PLAN_CONFIGURATION_ERROR",
+                message: "This subscription plan is not fully configured."
             })
         }
 
         const currentPlan = await Plan.findOne({ slug: biz.currentPlan || 'basic' }).lean()
-        const isUpgrade = Number(targetPlan.monthlyPrice || 0) >= Number(currentPlan?.monthlyPrice || 0)
+        if (targetPlan.level === currentPlan?.level) {
+             return res.status(400).json({ message: "You are already on this plan." })
+        }
+        const isUpgrade = targetPlan.level > (currentPlan?.level || 1)
 
         let stripeSubscriptionId = biz.stripeSubscriptionId
         let stripeMeteredSubscriptionItemId = biz.stripeMeteredSubscriptionItemId
@@ -1532,16 +1535,79 @@ export async function updatePlan(req, res) {
             message: responseMessage,
         })
     } catch (err) {
-        console.error("[updatePlan] Error:", err)
+        console.error("[updatePlan] Error:", err?.message || err)
+        if (err?.type) console.error("[updatePlan] Stripe error type:", err.type, "code:", err?.code, "statusCode:", err?.statusCode)
         const stripeCode = err?.raw?.code || err?.code
         if (stripeCode === "resource_missing") {
-            return res.status(400).json({ message: "Stripe subscription or price not found. Please run the plan seed script." })
+            return res.status(400).json({ message: "Stripe subscription or price not found. Please check your plan configuration." })
         }
         if (stripeCode === "customer_deleted") {
             return res.status(400).json({ message: "Stripe customer was deleted. Please re-add your payment method." })
         }
-        res.status(500).json({ message: "Server error updating plan" })
+        // Pass through Stripe's own message when available for better debugging
+        const userMessage = err?.raw?.message || err?.message || "Server error updating plan"
+        res.status(500).json({ message: userMessage })
     }
+}
+
+// --- Stripe Subscription Helpers ---
+
+function buildSubscriptionItems(plan) {
+    const items = []
+    if (plan.stripeBasePriceId) {
+        items.push({ price: plan.stripeBasePriceId })
+    }
+    if (plan.stripeMeteredPriceId) {
+        items.push({ price: plan.stripeMeteredPriceId })
+    }
+    return items
+}
+
+function buildSubscriptionUpdateItems(subscription, plan) {
+    const items = []
+    const existingItems = subscription?.items?.data || []
+
+    // Separate existing items by type (base = recurring, metered = metered)
+    const existingBase = existingItems.find(i => i.price.type === 'recurring' && i.price.recurring?.usage_type !== 'metered')
+    const existingMetered = existingItems.find(i => i.price.recurring?.usage_type === 'metered')
+
+    // Handle base price: swap in-place if exists, add if new, delete if no longer needed
+    if (plan.stripeBasePriceId) {
+        if (existingBase) {
+            items.push({ id: existingBase.id, price: plan.stripeBasePriceId })
+        } else {
+            items.push({ price: plan.stripeBasePriceId })
+        }
+    } else if (existingBase) {
+        // New plan has no base price (e.g. free tier), delete the old one
+        items.push({ id: existingBase.id, deleted: true })
+    }
+
+    // Handle metered price: swap in-place if exists, add if new
+    if (plan.stripeMeteredPriceId) {
+        if (existingMetered) {
+            items.push({ id: existingMetered.id, price: plan.stripeMeteredPriceId })
+        } else {
+            items.push({ price: plan.stripeMeteredPriceId })
+        }
+    } else if (existingMetered) {
+        items.push({ id: existingMetered.id, deleted: true })
+    }
+
+    // Clean up any other items that don't match base or metered
+    existingItems.forEach(item => {
+        if (item !== existingBase && item !== existingMetered) {
+            items.push({ id: item.id, deleted: true })
+        }
+    })
+
+    return items
+}
+
+function findMeteredItemId(subscription, priceId) {
+    if (!subscription || !subscription.items || !subscription.items.data) return null
+    const item = subscription.items.data.find(i => i.price.id === priceId)
+    return item ? item.id : null
 }
 /**
  * GET /owner/billing/commission

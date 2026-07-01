@@ -6,9 +6,9 @@ import Plan from './src/models/Plan.js';
 mongoose.connect(process.env.MONGODB_URI).then(async () => {
     try {
         const defaultPlans = [
-            { name: 'Basic', slug: 'basic', offlineCommissionRate: 2.5, monthlyPrice: 0 },
-            { name: 'Growth', slug: 'growth', offlineCommissionRate: 3.0, monthlyPrice: 0 },
-            { name: 'Pro', slug: 'pro', offlineCommissionRate: 4.0, monthlyPrice: 0 },
+            { name: 'Basic', slug: 'basic', offlineCommissionRate: 2.5, monthlyPrice: 0, level: 1 },
+            { name: 'Growth', slug: 'growth', offlineCommissionRate: 3.0, monthlyPrice: 0, level: 2 },
+            { name: 'Pro', slug: 'pro', offlineCommissionRate: 4.0, monthlyPrice: 0, level: 3 },
         ];
         
         for (const p of defaultPlans) {

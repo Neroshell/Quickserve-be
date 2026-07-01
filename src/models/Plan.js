@@ -13,6 +13,11 @@ const PlanSchema = new mongoose.Schema({
         unique: true,
         trim: true
     },
+    level: {
+        type: Number,
+        required: true,
+        default: 1
+    },
 
 
 
