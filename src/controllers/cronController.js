@@ -35,15 +35,27 @@ function getBusinessDisplayName(business) {
     return business.displayName || business.name || "there";
 }
 
+function getBillingEmailFrom() {
+    return process.env.EMAIL_FROM_BILLING ||
+        process.env.EMAIL_FROM_AUTH ||
+        process.env.EMAIL_FROM_ONBOARDING ||
+        process.env.EMAIL_FROM_RECEIPTS ||
+        process.env.EMAIL_FROM ||
+        "QuickServe <onboarding@quickservehq.com>";
+}
+
 async function getUpcomingInvoiceEstimate(stripe, business) {
     if (!business.stripeCustomerId) {
         return { invoice: null, error: "missing_stripe_customer" };
     }
 
     try {
-        const invoice = await stripe.invoices.retrieveUpcoming({
-            customer: business.stripeCustomerId,
-        });
+        const previewParams = { customer: business.stripeCustomerId };
+        if (business.stripeSubscriptionId) {
+            previewParams.subscription = business.stripeSubscriptionId;
+        }
+
+        const invoice = await stripe.invoices.createPreview(previewParams);
         return { invoice, error: null };
     } catch (error) {
         return { invoice: null, error: error.message || "stripe_upcoming_invoice_unavailable" };
@@ -158,11 +170,14 @@ export const sendBillingReminders = async (req, res) => {
                     </div>
                 `;
 
+                const emailFrom = getBillingEmailFrom();
+                result.emailFrom = emailFrom;
+
                 const emailSent = await sendEmail({
                     to: recipient,
                     subject: "Your QuickServe invoice is coming tomorrow",
                     html: emailBody,
-                    from: process.env.EMAIL_FROM_BILLING || process.env.EMAIL_FROM || "QuickServe <no-reply@getquickserve.com>",
+                    from: emailFrom,
                 });
 
                 if (emailSent) {
