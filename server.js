@@ -18,6 +18,7 @@ import authRoute from "./src/routes/auth-route.js"
 import uploadRoute from "./src/routes/upload-route.js"
 import feedbackRoute from "./src/routes/feedback-route.js"
 import publicRoute from "./src/routes/public-route.js"
+import internalRoute from "./src/routes/internal-route.js"
 import guestProfileRoute from "./src/routes/guestProfileRoutes.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 import helmet from "helmet"
@@ -104,6 +105,7 @@ app.use("/auth", authRoute)
 app.use("/upload", uploadRoute)
 app.use("/feedback", feedbackRoute)
 app.use("/public", publicRoute)
+app.use("/internal", internalRoute)
 app.use(sseRoute)
 
 // Setup Swagger UI and Spec endpoints

@@ -107,6 +107,8 @@ const BusinessSchema = new mongoose.Schema({
     currentPeriodStart: { type: Date, default: null },
     currentPeriodEnd: { type: Date, default: null },
     nextInvoiceDate: { type: Date, default: null },
+    billingReminderSentAt: { type: Date, default: null },
+    billingReminderSentForPeriod: { type: String, default: null },
     
     passPlatformFeeToCustomer: { type: Boolean, default: false },
     platformFeeMode: { type: String, enum: ["business_absorbs", "customer_pays", "split"], default: "business_absorbs" },
