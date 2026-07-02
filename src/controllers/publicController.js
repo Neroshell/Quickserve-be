@@ -87,15 +87,34 @@ export async function getPublicBusinessConfig(req, res) {
  */
 export async function getBusinessBySlug(req, res) {
   try {
-    const { slug } = req.params;
+    const { slug, countryCode } = req.params;
     if (!slug) return res.status(400).json({ error: "Slug is required" });
 
-    const business = await Business.findOne({ slug: slug.toLowerCase() }).lean();
+    let business;
+  
+
+    if (countryCode) {
+      business = await Business.findOne({ slug: slug.toLowerCase(), countryCode: countryCode.toLowerCase() }).lean();
+    } else {
+      // Legacy route: find all matching slugs
+      const businesses = await Business.find({ slug: slug.toLowerCase() }).lean();
+      if (businesses.length === 1) {
+        business = businesses[0];
+        redirectUrl = `/b/${business.countryCode || 'mt'}/${business.slug}`;
+      } else if (businesses.length > 1) {
+        return res.status(300).json({ 
+          error: "Multiple businesses found. Please use the country-specific link.",
+          redirects: businesses.map(b => `/b/${b.countryCode || 'mt'}/${b.slug}`)
+        });
+      }
+    }
+
     if (!business) return res.status(404).json({ error: "Business not found" });
 
     if (!["active", "onboarding", "draft"].includes(business.status)) {
         return res.status(404).json({ error: "Business is not available" });
     }
+
 
     const servicePoints = await ServicePoint.find({ 
       businessId: business.businessId, 

@@ -47,7 +47,6 @@ const BusinessSchema = new mongoose.Schema({
     slug: {
         type: String,
         required: true,
-        unique: true,
         index: true,
         lowercase: true,
         trim: true,
@@ -69,6 +68,13 @@ const BusinessSchema = new mongoose.Schema({
     stripeChargesEnabled: { type: Boolean, default: false },
     stripePayoutsEnabled: { type: Boolean, default: false },
     country: { type: String, default: "" },
+    countryCode: { 
+        type: String, 
+        default: "mt", 
+        lowercase: true, 
+        trim: true, 
+        index: true 
+    },
     taxRate: { type: Number, default: 0, min: 0 },
     businessType: {
         type: String,
@@ -178,5 +184,8 @@ const BusinessSchema = new mongoose.Schema({
     tablePreferences: { type: TablePreferencesSchema, default: () => ({}) }
 }, { timestamps: true })
 
-// Explicitly bind to the existing "restaurants" collection â€” no data migration needed
+// Compound index to ensure slug is unique per country
+BusinessSchema.index({ countryCode: 1, slug: 1 }, { unique: true })
+
+// Explicitly bind to the existing "restaurants" collection
 export default mongoose.models.Business || mongoose.model("Business", BusinessSchema, "restaurants")

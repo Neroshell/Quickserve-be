@@ -16,12 +16,17 @@ const reservationLimiter = rateLimit({
 
 /**
  * @openapi
- * /public/business/{slug}:
+ * /public/business/{countryCode}/{slug}:
  *   get:
  *     summary: Retrieve business configuration and branding settings by slug
  *     tags:
  *       - Public
  *     parameters:
+ *       - in: path
+ *         name: countryCode
+ *         required: true
+ *         schema:
+ *           type: string
  *       - in: path
  *         name: slug
  *         required: true
@@ -32,7 +37,12 @@ const reservationLimiter = rateLimit({
  *         description: Business details and preferences
  *       404:
  *         description: Business not found
+ *       302:
+ *         description: Redirects for legacy requests
  */
+router.get("/business/:countryCode/:slug", getBusinessBySlug);
+
+// Legacy fallback route for backward compatibility
 router.get("/business/:slug", getBusinessBySlug);
 
 /**

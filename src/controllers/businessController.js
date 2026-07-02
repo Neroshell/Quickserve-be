@@ -4,6 +4,7 @@ import Plan from "../models/Plan.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
 import { generateSlugFromName } from "../utils/slugify.js"
+import { deriveCountryCode } from "../utils/countryHelper.js"
 import { hashToken } from "../utils/tokenHash.js"
 
 function generateBusinessId() {
@@ -36,7 +37,7 @@ function sanitizeBusiness(biz) {
 // cannot escalate their plan, bypass billing, or hijack ownership.
 const ALLOWED_SETTINGS_UPDATE_FIELDS = [
     "name", "displayName", "slug", "address", "phoneNumber", "contactEmail",
-    "currency", "timezone", "country", "language", "taxRate", "businessType",
+    "currency", "timezone", "country", "countryCode", "language", "taxRate", "businessType",
     "logoUrl", "logoPublicId", "platformFeeLabel", "passPlatformFeeToCustomer",
     "menuCategories",
 ]
@@ -126,9 +127,22 @@ export async function updateSettings(req, res) {
                 return res.status(400).json({ message: "Slug must be between 3 and 40 characters" })
             }
 
-            const existing = await Business.findOne({ slug: updateObj.slug, businessId: { $ne: businessId } })
+            const existingBiz = await Business.findOne({ businessId })
+            
+            // If they are explicitly updating countryCode, use that. Otherwise use their existing countryCode.
+            let resolvedCountryCode = updateObj.countryCode
+            if (!resolvedCountryCode) {
+                resolvedCountryCode = updateObj.country ? deriveCountryCode(updateObj.country) : (existingBiz?.countryCode || 'mt')
+                updateObj.countryCode = resolvedCountryCode
+            }
+
+            const existing = await Business.findOne({ 
+                slug: updateObj.slug, 
+                countryCode: resolvedCountryCode,
+                businessId: { $ne: businessId } 
+            })
             if (existing) {
-                return res.status(400).json({ message: "Slug already in use" })
+                return res.status(400).json({ message: "Slug already in use in this region" })
             }
         } else if (updateObj.displayName || updateObj.name) {
             // Auto-generate slug once if missing or still using the old rest_ format
@@ -137,7 +151,14 @@ export async function updateSettings(req, res) {
                 const baseSlug = generateSlugFromName(updateObj.displayName || updateObj.name);
                 let newSlug = baseSlug;
                 let counter = 1;
-                while (await Business.exists({ slug: newSlug, businessId: { $ne: businessId } })) {
+                
+                let resolvedCountryCode = updateObj.countryCode
+                if (!resolvedCountryCode) {
+                    resolvedCountryCode = updateObj.country ? deriveCountryCode(updateObj.country) : (existingBiz.countryCode || 'mt')
+                    updateObj.countryCode = resolvedCountryCode
+                }
+
+                while (await Business.exists({ slug: newSlug, countryCode: resolvedCountryCode, businessId: { $ne: businessId } })) {
                     newSlug = `${baseSlug}-${counter}`;
                     counter++;
                 }
@@ -354,9 +375,11 @@ export async function createBusiness(req, res) {
             return res.status(400).json({ message: "Slug: lowercase, letters, numbers, hyphens only" })
         }
 
-        const existingSlug = await Business.findOne({ slug })
+        const countryCode = deriveCountryCode(country)
+
+        const existingSlug = await Business.findOne({ slug, countryCode })
         if (existingSlug) {
-            return res.status(400).json({ message: "Slug already in use" })
+            return res.status(400).json({ message: "A business with this slug already exists in this region." })
         }
 
         const businessId = generateBusinessId()
@@ -371,6 +394,7 @@ export async function createBusiness(req, res) {
             phoneNumber: phone,
             address,
             country,
+            countryCode,
             currency,
             timezone,
             language: language || "en",

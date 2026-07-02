@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 dotenv.config({ path: './.env' });
-import Plan from './src/models/Plan.js';
+import Plan from '../src/models/Plan.js';
 
 mongoose.connect(process.env.MONGODB_URI).then(async () => {
     try {
