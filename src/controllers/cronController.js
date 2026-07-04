@@ -36,12 +36,8 @@ function getBusinessDisplayName(business) {
 }
 
 function getBillingEmailFrom() {
-    return process.env.EMAIL_FROM_BILLING ||
-        process.env.EMAIL_FROM_AUTH ||
-        process.env.EMAIL_FROM_ONBOARDING ||
-        process.env.EMAIL_FROM_RECEIPTS ||
-        process.env.EMAIL_FROM ||
-        "QuickServe <onboarding@quickservehq.com>";
+    return process.env.EMAIL_FROM_BILLING
+       
 }
 
 async function getUpcomingInvoiceEstimate(stripe, business) {

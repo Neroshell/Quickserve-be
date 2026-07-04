@@ -482,6 +482,18 @@ export async function markPaid(req, res) {
       return res.status(400).json({ message: "Order is already paid" })
     }
 
+    if (order.paymentChannel !== "offline") {
+      return res.status(400).json({ message: "Only offline orders can be marked paid by staff" })
+    }
+
+    if (order.status === "cancelled") {
+      return res.status(400).json({ message: "Cancelled orders cannot be marked paid" })
+    }
+
+    if (!["pending", "unpaid"].includes(order.paymentStatus)) {
+      return res.status(400).json({ message: "Only pending offline orders can be marked paid" })
+    }
+
     const business = await Business.findOne({ $or: [{ businessId }, { restaurantId: businessId }] }).lean()
     if (!business || !canUseOfflinePayments(business)) {
       return res.status(403).json({
@@ -524,7 +536,7 @@ export async function markPaid(req, res) {
     if (order.platformFeeRateAtOrder == null) updateObj.platformFeeRateAtOrder = lockedRate
 
     const updatedOrder = await Order.findOneAndUpdate(
-      { orderId, businessId, paymentStatus: { $ne: "paid" } },
+      { orderId, businessId, paymentChannel: "offline", status: { $ne: "cancelled" }, paymentStatus: { $ne: "paid" } },
       { $set: updateObj },
       { new: true }
     )
@@ -575,8 +587,8 @@ export async function markPaid(req, res) {
     res.json({
       success: true,
       orderId: order.orderId,
-      paymentStatus: order.paymentStatus,
-      paidVia: order.paidVia,
+      paymentStatus: updatedOrder.paymentStatus,
+      paidVia: updatedOrder.paidVia,
     })
 
     // ✅ Step 4: Fire-and-forget receipt email — runs AFTER response is sent

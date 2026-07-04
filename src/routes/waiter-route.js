@@ -1,5 +1,5 @@
 import express from "express"
-import { waiterOrders, createWaiterOrder, cancelWaiterOrder } from "../controllers/waiterOrdersController.js"
+import { waiterOrders, waiterPastOrders, createWaiterOrder, cancelWaiterOrder } from "../controllers/waiterOrdersController.js"
 import { updateOrderStatus } from "../controllers/kitchenController.js"
 import { markPaid } from "../controllers/orderController.js"
 import {
@@ -90,6 +90,19 @@ router.use(requireAuth, requireRole("waiter"))
  *         description: Unauthorized
  */
 router.get("/", waiterOrders)
+
+/**
+ * @openapi
+ * /waiter/past-orders:
+ *   get:
+ *     summary: Search and filter past waiter orders for recovery workflows
+ *     tags:
+ *       - Waiter
+ *     responses:
+ *       200:
+ *         description: Paginated past orders
+ */
+router.get("/past-orders", waiterPastOrders)
 
 /**
  * @openapi

@@ -4,6 +4,7 @@ import MenuItem from "../models/menuItem.js"
 import Business from "../models/Business.js"
 import Plan from "../models/Plan.js"
 import ServicePoint from "../models/ServicePoint.js"
+import Staff from "../models/Staff.js"
 import { generateOrderId } from "../utils/orderId.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
@@ -27,6 +28,8 @@ function getBusinessDayRange() {
     const end = start.plus({ days: 1 })
 
     return {
+        start,
+        end,
         startJS: start.toJSDate(),
         endJS: end.toJSDate(),
         businessDay: start.toISODate(),
@@ -34,6 +37,298 @@ function getBusinessDayRange() {
     }
 }
 
+function escapeRegex(value = "") {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function getHistoryDateRange(range = "today", from, to) {
+    const { start: todayStart, end: todayEnd } = getBusinessDayRange()
+
+    switch (range) {
+        case "today":
+            return { startJS: todayStart.toJSDate(), endJS: todayEnd.toJSDate() }
+        case "yesterday":
+            return { startJS: todayStart.minus({ days: 1 }).toJSDate(), endJS: todayEnd.minus({ days: 1 }).toJSDate() }
+        case "7days":
+            return { startJS: todayStart.minus({ days: 6 }).toJSDate(), endJS: todayEnd.toJSDate() }
+        case "thisMonth": {
+            const monthStart = todayStart.startOf("month").set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
+            return { startJS: monthStart.toJSDate(), endJS: todayEnd.toJSDate() }
+        }
+        case "custom": {
+            if (!from || !to) {
+                const error = new Error("Missing 'from' or 'to' for custom range")
+                error.statusCode = 400
+                throw error
+            }
+
+            const customStart = DateTime.fromISO(String(from), { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
+            const customEnd = DateTime.fromISO(String(to), { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 }).plus({ days: 1 })
+
+            if (!customStart.isValid || !customEnd.isValid) {
+                const error = new Error("Invalid date format for custom range")
+                error.statusCode = 400
+                throw error
+            }
+
+            return { startJS: customStart.toJSDate(), endJS: customEnd.toJSDate() }
+        }
+        default:
+            return { startJS: todayStart.toJSDate(), endJS: todayEnd.toJSDate() }
+    }
+}
+
+function buildHistoryTimeline(order) {
+    return [
+        order.createdAt ? { label: "Created", at: order.createdAt } : null,
+        order.readyAt ? { label: "Ready", at: order.readyAt } : null,
+        order.completedAt ? { label: "Completed", at: order.completedAt } : null,
+        order.servedAt ? { label: "Served", at: order.servedAt, by: order.servedByName || null } : null,
+        order.paidAt ? { label: "Paid", at: order.paidAt, by: order.paidByName || null } : null,
+        order.receiptSentAt ? { label: "Receipt sent", at: order.receiptSentAt } : null,
+        order.cancelledAt ? { label: "Cancelled", at: order.cancelledAt } : null,
+    ].filter(Boolean)
+}
+
+function normalizePaymentMethod(order) {
+    if (order.paidVia === "cash") return "cash"
+    if (order.paidVia === "pos_card") return "pos_card"
+    if (order.paidVia === "online_card") return "online"
+    return order.paymentChannel || "offline"
+}
+
+function getWaiterName(order, staffById) {
+    return (
+        order.servedByName ||
+        order.paidByName ||
+        order.completedBy ||
+        staffById.get(order.servedByStaffId) ||
+        staffById.get(order.paidByStaffId) ||
+        staffById.get(order.createdByStaffId) ||
+        ""
+    )
+}
+
+export async function waiterPastOrders(req, res) {
+    try {
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ error: "Unauthorized" })
+        }
+
+        const {
+            range = "today",
+            from,
+            to,
+            status = "all",
+            paymentStatus = "all",
+            paymentMethod = "all",
+            search = "",
+        } = req.query
+
+        const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1)
+        const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || "25"), 10) || 25))
+        const skip = (page - 1) * limit
+        const { startJS, endJS } = getHistoryDateRange(range, from, to)
+
+        const filter = {
+            businessId,
+            createdAt: { $gte: startJS, $lt: endJS },
+        }
+
+        const allowedStatuses = ["placed", "in_progress", "ready", "completed", "cancelled"]
+        if (status !== "all" && allowedStatuses.includes(status)) {
+            filter.status = status
+        } else {
+            filter.status = { $in: allowedStatuses }
+        }
+
+        if (paymentStatus === "paid") {
+            filter.paymentStatus = "paid"
+        } else if (paymentStatus === "pending") {
+            filter.paymentStatus = { $in: ["pending", "unpaid"] }
+        }
+
+        if (paymentMethod === "online") {
+            filter.paymentChannel = "online"
+        } else if (paymentMethod === "offline") {
+            filter.paymentChannel = "offline"
+        } else if (paymentMethod === "cash") {
+            filter.paidVia = "cash"
+        } else if (paymentMethod === "pos_card") {
+            filter.paidVia = "pos_card"
+        }
+
+        const trimmedSearch = String(search || "").trim()
+        if (trimmedSearch) {
+            const searchRegex = new RegExp(escapeRegex(trimmedSearch), "i")
+            const matchingStaff = await Staff.find(
+                {
+                    businessId,
+                    name: { $regex: searchRegex },
+                },
+                { staffId: 1, waiterId: 1 }
+            ).lean()
+
+            const matchingStaffIds = matchingStaff
+                .flatMap((staff) => [staff.staffId, staff.waiterId])
+                .filter(Boolean)
+
+            filter.$or = [
+                { orderId: { $regex: searchRegex } },
+                { receiptEmail: { $regex: searchRegex } },
+                { crmEmail: { $regex: searchRegex } },
+                { tableNumber: { $regex: searchRegex } },
+                { tableLabel: { $regex: searchRegex } },
+                { paidByName: { $regex: searchRegex } },
+                { servedByName: { $regex: searchRegex } },
+                { completedBy: { $regex: searchRegex } },
+            ]
+
+            if (matchingStaffIds.length > 0) {
+                filter.$or.push(
+                    { createdByStaffId: { $in: matchingStaffIds } },
+                    { paidByStaffId: { $in: matchingStaffIds } },
+                    { servedByStaffId: { $in: matchingStaffIds } }
+                )
+            }
+        }
+
+        const projection = {
+            _id: 0,
+            orderId: 1,
+            businessId: 1,
+            tableNumber: 1,
+            tableLabel: 1,
+            orderType: 1,
+            status: 1,
+            createdAt: 1,
+            updatedAt: 1,
+            readyAt: 1,
+            completedAt: 1,
+            servedAt: 1,
+            cancelledAt: 1,
+            items: 1,
+            subtotal: 1,
+            taxAmount: 1,
+            platformFeeTotal: 1,
+            total: 1,
+            currency: 1,
+            paymentChannel: 1,
+            paymentStatus: 1,
+            paidVia: 1,
+            paidAt: 1,
+            receiptEmail: 1,
+            receiptSent: 1,
+            receiptSentAt: 1,
+            crmEmail: 1,
+            createdByStaffId: 1,
+            completedBy: 1,
+            paidByStaffId: 1,
+            paidByName: 1,
+            servedByStaffId: 1,
+            servedByName: 1,
+        }
+
+        const [rawOrders, totalCount] = await Promise.all([
+            Order.find(filter, projection)
+                .sort({ createdAt: -1, updatedAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            Order.countDocuments(filter),
+        ])
+
+        const staffIds = Array.from(new Set(rawOrders.flatMap((order) => [
+            order.createdByStaffId,
+            order.paidByStaffId,
+            order.servedByStaffId,
+        ]).filter(Boolean)))
+
+        const staffRows = staffIds.length > 0
+            ? await Staff.find(
+                {
+                    businessId,
+                    $or: [
+                        { staffId: { $in: staffIds } },
+                        { waiterId: { $in: staffIds } },
+                    ],
+                },
+                { staffId: 1, waiterId: 1, name: 1 }
+            ).lean()
+            : []
+
+        const staffById = new Map()
+        for (const staff of staffRows) {
+            if (staff.staffId) staffById.set(staff.staffId, staff.name)
+            if (staff.waiterId) staffById.set(staff.waiterId, staff.name)
+        }
+
+        const orders = rawOrders.map((order) => ({
+            orderId: order.orderId,
+            businessId: order.businessId,
+            tableNumber: order.tableNumber,
+            tableLabel: order.tableLabel || order.tableNumber,
+            servicePoint: order.tableLabel || order.tableNumber,
+            orderType: order.orderType,
+            status: order.status,
+            createdAt: order.createdAt,
+            updatedAt: order.updatedAt,
+            readyAt: order.readyAt,
+            completedAt: order.completedAt,
+            servedAt: order.servedAt,
+            cancelledAt: order.cancelledAt,
+            customerEmail: order.receiptEmail || order.crmEmail || "",
+            waiter: getWaiterName(order, staffById),
+            paymentChannel: order.paymentChannel || "offline",
+            paymentStatus: order.paymentStatus || "unpaid",
+            paymentMethod: normalizePaymentMethod(order),
+            paidVia: order.paidVia || null,
+            paidAt: order.paidAt,
+            receiptEmail: order.receiptEmail || "",
+            receiptSent: Boolean(order.receiptSent),
+            receiptSentAt: order.receiptSentAt,
+            subtotal: order.subtotal || 0,
+            taxAmount: order.taxAmount || 0,
+            platformFeeTotal: order.platformFeeTotal || 0,
+            total: order.total || 0,
+            currency: order.currency || "EUR",
+            canMarkPaid: order.paymentChannel === "offline" && ["pending", "unpaid"].includes(order.paymentStatus) && order.status !== "cancelled",
+            items: (order.items || []).map((item) => ({
+                itemName: item.itemName,
+                quantity: item.quantity,
+                lineTotal: item.lineTotal || 0,
+                notes: item.notes || "",
+                allergies: item.allergies || [],
+            })),
+            timeline: buildHistoryTimeline(order),
+        }))
+
+        return res.json({
+            orders,
+            pagination: {
+                page,
+                limit,
+                total: totalCount,
+                totalPages: Math.max(1, Math.ceil(totalCount / limit)),
+                hasNextPage: page * limit < totalCount,
+                hasPreviousPage: page > 1,
+            },
+            filters: {
+                range,
+                from: startJS,
+                to: endJS,
+                status,
+                paymentStatus,
+                paymentMethod,
+                search: trimmedSearch,
+            },
+        })
+    } catch (err) {
+        console.error("[waiterPastOrders]", err)
+        return res.status(err.statusCode || 500).json({ error: err.message || "Failed to fetch waiter past orders" })
+    }
+}
 // ✅ NEW: waiter can fetch ANY status (ready/placed/in_progress/completed/all)
 // GET /waiter?status=ready
 export async function waiterOrders(req, res) {
