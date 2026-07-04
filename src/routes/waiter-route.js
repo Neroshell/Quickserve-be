@@ -1,7 +1,7 @@
 import express from "express"
 import { waiterOrders, waiterPastOrders, createWaiterOrder, cancelWaiterOrder } from "../controllers/waiterOrdersController.js"
 import { updateOrderStatus } from "../controllers/kitchenController.js"
-import { markPaid } from "../controllers/orderController.js"
+import { markPaid, reconcileComplete } from "../controllers/orderController.js"
 import {
     createWaiterCall,
     listWaiterCalls,
@@ -72,8 +72,49 @@ router.post("/calls", createWaiterCall)
 
 
 // ==========================================
-// PROTECTED ROUTES (waiter role required)
+// RECONCILIATION ROUTES (waiter/manager/owner/co-owner)
 // ==========================================
+const requireReconciliationRole = requireRole("waiter", "manager", "owner", "co_owner")
+
+/**
+ * @openapi
+ * /waiter/past-orders:
+ *   get:
+ *     summary: Search and filter past waiter orders for recovery workflows
+ *     tags:
+ *       - Waiter
+ *     responses:
+ *       200:
+ *         description: Paginated past orders
+ */
+router.get("/past-orders", requireAuth, requireReconciliationRole, waiterPastOrders)
+
+/**
+ * @openapi
+ * /waiter/orders/{orderId}/mark-paid:
+ *   patch:
+ *     summary: Mark an order as paid (Offline POS / Cash)
+ *     tags:
+ *       - Waiter
+ *     responses:
+ *       200:
+ *         description: Order marked as paid
+ */
+router.patch("/orders/:orderId/mark-paid", requireAuth, requireReconciliationRole, markPaid)
+
+/**
+ * @openapi
+ * /waiter/orders/{orderId}/reconcile-complete:
+ *   patch:
+ *     summary: Operational recovery - mark a forgotten open order as completed
+ *     tags:
+ *       - Waiter
+ *     responses:
+ *       200:
+ *         description: Order marked as completed
+ */
+router.patch("/orders/:orderId/reconcile-complete", requireAuth, requireReconciliationRole, reconcileComplete)
+
 router.use(requireAuth, requireRole("waiter"))
 
 /**
@@ -91,18 +132,6 @@ router.use(requireAuth, requireRole("waiter"))
  */
 router.get("/", waiterOrders)
 
-/**
- * @openapi
- * /waiter/past-orders:
- *   get:
- *     summary: Search and filter past waiter orders for recovery workflows
- *     tags:
- *       - Waiter
- *     responses:
- *       200:
- *         description: Paginated past orders
- */
-router.get("/past-orders", waiterPastOrders)
 
 /**
  * @openapi
@@ -171,36 +200,7 @@ router.post("/orders", createWaiterOrder)
  */
 router.patch("/orders/:orderId/status", updateOrderStatus)
 
-/**
- * @openapi
- * /waiter/orders/{orderId}/mark-paid:
- *   patch:
- *     summary: Mark an order as paid (Offline POS / Cash)
- *     tags:
- *       - Waiter
- *     parameters:
- *       - in: path
- *         name: orderId
- *         required: true
- *         schema:
- *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - paidVia
- *             properties:
- *               paidVia:
- *                 type: string
- *                 enum: [pos_card, cash]
- *     responses:
- *       200:
- *         description: Order marked as paid
- */
-router.patch("/orders/:orderId/mark-paid", markPaid)
+
 
 /**
  * @openapi

@@ -622,7 +622,9 @@ export async function sendReceipt(req, res) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-
+    if (order.status === "cancelled") {
+      return res.status(400).json({ message: "Cannot send receipt for a cancelled order." });
+    }
 
     const emailSent = await sendReceiptEmail(order, email);
 
@@ -718,3 +720,93 @@ export async function saveReceiptEmail(req, res) {
   }
 }
 
+/**
+ * PATCH /orders/:orderId/reconcile-complete
+ *
+ * Operational recovery - mark an order as completed without running through
+ * the normal kitchen/bar workflow.  Intended for after-shift reconciliation
+ * when a waiter forgot to tap "Complete" before ending their session.
+ *
+ * Rules:
+ *   - Scoped to the authenticated user's business (session-derived).
+ *   - Cancelled orders cannot be moved forward.
+ *   - Already-completed orders are idempotent (returns 400 with a clear message).
+ *   - Allowed source statuses: placed, in_progress, ready.
+ *   - Sets completedAt if not already present.
+ *   - Publishes SSE update so dashboards refresh.
+ */
+export async function reconcileComplete(req, res) {
+  try {
+    const { orderId } = req.params
+    const businessId = req.session?.user?.businessId
+    if (!businessId) {
+      return res.status(401).json({ error: "Unauthorized" })
+    }
+
+    const ALLOWED_SOURCE_STATUSES = ["placed", "in_progress", "ready"]
+
+    const order = await Order.findOne({ orderId, businessId }).lean()
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" })
+    }
+
+    if (order.status === "cancelled") {
+      return res.status(400).json({ error: "Cancelled orders cannot be marked as completed." })
+    }
+
+    if (order.status === "completed") {
+      return res.status(400).json({ error: "Order is already completed." })
+    }
+
+    if (!ALLOWED_SOURCE_STATUSES.includes(order.status)) {
+      return res.status(400).json({
+        error: `Cannot complete an order with status '${order.status}'. Allowed: ${ALLOWED_SOURCE_STATUSES.join(", ")}.`,
+      })
+    }
+
+    const completedAt = new Date()
+    const updateObj = {
+      status: "completed",
+    }
+    if (!order.completedAt) updateObj.completedAt = completedAt
+    if (!order.servedAt) updateObj.servedAt = completedAt
+
+    const staffId = req.session?.user?.staffId || req.session?.user?.id
+    if (staffId) updateObj.servedByStaffId = staffId
+    if (req.session?.user?.name) {
+      updateObj.completedBy = req.session.user.name
+      updateObj.servedByName = req.session.user.name
+    }
+
+    // ATOMIC UPDATE: guard against concurrent reconciliation attempts
+    const updatedOrder = await Order.findOneAndUpdate(
+      { orderId, businessId, status: { $in: ALLOWED_SOURCE_STATUSES } },
+      { $set: updateObj },
+      { new: true }
+    )
+
+    if (!updatedOrder) {
+      return res.status(409).json({
+        error: "Order status was changed by another request. Please refresh and try again.",
+      })
+    }
+
+    const orderDTO = toOrderDTO(updatedOrder)
+
+    // Broadcast to all relevant staff channels so dashboards update in real-time
+    await publishEvent("order_updated", updatedOrder.businessId, ["waiter", "kitchen", "bar", "table", "anon"], {
+      order: orderDTO,
+      action: "reconcile_completed",
+    })
+
+    return res.json({
+      success: true,
+      orderId: updatedOrder.orderId,
+      status: updatedOrder.status,
+      completedAt: updatedOrder.completedAt,
+    })
+  } catch (err) {
+    console.error("[reconcileComplete] Error:", err)
+    return res.status(500).json({ error: "Failed to reconcile order" })
+  }
+}

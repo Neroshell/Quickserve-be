@@ -41,19 +41,22 @@ function escapeRegex(value = "") {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-function getHistoryDateRange(range = "today", from, to) {
+function getHistoryDateRange(range = "yesterday", from, to) {
     const { start: todayStart, end: todayEnd } = getBusinessDayRange()
 
+    // Enforce upper bound: Past orders cannot include today's orders
+    const maxEndJS = todayStart.toJSDate()
+
     switch (range) {
-        case "today":
-            return { startJS: todayStart.toJSDate(), endJS: todayEnd.toJSDate() }
+        case "today": // Fallback if someone manually passes 'today'
+            return { startJS: todayStart.minus({ days: 1 }).toJSDate(), endJS: maxEndJS }
         case "yesterday":
-            return { startJS: todayStart.minus({ days: 1 }).toJSDate(), endJS: todayEnd.minus({ days: 1 }).toJSDate() }
+            return { startJS: todayStart.minus({ days: 1 }).toJSDate(), endJS: maxEndJS }
         case "7days":
-            return { startJS: todayStart.minus({ days: 6 }).toJSDate(), endJS: todayEnd.toJSDate() }
+            return { startJS: todayStart.minus({ days: 7 }).toJSDate(), endJS: maxEndJS }
         case "thisMonth": {
             const monthStart = todayStart.startOf("month").set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-            return { startJS: monthStart.toJSDate(), endJS: todayEnd.toJSDate() }
+            return { startJS: monthStart.toJSDate(), endJS: maxEndJS }
         }
         case "custom": {
             if (!from || !to) {
@@ -71,10 +74,13 @@ function getHistoryDateRange(range = "today", from, to) {
                 throw error
             }
 
-            return { startJS: customStart.toJSDate(), endJS: customEnd.toJSDate() }
+            const actualEnd = customEnd > todayStart ? todayStart : customEnd
+            const actualStart = customStart > actualEnd ? actualEnd : customStart
+
+            return { startJS: actualStart.toJSDate(), endJS: actualEnd.toJSDate() }
         }
         default:
-            return { startJS: todayStart.toJSDate(), endJS: todayEnd.toJSDate() }
+            return { startJS: todayStart.minus({ days: 1 }).toJSDate(), endJS: maxEndJS }
     }
 }
 
@@ -294,6 +300,7 @@ export async function waiterPastOrders(req, res) {
             total: order.total || 0,
             currency: order.currency || "EUR",
             canMarkPaid: order.paymentChannel === "offline" && ["pending", "unpaid"].includes(order.paymentStatus) && order.status !== "cancelled",
+            canMarkCompleted: ["placed", "in_progress", "ready"].includes(order.status),
             items: (order.items || []).map((item) => ({
                 itemName: item.itemName,
                 quantity: item.quantity,

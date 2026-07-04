@@ -1,6 +1,6 @@
 import express from "express"
 import rateLimit from "express-rate-limit"
-import { listOrders, createOrder, getOrderById, updateOrderStatus, deleteOrdersBySession, markPaid, sendReceipt, saveReceiptEmail } from "../controllers/orderController.js"
+import { listOrders, createOrder, getOrderById, updateOrderStatus, deleteOrdersBySession, markPaid, sendReceipt, saveReceiptEmail, reconcileComplete } from "../controllers/orderController.js"
 import { reorderFromOrder } from "../controllers/reorderController.js"
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
 
@@ -213,7 +213,7 @@ router.patch("/:orderId/status", requireAuth, requireRole("waiter", "kitchen", "
  *       200:
  *         description: Order marked paid
  */
-router.patch("/:orderId/mark-paid", requireAuth, requireRole("waiter"), markPaid)
+router.patch("/:orderId/mark-paid", requireAuth, requireRole("waiter", "manager", "owner", "co_owner"), markPaid)
 
 /**
  * @openapi
@@ -244,6 +244,29 @@ router.patch("/:orderId/mark-paid", requireAuth, requireRole("waiter"), markPaid
  *         description: Receipt sent
  */
 router.post("/:orderId/receipt", receiptLimiter, requireAuth, requireRole("waiter", "owner", "admin", "manager"), sendReceipt)
+
+/**
+ * @openapi
+ * /orders/{orderId}/reconcile-complete:
+ *   patch:
+ *     summary: Operational recovery - mark an order as completed (after-shift reconciliation)
+ *     tags:
+ *       - Orders
+ *     parameters:
+ *       - in: path
+ *         name: orderId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Order marked as completed
+ *       400:
+ *         description: Invalid transition (already completed, cancelled, or wrong status)
+ *       409:
+ *         description: Concurrent update conflict
+ */
+router.patch("/:orderId/reconcile-complete", requireAuth, requireRole("waiter", "manager", "owner", "co_owner"), reconcileComplete)
 
 /**
  * @openapi
