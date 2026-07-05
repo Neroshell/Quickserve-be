@@ -775,10 +775,11 @@ export async function ownerAnalytics(req, res) {
         }
 
         const serviceCalls = {
-            total: (scByStatus.pending || 0) + (scByStatus.acknowledged || 0) + (scByStatus.resolved || 0),
+            total: (scByStatus.pending || 0) + (scByStatus.acknowledged || 0) + (scByStatus.resolved || 0) + (scByStatus.missed || 0),
             pending: scByStatus.pending || 0,
             acknowledged: scByStatus.acknowledged || 0,
             resolved: scByStatus.resolved || 0,
+            missed: scByStatus.missed || 0,
             byReason: scByReason,
             avgResponseTimeSeconds: Math.round(scFacet.responseTimes?.[0]?.avg || 0),
             avgResolutionTimeSeconds: Math.round(scFacet.resolutionTimes?.[0]?.avg || 0)
