@@ -17,7 +17,7 @@ const WaiterCallSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["pending", "acknowledged", "resolved"],
+      enum: ["pending", "acknowledged", "resolved", "missed"],
       default: "pending",
       index: true,
     },
@@ -34,6 +34,10 @@ const WaiterCallSchema = new mongoose.Schema(
     resolvedByStaffId: { type: String, default: null },
     resolvedByName: { type: String, default: null },
     resolvedAt: { type: Date, default: null },
+
+    // Expiration and missed fields
+    pendingExpiresAt: { type: Date, default: null, index: true },
+    missedAt: { type: Date, default: null },
 
     // who created it (customer calls usually null)
     createdBy: { type: String, default: null },

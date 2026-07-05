@@ -4,6 +4,23 @@ import TableSession from "../models/TableSession.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { DateTime } from "luxon"
 
+async function expireStaleCalls(businessId) {
+  const now = new Date()
+  await WaiterCall.updateMany(
+    {
+      businessId,
+      status: "pending",
+      pendingExpiresAt: { $lte: now },
+    },
+    {
+      $set: {
+        status: "missed",
+        missedAt: now,
+      },
+    }
+  )
+}
+
 /**
  * Resolve the businessId for a waiter-call request from a TRUSTED source:
  *   - an authenticated staff session, or
@@ -78,11 +95,18 @@ export async function createWaiterCall(req, res) {
       return res.status(400).json({ error: "tableNumber is required" })
     }
 
-    // Table-level anti-spam: only allow one active call per table
+    // Lazy expiration
+    await expireStaleCalls(businessId)
+    const now = new Date()
+
+    // Table-level anti-spam: only block if acknowledged OR (pending and not yet expired)
     const existingActiveCall = await WaiterCall.findOne({
       businessId,
       tableNumber: String(tableNumber).trim(),
-      status: { $in: ["pending", "acknowledged"] },
+      $or: [
+        { status: "acknowledged" },
+        { status: "pending", pendingExpiresAt: { $gt: now } }
+      ]
     }).lean()
 
     if (existingActiveCall) {
@@ -123,6 +147,7 @@ export async function createWaiterCall(req, res) {
       note: String(note || "").trim(),
       status: "pending",
       createdBy: waiterId || null, // usually null because customer triggers it
+      pendingExpiresAt: new Date(now.getTime() + 3 * 60 * 1000), // 10 minutes from now
     })
 
     // Notify staff and the customer's table stream (per-table scoped). The latter
@@ -147,16 +172,20 @@ export async function listWaiterCalls(req, res) {
     }
     const businessId = resolved.businessId
 
+    // Lazy expiration before reading
+    await expireStaleCalls(businessId)
+
     // status:
     // - "active" => pending + acknowledged
-    // - "pending" | "acknowledged" | "resolved"
+    // - "pending" | "acknowledged" | "resolved" | "missed" | "all"
 
     const filter = { businessId }
     if (status === "active") {
       filter.status = { $in: ["pending", "acknowledged"] }
-    } else if (["pending", "acknowledged", "resolved"].includes(String(status))) {
+    } else if (["pending", "acknowledged", "resolved", "missed"].includes(String(status))) {
       filter.status = String(status)
     }
+    // if status === "all", we don't set filter.status so it fetches everything
 
     const { startJS, endJS } = getBusinessDayRange()
     filter.createdAt = { $gte: startJS, $lt: endJS }
@@ -249,20 +278,29 @@ export async function resolveWaiterCall(req, res) {
 
     const { id } = req.params
     const businessId = req.session?.user?.businessId
+    const role = req.session?.user?.role || "waiter"
+    const isManagerOrOwner = ["manager", "owner", "co_owner", "primary_owner"].includes(role)
+
     if (!businessId) {
       return res.status(401).json({ error: "Unauthorized" })
     }
 
     const now = new Date()
 
+    // Query to find the call and update it if allowed
+    const query = {
+      _id: id,
+      businessId,
+      status: { $in: ["pending", "acknowledged"] },
+    }
+
+    if (!isManagerOrOwner) {
+      // Waiters can only resolve calls they have claimed.
+      query.claimedBy = staffId
+    }
+
     const updated = await WaiterCall.findOneAndUpdate(
-      {
-        _id: id,
-        businessId,
-        status: { $in: ["pending", "acknowledged"] },
-        // Only claimer can resolve; if still pending, allow resolver to resolve only if they claim first
-        $or: [{ claimedBy: staffId }, { claimedBy: null, status: "pending" }],
-      },
+      query,
       {
         $set: {
           status: "resolved",

@@ -922,6 +922,13 @@ export async function getDashboardData(req, res) {
         const endDateJS   = todayEnd.toJSDate()
         const dateFilter  = { businessId, createdAt: { $gte: startDateJS, $lt: endDateJS } }
 
+        // Expire stale waiter calls before querying
+        const now = new Date()
+        await WaiterCall.updateMany(
+            { businessId, status: "pending", pendingExpiresAt: { $lte: now } },
+            { $set: { status: "missed", missedAt: now } }
+        )
+
         // â”€â”€ Run all queries in parallel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const [
             todayOrdersRaw,
@@ -929,12 +936,14 @@ export async function getDashboardData(req, res) {
             recentFeedback,
             activeStaff,
             pendingWaiterCalls,
+            missedWaiterCalls,
             totalMenuItems,
+            reconciliationCount,
         ] = await Promise.all([
             Order.find({
                 ...dateFilter,
                 status: { $in: ["placed", "in_progress", "ready", "completed"] }
-            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, tableLabel: 1, tableNumber: 1, orderType: 1 }).lean(),
+            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, tableLabel: 1, tableNumber: 1, orderType: 1, paymentChannel: 1 }).lean(),
 
             Business.findOne({ businessId }).lean(),
 
@@ -945,9 +954,20 @@ export async function getDashboardData(req, res) {
 
             Staff.find({ businessId, $or: [{ presenceStatus: "active" }, { status: "active" }] }).lean(),
 
-            WaiterCall.find({ businessId, status: "pending" }).lean(),
+            WaiterCall.find({ businessId, status: "pending", createdAt: { $gte: startDateJS, $lt: endDateJS } }).lean(),
+
+            WaiterCall.find({ businessId, status: "missed", createdAt: { $gte: startDateJS, $lt: endDateJS } }).lean(),
 
             MenuItem.countDocuments({ businessId }),
+
+            Order.countDocuments({
+                businessId,
+                createdAt: { $lt: startDateJS },
+                $or: [
+                    { status: { $in: ["placed", "in_progress", "ready"] } },
+                    { paymentChannel: "offline", paymentStatus: { $ne: "paid" }, status: { $ne: "cancelled" } }
+                ]
+            })
         ])
 
         // â”€â”€ Today's KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -995,11 +1015,27 @@ export async function getDashboardData(req, res) {
             actionItems.push({ type: "service", severity: "warning", message: `${pendingWaiterCalls.length} unanswered waiter call${pendingWaiterCalls.length > 1 ? "s" : ""} pending.`, href: "/owner/orders" })
         }
 
+        if (missedWaiterCalls.length > 0) {
+            actionItems.push({ type: "service", severity: "error", message: `${missedWaiterCalls.length} waiter call${missedWaiterCalls.length > 1 ? "s were" : " was"} missed today.`, href: "/owner/orders" })
+        }
+
         // Orders waiting >15 minutes
         const now15 = new Date(Date.now() - 15 * 60 * 1000)
         const longWaitOrders = todayOrdersRaw.filter(o => ["placed","in_progress"].includes(o.status) && new Date(o.createdAt) < now15)
         if (longWaitOrders.length > 0) {
             actionItems.push({ type: "orders", severity: "warning", message: `${longWaitOrders.length} order${longWaitOrders.length > 1 ? "s" : ""} waiting over 15 minutes.`, href: "/owner/orders" })
+        }
+
+        // Unpaid offline orders (today only)
+        const unpaidOfflineOrders = todayOrdersRaw.filter(o => o.paymentChannel === "offline" && o.paymentStatus !== "paid" && o.status !== "cancelled")
+        if (unpaidOfflineOrders.length > 0) {
+            actionItems.push({ type: "payments", severity: "warning", message: `${unpaidOfflineOrders.length} offline order${unpaidOfflineOrders.length > 1 ? "s" : ""} awaiting payment.`, href: "/owner/orders" })
+        }
+
+        // Uncompleted orders (today only)
+        const uncompletedOrders = todayOrdersRaw.filter(o => ["placed", "in_progress", "ready"].includes(o.status))
+        if (uncompletedOrders.length > 0) {
+            actionItems.push({ type: "orders", severity: "info", message: `${uncompletedOrders.length} order${uncompletedOrders.length > 1 ? "s" : ""} not yet completed.`, href: "/owner/orders" })
         }
 
         if (staffOnlineCount === 0) {
@@ -1059,6 +1095,7 @@ export async function getDashboardData(req, res) {
             activityFeed,
             feedbackPreview,
             hourlyRevenue,
+            reconciliationCount,
         })
 
     } catch (err) {
