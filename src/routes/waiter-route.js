@@ -12,6 +12,7 @@ import {
 import { listServicePoints } from "../controllers/servicePointController.js"
 
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+import { requireOfflineServiceActive } from "../middleware/billingMiddleware.js"
 
 const router = express.Router()
 
@@ -167,7 +168,7 @@ router.get("/", waiterOrders)
  *       201:
  *         description: Order created successfully
  */
-router.post("/orders", createWaiterOrder)
+router.post("/orders", requireOfflineServiceActive, createWaiterOrder)
 
 /**
  * @openapi

@@ -137,6 +137,8 @@ export async function handleStripeWebhook(req, res) {
                                         stripeSubscriptionStatus: updated.status,
                                         scheduledDowngradePlan: null,
                                         scheduledPlanEffectiveDate: null,
+                                        billingStatus: 'active',
+                                        billingFailedAt: null,
                                         ...periodUpdate,
                                     }
                                 }
@@ -151,6 +153,8 @@ export async function handleStripeWebhook(req, res) {
                                 {
                                     $set: {
                                         stripeSubscriptionStatus: subscription.status,
+                                        billingStatus: 'active',
+                                        billingFailedAt: null,
                                         ...periodUpdate,
                                     }
                                 }
@@ -161,6 +165,52 @@ export async function handleStripeWebhook(req, res) {
             }
             return res.status(200).send();
         }
+
+        if (event.type === "invoice.payment_failed") {
+            const invoice = event.data.object;
+            if (invoice.subscription) {
+                await Business.findOneAndUpdate(
+                    { stripeSubscriptionId: invoice.subscription },
+                    {
+                        $set: {
+                            billingStatus: 'past_due',
+                        },
+                        $setOnInsert: {
+                            billingFailedAt: new Date()
+                        }
+                    }
+                );
+            }
+            return res.status(200).send();
+        }
+
+        if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
+            const subscription = event.data.object;
+            
+            const updateFields = { stripeSubscriptionStatus: subscription.status };
+            
+            if (subscription.status === "past_due" || subscription.status === "unpaid" || subscription.status === "canceled") {
+                updateFields.billingStatus = subscription.status === "canceled" ? 'cancelled' : 'past_due';
+                // Only set failed at if it wasn't already set by a prior failure
+            } else if (subscription.status === "active") {
+                updateFields.billingStatus = 'active';
+                updateFields.billingFailedAt = null;
+            }
+
+            const biz = await Business.findOne({ stripeSubscriptionId: subscription.id });
+            if (biz) {
+                if ((subscription.status === "past_due" || subscription.status === "unpaid" || subscription.status === "canceled") && !biz.billingFailedAt) {
+                    updateFields.billingFailedAt = new Date();
+                }
+                
+                await Business.updateOne(
+                    { _id: biz._id },
+                    { $set: updateFields }
+                );
+            }
+            return res.status(200).send();
+        }
+
         if (event.type !== "checkout.session.completed") {
             return res.status(200).send();
         }

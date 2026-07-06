@@ -36,8 +36,7 @@ function getBusinessDisplayName(business) {
 }
 
 function getBillingEmailFrom() {
-    return process.env.EMAIL_FROM_BILLING
-       
+    return process.env.EMAIL_FROM_BILLING;
 }
 
 async function getUpcomingInvoiceEstimate(stripe, business) {
@@ -58,7 +57,288 @@ async function getUpcomingInvoiceEstimate(stripe, business) {
     }
 }
 
-export const sendBillingReminders = async (req, res) => {
+// Stage 1: Upcoming Invoices
+async function sendUpcomingInvoiceReminders({ stripe, now, tomorrowString, businesses, results, summary }) {
+    for (const business of businesses) {
+        if (business.billingStatus !== "active") continue; // Only for active
+
+        const result = {
+            businessId: business.businessId,
+            stage: "upcoming_invoice",
+            reminderDate: null,
+            status: "skipped",
+            reason: null,
+        };
+
+        try {
+            const invoiceDate = getStoredInvoiceDate(business);
+            const invoiceDateString = toUtcDateString(invoiceDate);
+            result.reminderDate = invoiceDateString;
+
+            if (!invoiceDateString || business.billingReminderSentForPeriod === invoiceDateString || invoiceDateString !== tomorrowString) {
+                continue; // Skip silently without logging to summary if not due
+            }
+
+            summary.checked++;
+            const recipient = getBusinessRecipient(business);
+            if (!recipient) {
+                summary.skipped++;
+                result.reason = "missing_owner_email";
+                results.push(result);
+                continue;
+            }
+
+            const { invoice: upcomingInvoice, error: invoiceError } = await getUpcomingInvoiceEstimate(stripe, business);
+            const formattedDate = invoiceDate.toLocaleDateString("en-US", {
+                month: "long",
+                day: "numeric",
+                year: "numeric",
+                timeZone: "UTC",
+            });
+
+            const hasAmount = typeof upcomingInvoice?.total === "number";
+            const amount = hasAmount ? (upcomingInvoice.total / 100).toFixed(2) : null;
+            const amountHtml = hasAmount
+                ? `<p>Estimated amount:<br/><strong style="font-size: 1.2em;">&euro;${amount}</strong></p>`
+                : `<p>Your invoice amount will be finalized by Stripe before billing.</p>`;
+
+            const emailBody = `
+                <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
+                    <p>Hi ${getBusinessDisplayName(business)},</p>
+                    <p>Your next QuickServe invoice will be charged on <strong>${formattedDate}</strong>.</p>
+                    ${amountHtml}
+                    <p>This includes your subscription and offline commission fees for this billing period.</p>
+                    <p style="margin-top: 25px;">
+                        <a href="${process.env.FRONTEND_BASE_URL || "http://localhost:3000"}/owner/billing" style="display: inline-block; padding: 10px 20px; background-color: #EA601A; color: #fff; text-decoration: none; border-radius: 5px; font-weight: bold;">Manage billing &rarr;</a>
+                    </p>
+                </div>
+            `;
+
+            const emailFrom = getBillingEmailFrom();
+            const emailSent = await sendEmail({
+                to: recipient,
+                subject: "Your QuickServe invoice is coming tomorrow",
+                html: emailBody,
+                from: emailFrom,
+            });
+
+            if (emailSent) {
+                business.billingReminderSentAt = now;
+                business.billingReminderSentForPeriod = invoiceDateString;
+                await business.save();
+                summary.sent++;
+                result.status = "sent";
+            } else {
+                summary.failed++;
+                result.status = "failed";
+                result.reason = "email_provider_failed";
+            }
+            results.push(result);
+        } catch (err) {
+            summary.failed++;
+            result.status = "failed";
+            result.reason = err.message;
+            results.push(result);
+        }
+    }
+}
+
+// Stages 2 & 3: Overdue Reminders (Day 3, Day 5)
+async function processOverdueInvoices({ now, businesses, results, summary }) {
+    for (const business of businesses) {
+        if (business.billingStatus !== "past_due" || !business.billingFailedAt) continue;
+
+        const daysOverdue = Math.floor((now - new Date(business.billingFailedAt)) / (1000 * 60 * 60 * 24));
+        const result = {
+            businessId: business.businessId,
+            stage: "overdue_warning",
+            status: "skipped",
+            reason: null,
+        };
+
+        const recipient = getBusinessRecipient(business);
+        if (!recipient) continue;
+
+        const emailFrom = getBillingEmailFrom();
+
+        try {
+            // Day 3 Warning
+            if (daysOverdue >= 3 && daysOverdue < 5 && !business.overdueReminderSentAt) {
+                summary.checked++;
+                const emailBody = `
+                    <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
+                        <p>Hi ${getBusinessDisplayName(business)},</p>
+                        <p>We were unable to process your recent QuickServe payment. Your account is currently <strong>overdue</strong>.</p>
+                        <p>Please update your payment method to avoid service interruption.</p>
+                        <p style="margin-top: 25px;">
+                            <a href="${process.env.FRONTEND_BASE_URL || "http://localhost:3000"}/owner/billing" style="display: inline-block; padding: 10px 20px; background-color: #EA601A; color: #fff; text-decoration: none; border-radius: 5px; font-weight: bold;">Update billing &rarr;</a>
+                        </p>
+                    </div>
+                `;
+                const emailSent = await sendEmail({
+                    to: recipient,
+                    subject: "Action Required: QuickServe Payment Overdue",
+                    html: emailBody,
+                    from: emailFrom,
+                });
+                if (emailSent) {
+                    business.overdueReminderSentAt = now;
+                    await business.save();
+                    summary.sent++;
+                    result.status = "sent";
+                    result.detail = "day_3";
+                }
+                results.push(result);
+            }
+            // Day 5 Final Warning
+            else if (daysOverdue >= 5 && daysOverdue < 7 && !business.finalWarningSentAt) {
+                summary.checked++;
+                const emailBody = `
+                    <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
+                        <p>Hi ${getBusinessDisplayName(business)},</p>
+                        <p>Your QuickServe account is significantly overdue. <strong>If payment is not resolved, offline services will be restricted soon.</strong></p>
+                        <p>Please update your billing information immediately.</p>
+                        <p style="margin-top: 25px;">
+                            <a href="${process.env.FRONTEND_BASE_URL || "http://localhost:3000"}/owner/billing" style="display: inline-block; padding: 10px 20px; background-color: #EA601A; color: #fff; text-decoration: none; border-radius: 5px; font-weight: bold;">Update billing &rarr;</a>
+                        </p>
+                    </div>
+                `;
+                const emailSent = await sendEmail({
+                    to: recipient,
+                    subject: "Final Warning: QuickServe Payment Overdue",
+                    html: emailBody,
+                    from: emailFrom,
+                });
+                if (emailSent) {
+                    business.finalWarningSentAt = now;
+                    await business.save();
+                    summary.sent++;
+                    result.status = "sent";
+                    result.detail = "day_5";
+                }
+                results.push(result);
+            }
+        } catch (err) {
+            summary.failed++;
+            result.status = "failed";
+            result.reason = err.message;
+            results.push(result);
+        }
+    }
+}
+
+// Stage 4: Restrict Offline Service (Day 7)
+async function processServiceRestrictions({ now, businesses, results, summary }) {
+    for (const business of businesses) {
+        if (business.billingStatus !== "past_due" || !business.billingFailedAt || business.offlineServiceRestricted) continue;
+
+        const daysOverdue = Math.floor((now - new Date(business.billingFailedAt)) / (1000 * 60 * 60 * 24));
+        if (daysOverdue >= 7) {
+            summary.checked++;
+            const result = {
+                businessId: business.businessId,
+                stage: "restrict_service",
+                status: "skipped",
+            };
+
+            const recipient = getBusinessRecipient(business);
+            
+            try {
+                business.offlineServiceRestricted = true;
+                business.offlineServiceRestrictedAt = now;
+
+                if (recipient) {
+                    const emailBody = `
+                        <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
+                            <p>Hi ${getBusinessDisplayName(business)},</p>
+                            <p>Because your QuickServe payment has been overdue for 7 days, <strong>your offline ordering services have been temporarily restricted</strong>.</p>
+                            <p>You can still access your dashboard and receive online-paid orders, but your staff can no longer create offline orders until the balance is settled.</p>
+                            <p style="margin-top: 25px;">
+                                <a href="${process.env.FRONTEND_BASE_URL || "http://localhost:3000"}/owner/billing" style="display: inline-block; padding: 10px 20px; background-color: #EA601A; color: #fff; text-decoration: none; border-radius: 5px; font-weight: bold;">Update billing to restore &rarr;</a>
+                            </p>
+                        </div>
+                    `;
+                    const emailSent = await sendEmail({
+                        to: recipient,
+                        subject: "QuickServe Offline Services Restricted",
+                        html: emailBody,
+                        from: getBillingEmailFrom(),
+                    });
+                    if (emailSent) {
+                        business.offlineRestrictionEmailSentAt = now;
+                    }
+                }
+                
+                await business.save();
+                summary.restricted++;
+                result.status = "restricted";
+                results.push(result);
+            } catch (err) {
+                summary.failed++;
+                result.status = "failed";
+                result.reason = err.message;
+                results.push(result);
+            }
+        }
+    }
+}
+
+// Stage 5: Restore Offline Service
+async function processServiceRestorations({ now, businesses, results, summary }) {
+    for (const business of businesses) {
+        // If they are active but currently restricted, we must restore them
+        if (business.billingStatus === "active" && business.offlineServiceRestricted) {
+            summary.checked++;
+            const result = {
+                businessId: business.businessId,
+                stage: "restore_service",
+                status: "skipped",
+            };
+
+            try {
+                business.offlineServiceRestricted = false;
+                business.offlineServiceRestrictedAt = null;
+                business.offlineRestrictionEmailSentAt = null;
+                business.overdueReminderSentAt = null;
+                business.finalWarningSentAt = null;
+                business.billingFailedAt = null;
+                business.billingRestoredAt = now;
+
+                const recipient = getBusinessRecipient(business);
+                if (recipient) {
+                    const emailBody = `
+                        <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
+                            <p>Hi ${getBusinessDisplayName(business)},</p>
+                            <p>Good news! Your QuickServe billing has been resolved and <strong>your offline ordering services have been fully restored</strong>.</p>
+                            <p>Thank you for your prompt attention.</p>
+                        </div>
+                    `;
+                    const emailSent = await sendEmail({
+                        to: recipient,
+                        subject: "QuickServe Services Restored",
+                        html: emailBody,
+                        from: getBillingEmailFrom(),
+                    });
+                    if (emailSent) {
+                        business.billingRestoredEmailSentAt = now;
+                    }
+                }
+
+                await business.save();
+                summary.restored++;
+                result.status = "restored";
+                results.push(result);
+            } catch (err) {
+                summary.failed++;
+                result.status = "failed";
+                result.reason = err.message;
+                results.push(result);
+            }
+        }
+    }
+}
+
+export const processBillingLifecycle = async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
         const secret = process.env.CRON_SECRET;
@@ -74,141 +354,36 @@ export const sendBillingReminders = async (req, res) => {
         }
 
         const businesses = await Business.find({
-            billingStatus: "active",
+            billingStatus: { $in: ["active", "past_due"] },
             stripeSubscriptionId: { $nin: [null, ""] },
             status: { $nin: ["archived", "suspended"] },
         });
 
-        let checked = 0;
-        let sent = 0;
-        let skipped = 0;
-        let failed = 0;
-        const results = [];
-
         const now = new Date();
         const tomorrowString = toUtcDateString(addUtcDays(now, 1));
+        
+        const summary = {
+            checked: 0,
+            sent: 0,
+            skipped: 0,
+            failed: 0,
+            restricted: 0,
+            restored: 0,
+        };
+        const results = [];
 
-        for (const business of businesses) {
-            checked++;
-            const result = {
-                businessId: business.businessId,
-                reminderDate: null,
-                recipient: Boolean(getBusinessRecipient(business)),
-                status: "skipped",
-                reason: null,
-            };
-
-            try {
-                const invoiceDate = getStoredInvoiceDate(business);
-                const invoiceDateString = toUtcDateString(invoiceDate);
-                result.reminderDate = invoiceDateString;
-
-                if (!invoiceDateString) {
-                    skipped++;
-                    result.reason = "missing_next_invoice_date";
-                    results.push(result);
-                    continue;
-                }
-
-                if (business.billingReminderSentForPeriod === invoiceDateString) {
-                    skipped++;
-                    result.reason = "already_sent_for_period";
-                    results.push(result);
-                    continue;
-                }
-
-                if (invoiceDateString !== tomorrowString) {
-                    skipped++;
-                    result.reason = "not_due_tomorrow";
-                    results.push(result);
-                    continue;
-                }
-
-                const recipient = getBusinessRecipient(business);
-                if (!recipient) {
-                    skipped++;
-                    result.reason = "missing_owner_email";
-                    results.push(result);
-                    continue;
-                }
-
-                const { invoice: upcomingInvoice, error: invoiceError } = await getUpcomingInvoiceEstimate(stripe, business);
-                if (invoiceError) {
-                    result.stripeInvoiceWarning = invoiceError;
-                }
-
-                if (upcomingInvoice?.period_end) {
-                    result.stripeUpcomingDate = toUtcDateString(new Date(upcomingInvoice.period_end * 1000));
-                }
-
-                const formattedDate = invoiceDate.toLocaleDateString("en-US", {
-                    month: "long",
-                    day: "numeric",
-                    year: "numeric",
-                    timeZone: "UTC",
-                });
-
-                const hasAmount = typeof upcomingInvoice?.total === "number";
-                const amount = hasAmount ? (upcomingInvoice.total / 100).toFixed(2) : null;
-                const amountHtml = hasAmount
-                    ? `<p>Estimated amount:<br/><strong style="font-size: 1.2em;">&euro;${amount}</strong></p>`
-                    : `<p>Your invoice amount will be finalized by Stripe before billing.</p>`;
-
-                const emailBody = `
-                    <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
-                        <p>Hi ${getBusinessDisplayName(business)},</p>
-                        <p>Your next QuickServe invoice will be charged on <strong>${formattedDate}</strong>.</p>
-                        ${amountHtml}
-                        <p>This includes your subscription and offline commission fees for this billing period.</p>
-                        <p style="margin-top: 25px;">
-                            <a href="${process.env.FRONTEND_BASE_URL || "http://localhost:3000"}/owner/billing" style="display: inline-block; padding: 10px 20px; background-color: #EA601A; color: #fff; text-decoration: none; border-radius: 5px; font-weight: bold;">Manage billing &rarr;</a>
-                        </p>
-                    </div>
-                `;
-
-                const emailFrom = getBillingEmailFrom();
-                result.emailFrom = emailFrom;
-
-                const emailSent = await sendEmail({
-                    to: recipient,
-                    subject: "Your QuickServe invoice is coming tomorrow",
-                    html: emailBody,
-                    from: emailFrom,
-                });
-
-                if (emailSent) {
-                    business.billingReminderSentAt = new Date();
-                    business.billingReminderSentForPeriod = invoiceDateString;
-                    await business.save();
-                    sent++;
-                    result.status = "sent";
-                    result.reason = null;
-                } else {
-                    failed++;
-                    result.status = "failed";
-                    result.reason = "email_provider_failed";
-                }
-
-                results.push(result);
-            } catch (err) {
-                console.error(`[Cron] Error processing business ${business._id}:`, err);
-                failed++;
-                result.status = "failed";
-                result.reason = err.message || "processing_error";
-                results.push(result);
-            }
-        }
+        await sendUpcomingInvoiceReminders({ stripe, now, tomorrowString, businesses, results, summary });
+        await processOverdueInvoices({ now, businesses, results, summary });
+        await processServiceRestrictions({ now, businesses, results, summary });
+        await processServiceRestorations({ now, businesses, results, summary });
 
         return res.json({
-            checked,
-            sent,
-            skipped,
-            failed,
             tomorrow: tomorrowString,
+            summary,
             results,
         });
     } catch (error) {
-        console.error("[Cron] Unhandled error:", error);
+        console.error("[Cron] Unhandled error in billing lifecycle:", error);
         return res.status(500).json({ error: "Internal Server Error" });
     }
 };

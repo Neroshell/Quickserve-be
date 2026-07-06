@@ -88,8 +88,8 @@ const BusinessSchema = new mongoose.Schema({
     // QuickServe MVP Billing & Plan Fields
     billingStatus: { 
         type: String, 
-        enum: ['active', 'incomplete', 'past_due'], 
-        default: 'incomplete' 
+        enum: ['active', 'incomplete', 'past_due', 'cancelled'], 
+        default: 'active' 
     },
     billingEnabled: { type: Boolean, default: false },
     currentPlan: {
@@ -109,6 +109,17 @@ const BusinessSchema = new mongoose.Schema({
     nextInvoiceDate: { type: Date, default: null },
     billingReminderSentAt: { type: Date, default: null },
     billingReminderSentForPeriod: { type: String, default: null },
+
+    billingFailedAt: { type: Date, default: null },
+    overdueReminderSentAt: { type: Date, default: null },
+    finalWarningSentAt: { type: Date, default: null },
+
+    offlineServiceRestricted: { type: Boolean, default: false },
+    offlineServiceRestrictedAt: { type: Date, default: null },
+    offlineRestrictionEmailSentAt: { type: Date, default: null },
+
+    billingRestoredAt: { type: Date, default: null },
+    billingRestoredEmailSentAt: { type: Date, default: null },
     
     passPlatformFeeToCustomer: { type: Boolean, default: false },
     platformFeeMode: { type: String, enum: ["business_absorbs", "customer_pays", "split"], default: "business_absorbs" },
