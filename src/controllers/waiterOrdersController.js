@@ -12,6 +12,7 @@ import { isBusinessOpen } from "../utils/operatingHours.js"
 import { calculateOfflineCommission } from "../utils/platformFee.js"
 import { validateTrackedStock, deductTrackedStock, restoreTrackedStock } from "../services/inventoryService.js"
 import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
+import { normalizeTip } from "../utils/tips.js"
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -218,6 +219,9 @@ export async function waiterPastOrders(req, res) {
             subtotal: 1,
             taxAmount: 1,
             platformFeeTotal: 1,
+            tipAmount: 1,
+            tipType: 1,
+            tipPercentage: 1,
             total: 1,
             currency: 1,
             paymentChannel: 1,
@@ -297,6 +301,9 @@ export async function waiterPastOrders(req, res) {
             subtotal: order.subtotal || 0,
             taxAmount: order.taxAmount || 0,
             platformFeeTotal: order.platformFeeTotal || 0,
+            tipAmount: order.tipAmount || 0,
+            tipType: order.tipType || null,
+            tipPercentage: order.tipPercentage ?? null,
             total: order.total || 0,
             currency: order.currency || "EUR",
             canMarkPaid: order.paymentChannel === "offline" && ["pending", "unpaid"].includes(order.paymentStatus) && order.status !== "cancelled",
@@ -380,6 +387,12 @@ export async function waiterOrders(req, res) {
                 updatedAt: 1,
                 readyAt: 1,
                 items: 1,
+                subtotal: 1,
+                taxAmount: 1,
+                platformFeeTotal: 1,
+                tipAmount: 1,
+                tipType: 1,
+                tipPercentage: 1,
                 total: 1,
                 currency: 1,
                 paymentChannel: 1,
@@ -442,6 +455,12 @@ export async function waiterOrders(req, res) {
                 })),
                 allergies: Array.from(allergiesSet),
                 notes: specialRequest,
+                subtotal: o.subtotal || 0,
+                taxAmount: o.taxAmount || 0,
+                platformFeeTotal: o.platformFeeTotal || 0,
+                tipAmount: o.tipAmount || 0,
+                tipType: o.tipType || null,
+                tipPercentage: o.tipPercentage ?? null,
                 total: o.total,
                 // subtotalCents: o.subtotalCents || 0,
                 // taxCents: o.taxCents || 0,
@@ -478,7 +497,7 @@ export async function createWaiterOrder(req, res) {
       return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
     }
 
-    const { tableNumber, items, orderType, currency } = req.body
+    const { tableNumber, items, orderType, currency, tipAmount, tipType, tipPercentage } = req.body
 
     if (!tableNumber || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: "tableNumber and items are required" })
@@ -588,7 +607,15 @@ export async function createWaiterOrder(req, res) {
 
     const finalCommissionAmountCents = fullPlatformFeeCents;
 
-    const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat).toFixed(2))
+    const tip = normalizeTip({
+      tipsEnabled: business.settings?.tipsEnabled === true,
+      subtotal,
+      tipAmount,
+      tipType,
+      tipPercentage,
+    })
+
+    const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat + tip.tipAmount).toFixed(2))
 
     const estimate = buildOrderEstimate(enrichedItems, now)
 
@@ -606,6 +633,9 @@ export async function createWaiterOrder(req, res) {
       subtotal,
       taxAmount,
       platformFeeTotal: customerPlatformFeeFloat,
+      tipAmount: tip.tipAmount,
+      tipType: tip.tipType,
+      tipPercentage: tip.tipPercentage,
       platformFeeCents: fullPlatformFeeCents,
       customerPlatformFeeCents,
       businessAbsorbedPlatformFeeCents,

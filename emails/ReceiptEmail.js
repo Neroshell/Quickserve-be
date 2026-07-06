@@ -252,6 +252,8 @@ export default function ReceiptEmail({
   items = [],
   subtotal = 0,
   taxAmount = 0,
+  serviceFeeAmount = 0,
+  tipAmount = 0,
   total = 0,
 }) {
   const e = React.createElement;
@@ -367,6 +369,14 @@ export default function ReceiptEmail({
           taxAmount > 0 ? e(Row, { style: totalRow },
             e(Column, { align: "right" }, e(Text, { style: totalLabel }, "Tax")),
             e(Column, { align: "right", style: { width: "80px" } }, e(Text, { style: totalValue }, formatPrice(taxAmount, currency)))
+          ) : null,
+          serviceFeeAmount > 0 ? e(Row, { style: totalRow },
+            e(Column, { align: "right" }, e(Text, { style: totalLabel }, "Service Fee")),
+            e(Column, { align: "right", style: { width: "80px" } }, e(Text, { style: totalValue }, formatPrice(serviceFeeAmount, currency)))
+          ) : null,
+          tipAmount > 0 ? e(Row, { style: totalRow },
+            e(Column, { align: "right" }, e(Text, { style: totalLabel }, "Tip")),
+            e(Column, { align: "right", style: { width: "80px" } }, e(Text, { style: totalValue }, formatPrice(tipAmount, currency)))
           ) : null,
           e(Row, { style: grandTotalRow },
             e(Column, { align: "right" }, e(Text, { style: grandTotalLabel }, "Total")),

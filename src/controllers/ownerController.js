@@ -127,6 +127,12 @@ export async function ownerOrders(req, res) {
                 receiptSent: 1,
                 receiptSentAt: 1,
                 completedBy: 1,
+                subtotal: 1,
+                taxAmount: 1,
+                platformFeeTotal: 1,
+                tipAmount: 1,
+                tipType: 1,
+                tipPercentage: 1,
                 platformFeeCents: 1,
                 customerPlatformFeeCents: 1,
                 businessAbsorbedPlatformFeeCents: 1,
@@ -211,6 +217,12 @@ export async function ownerOrders(req, res) {
                 })),
                 allergies: Array.from(allergiesSet),
                 notes: specialRequest,
+                subtotal: o.subtotal || 0,
+                taxAmount: o.taxAmount || 0,
+                platformFeeTotal: o.platformFeeTotal || 0,
+                tipAmount: o.tipAmount || 0,
+                tipType: o.tipType || null,
+                tipPercentage: o.tipPercentage ?? null,
                 total: o.total,
                 currency: o.currency || "EUR",
                 completedBy: o.completedBy || null,
@@ -412,7 +424,7 @@ export async function ownerAnalytics(req, res) {
                         _id: "$tableNumber",
                         label:       { $first: "$tableLabel" },
                         orderCount:  { $sum: 1 },
-                        totalRevenue:{ $sum: "$total" },
+                        totalRevenue:{ $sum: { $subtract: [{ $ifNull: ["$total", 0] }, { $ifNull: ["$tipAmount", 0] }] } },
                         paidOrders:  { $sum: { $cond: [{ $eq: ["$paymentStatus", "paid"] }, 1, 0] } },
                         unpaidOrders:{ $sum: { $cond: [{ $ne: ["$paymentStatus", "paid"] }, 1, 0] } }
                     }
@@ -490,7 +502,13 @@ export async function ownerAnalytics(req, res) {
                         name:                        { $first: "$paidByName" },
                         paymentsConfirmed:           { $sum: 1 },
                         totalOfflinePaymentsConfirmed: {
-                            $sum: { $cond: [{ $eq: ["$paymentChannel", "offline"] }, "$total", 0] }
+                            $sum: {
+                                $cond: [
+                                    { $eq: ["$paymentChannel", "offline"] },
+                                    { $subtract: [{ $ifNull: ["$total", 0] }, { $ifNull: ["$tipAmount", 0] }] },
+                                    0
+                                ]
+                            }
                         }
                     }
                 }
@@ -534,7 +552,12 @@ export async function ownerAnalytics(req, res) {
             customerOrderCount: 0,
             staffOrderCount: 0,
             customerRevenue: 0,
-            staffRevenue: 0
+            staffRevenue: 0,
+            totalTipsCollected: 0,
+            averageTip: 0,
+            highestTip: 0,
+            ordersWithTips: 0,
+            tipRate: 0
         }
 
         const hourlyOrdersMap = new Map() // Hour string -> { orders, revenue }
@@ -568,6 +591,9 @@ export async function ownerAnalytics(req, res) {
         }
 
         let totalRevenue = 0
+        let totalTipsCollected = 0
+        let highestTip = 0
+        let ordersWithTips = 0
 
         // 4. Process Orders Iteratively
         for (const order of orders) {
@@ -611,18 +637,25 @@ export async function ownerAnalytics(req, res) {
 
             // Paid orders logic (Revenue, Items)
             if (order.paymentStatus === "paid") {
-                totalRevenue += order.total || 0
+                const tipValue = Number(order.tipAmount || 0)
+                const revenueValue = Number(((order.total || 0) - tipValue).toFixed(2))
+                totalRevenue += revenueValue
+                totalTipsCollected += tipValue
+                if (tipValue > 0) {
+                    ordersWithTips++
+                    highestTip = Math.max(highestTip, tipValue)
+                }
                 totalPaidOrders++
 
                 if (hourlyOrdersMap.has(hourLabel)) {
-                    hourlyOrdersMap.get(hourLabel).revenue += (order.total || 0)
+                    hourlyOrdersMap.get(hourLabel).revenue += revenueValue
                 }
 
                 // Channel Revenue calculations
                 if (order.orderSource === "waitstaff") {
-                    stats.staffRevenue += (order.total || 0)
+                    stats.staffRevenue += revenueValue
                 } else {
-                    stats.customerRevenue += (order.total || 0)
+                    stats.customerRevenue += revenueValue
                 }
 
                 // Map revenue by day if multi-day view
@@ -630,7 +663,7 @@ export async function ownerAnalytics(req, res) {
                     const label = range === "7days" ? orderDateObj.toFormat("ccc") : orderDateObj.toFormat("MMM dd")
                     if (revenueByDayMap.has(label)) {
                         const dayStats = revenueByDayMap.get(label)
-                        dayStats.revenue += (order.total || 0)
+                        dayStats.revenue += revenueValue
                         dayStats.orders += 1
                     }
                 }
@@ -664,6 +697,11 @@ export async function ownerAnalytics(req, res) {
         stats.monthRevenue = totalRevenue
 
         stats.averageOrderValue = totalPaidOrders > 0 ? (totalRevenue / totalPaidOrders) : 0
+        stats.totalTipsCollected = +totalTipsCollected.toFixed(2)
+        stats.averageTip = ordersWithTips > 0 ? +(totalTipsCollected / ordersWithTips).toFixed(2) : 0
+        stats.highestTip = +highestTip.toFixed(2)
+        stats.ordersWithTips = ordersWithTips
+        stats.tipRate = totalPaidOrders > 0 ? Math.round((ordersWithTips / totalPaidOrders) * 100) : 0
         stats.averagePrepTime = prepTimeCount > 0 ? Math.round(totalPrepTimeMinutes / prepTimeCount) : 0
 
         // Calculate peak hour mathematically
@@ -713,8 +751,9 @@ export async function ownerAnalytics(req, res) {
         let takeoutRevenue = 0
         for (let order of orders) {
             if (order.paymentStatus === 'paid') {
-                if (order.orderType === 'dine-in') dineInRevenue += order.total
-                if (order.orderType === 'takeout') takeoutRevenue += order.total
+                const revenueValue = Number(((order.total || 0) - Number(order.tipAmount || 0)).toFixed(2))
+                if (order.orderType === 'dine-in') dineInRevenue += revenueValue
+                if (order.orderType === 'takeout') takeoutRevenue += revenueValue
             }
         }
 
@@ -944,7 +983,7 @@ export async function getDashboardData(req, res) {
             Order.find({
                 ...dateFilter,
                 status: { $in: ["placed", "in_progress", "ready", "completed"] }
-            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, tableLabel: 1, tableNumber: 1, orderType: 1, paymentChannel: 1 }).lean(),
+            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, tableLabel: 1, tableNumber: 1, orderType: 1, paymentChannel: 1, tipAmount: 1 }).lean(),
 
             Business.findOne({ businessId }).lean(),
 
@@ -974,7 +1013,7 @@ export async function getDashboardData(req, res) {
         // â”€â”€ Today's KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const completedOrders = todayOrdersRaw.filter(o => o.status === "completed")
         const paidOrders      = todayOrdersRaw.filter(o => o.paymentStatus === "paid")
-        const todayRevenue    = paidOrders.reduce((sum, o) => sum + (o.total || 0), 0)
+        const todayRevenue    = paidOrders.reduce((sum, o) => sum + Number(((o.total || 0) - Number(o.tipAmount || 0)).toFixed(2)), 0)
         const todayOrders     = todayOrdersRaw.length
         const tablesServed    = completedOrders.length
         const activeOrders    = todayOrdersRaw.filter(o => ["placed","in_progress","ready"].includes(o.status)).length
@@ -989,7 +1028,7 @@ export async function getDashboardData(req, res) {
         for (const o of paidOrders) {
             const dt = DateTime.fromJSDate(o.createdAt).setZone(BUSINESS_TZ)
             const label = `${dt.toFormat("h")}${dt.toFormat("a")}`
-            if (hourlyMap.has(label)) hourlyMap.set(label, hourlyMap.get(label) + (o.total || 0))
+            if (hourlyMap.has(label)) hourlyMap.set(label, hourlyMap.get(label) + Number(((o.total || 0) - Number(o.tipAmount || 0)).toFixed(2)))
         }
         const hourlyRevenue = Array.from(hourlyMap.entries()).map(([hour, revenue]) => ({ hour, revenue }))
 

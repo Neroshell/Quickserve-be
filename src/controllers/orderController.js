@@ -12,6 +12,7 @@ import Business from "../models/Business.js"
 import Plan from "../models/Plan.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
 import { calculateOfflineCommission } from "../utils/platformFee.js"
+import { normalizeTip } from "../utils/tips.js"
 import CustomerConsent from "../models/CustomerConsent.js"
 import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js"
 import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
@@ -83,7 +84,7 @@ export async function createOrder(req, res) {
   try {
     const {
       tableNumber, items, sessionId, tableSessionToken, orderType, currency,
-      receiptEmail
+      receiptEmail, tipAmount, tipType, tipPercentage
     } = req.body
 
     // Payment state is NEVER trusted from the client. Orders created here are
@@ -249,7 +250,15 @@ export async function createOrder(req, res) {
     // We store the full fee as the commission amount
     const finalCommissionAmountCents = fullPlatformFeeCents;
 
-    const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat).toFixed(2))
+    const tip = normalizeTip({
+      tipsEnabled: business.settings?.tipsEnabled === true || business.tipsEnabled === true,
+      subtotal,
+      tipAmount,
+      tipType,
+      tipPercentage,
+    })
+
+    const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat + tip.tipAmount).toFixed(2))
 
     const estimate = buildOrderEstimate(enrichedItems, now)
 
@@ -267,6 +276,9 @@ export async function createOrder(req, res) {
       subtotal,
       taxAmount,
       platformFeeTotal: customerPlatformFeeFloat,
+      tipAmount: tip.tipAmount,
+      tipType: tip.tipType,
+      tipPercentage: tip.tipPercentage,
       platformFeeCents: fullPlatformFeeCents,
       customerPlatformFeeCents,
       businessAbsorbedPlatformFeeCents,

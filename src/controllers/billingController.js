@@ -1125,7 +1125,15 @@ async function getRevenueSummary(businessId) {
           
             $group: {
                 _id: "$paymentChannel",
-                revenue: { $sum: { $ifNull: ["$total", 0] } },
+                revenue: {
+                    $sum: {
+                        $subtract: [
+                            { $ifNull: ["$total", 0] },
+                            { $ifNull: ["$tipAmount", 0] }
+                        ]
+                    }
+                },
+                tips: { $sum: { $ifNull: ["$tipAmount", 0] } },
                 orders: { $sum: 1 },
                 fees: {
                     $sum: {
@@ -1144,6 +1152,7 @@ async function getRevenueSummary(businessId) {
         offlineRevenueProcessed: 0,
         totalOrdersProcessed: 0,
         totalQuickServeFeesProcessed: 0,
+        totalTipsProcessed: 0,
     }
 
     for (const row of rows) {
@@ -1151,6 +1160,7 @@ async function getRevenueSummary(businessId) {
         if (row._id === "offline") summary.offlineRevenueProcessed = row.revenue || 0
         summary.totalOrdersProcessed += row.orders || 0
         summary.totalQuickServeFeesProcessed += row.fees || 0
+        summary.totalTipsProcessed += row.tips || 0
     }
 
     const totalRevenueProcessed = summary.onlineRevenueProcessed + summary.offlineRevenueProcessed

@@ -147,7 +147,7 @@ export async function upsertGuestProfileFromOrder({ businessId, order, email, ma
         
         let orderTotalCents = 0;
         if (order.total && !isNaN(order.total)) {
-          orderTotalCents = Math.round(Number(order.total) * 100);
+          orderTotalCents = Math.round((Number(order.total) - Number(order.tipAmount || 0)) * 100);
         } else if (order.totalInCents && !isNaN(order.totalInCents)) {
           orderTotalCents = Number(order.totalInCents);
         }

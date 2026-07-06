@@ -75,8 +75,10 @@ export async function sendReceiptEmail(order, toEmail) {
         notes: item.notes,
         allergies: item.allergies
       })),
-      subtotal: order.items.reduce((sum, item) => sum + (item.lineTotal || 0), 0),
-      taxAmount: 0, // Not explicitly stored on order root currently, would be calculated or passed
+      subtotal: order.subtotal ?? order.items.reduce((sum, item) => sum + (item.lineTotal || 0), 0),
+      taxAmount: order.taxAmount || 0,
+      serviceFeeAmount: order.platformFeeTotal || 0,
+      tipAmount: order.tipAmount || 0,
       total: order.total || 0
     };
 

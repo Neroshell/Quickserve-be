@@ -235,6 +235,9 @@ export async function updateOrderingPreferences(req, res) {
         if (settings && typeof settings.reservationsEnabled === "boolean") {
             safePrefs["settings.reservationsEnabled"] = settings.reservationsEnabled
         }
+        if (settings && typeof settings.tipsEnabled === "boolean") {
+            safePrefs["settings.tipsEnabled"] = settings.tipsEnabled
+        }
 
         const business = await Business.findOneAndUpdate(
             { businessId },
@@ -500,7 +503,7 @@ export async function getAdminBusinesses(req, res) {
                 {
                     $group: {
                         _id: null,
-                        totalSales: { $sum: "$total" },
+                        totalSales: { $sum: { $subtract: [{ $ifNull: ["$total", 0] }, { $ifNull: ["$tipAmount", 0] }] } },
                         lastOrderDate: { $max: "$createdAt" },
                         count: { $sum: 1 }
                     }
@@ -579,7 +582,7 @@ export async function getAdminBusinessById(req, res) {
             {
                 $group: {
                     _id: null,
-                    totalSales: { $sum: "$total" },
+                    totalSales: { $sum: { $subtract: [{ $ifNull: ["$total", 0] }, { $ifNull: ["$tipAmount", 0] }] } },
                     lastOrderDate: { $max: "$createdAt" },
                     count: { $sum: 1 }
                 }
@@ -692,7 +695,7 @@ export async function getAdminDashboardStats(req, res) {
                         {
                             $group: {
                                 _id: null,
-                                totalRevenue: { $sum: "$total" },
+                                totalRevenue: { $sum: { $subtract: [{ $ifNull: ["$total", 0] }, { $ifNull: ["$tipAmount", 0] }] } },
                                 totalTransactions: { $sum: 1 }
                             }
                         }
@@ -705,7 +708,7 @@ export async function getAdminDashboardStats(req, res) {
                         {
                             $group: {
                                 _id: "$businessId",
-                                revenue: { $sum: "$total" },
+                                revenue: { $sum: { $subtract: [{ $ifNull: ["$total", 0] }, { $ifNull: ["$tipAmount", 0] }] } },
                                 orders: { $sum: 1 }
                             }
                         },

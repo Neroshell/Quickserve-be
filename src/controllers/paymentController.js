@@ -8,6 +8,7 @@ import { generateOrderId } from "../utils/orderId.js";
 import { calculateOnlineCommission } from "../utils/platformFee.js";
 import { validateTrackedStock } from "../services/inventoryService.js";
 import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
+import { normalizeTip } from "../utils/tips.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
@@ -31,6 +32,9 @@ export async function createCheckoutSession(req, res) {
             orderType,
             currency,
             receiptEmail,
+            tipAmount,
+            tipType,
+            tipPercentage,
         } = req.body;
 
         // --- Validation ---
@@ -173,12 +177,32 @@ export async function createCheckoutSession(req, res) {
         const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2));
         const taxAmountCents = Math.round(taxAmount * 100);
 
+        const tip = normalizeTip({
+            tipsEnabled: business.settings?.tipsEnabled === true || business.tipsEnabled === true,
+            subtotal,
+            tipAmount,
+            tipType,
+            tipPercentage,
+        });
+        const tipAmountCents = Math.round(tip.tipAmount * 100);
+
         if (taxAmountCents > 0) {
             lineItems.push({
                 price_data: {
                     currency: finalCurrency,
                     product_data: { name: "Tax" },
                     unit_amount: taxAmountCents,
+                },
+                quantity: 1,
+            });
+        }
+
+        if (tipAmountCents > 0) {
+            lineItems.push({
+                price_data: {
+                    currency: finalCurrency,
+                    product_data: { name: "Tip" },
+                    unit_amount: tipAmountCents,
                 },
                 quantity: 1,
             });
@@ -194,7 +218,10 @@ export async function createCheckoutSession(req, res) {
             items: enrichedItems,
             subtotal,
             taxAmount,
-            total: subtotal + taxAmount, // This will be updated again below with customerPlatformFeeFloat
+            tipAmount: tip.tipAmount,
+            tipType: tip.tipType,
+            tipPercentage: tip.tipPercentage,
+            total: subtotal + taxAmount + tip.tipAmount, // This will be updated again below with customerPlatformFeeFloat
             currency: finalCurrency.toUpperCase(),
             receiptEmail: receiptEmail || null,
         });
@@ -271,9 +298,9 @@ export async function createCheckoutSession(req, res) {
         pending.platformFeeMode                  = mode;
         pending.customerPlatformFeePercent       = percent;
 
-        pending.grossAmount              = totalInCents + taxAmountCents + customerPlatformFeeCents;
-        pending.netToBusinessAmount      = totalInCents + taxAmountCents - businessAbsorbedPlatformFeeCents;
-        pending.total                    = subtotal + taxAmount + Number((customerPlatformFeeCents / 100).toFixed(2));
+        pending.grossAmount              = totalInCents + taxAmountCents + customerPlatformFeeCents + tipAmountCents;
+        pending.netToBusinessAmount      = totalInCents + taxAmountCents + tipAmountCents - businessAbsorbedPlatformFeeCents;
+        pending.total                    = subtotal + taxAmount + tip.tipAmount + Number((customerPlatformFeeCents / 100).toFixed(2));
         await pending.save();
 
         return res.status(201).json({

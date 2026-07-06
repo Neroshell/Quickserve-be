@@ -220,6 +220,15 @@ export async function handleStripeWebhook(req, res) {
                 if (pending.platformFeeMode !== undefined) order.platformFeeMode = pending.platformFeeMode;
                 if (pending.customerPlatformFeePercent !== undefined) order.customerPlatformFeePercent = pending.customerPlatformFeePercent;
                 if (pending.customerPlatformFeeCents !== undefined) order.platformFeeTotal = Number((pending.customerPlatformFeeCents / 100).toFixed(2));
+                order.tipAmount = pending.tipAmount ?? order.tipAmount ?? 0;
+                order.tipType = pending.tipType ?? order.tipType ?? null;
+                order.tipPercentage = pending.tipPercentage ?? order.tipPercentage ?? null;
+
+                // Sync financial fields from PendingCheckout so the receipt email
+                // has the full breakdown (subtotal, tax, tip, service fee).
+                if (pending.subtotal !== undefined && pending.subtotal > 0) order.subtotal = pending.subtotal;
+                if (pending.taxAmount !== undefined) order.taxAmount = pending.taxAmount;
+                if (pending.total !== undefined && pending.total > 0) order.total = pending.total;
                 
                 updated = true;
             }
@@ -284,6 +293,7 @@ export async function handleStripeWebhook(req, res) {
                 tableLabel = sp?.label || sp?.code || pending.tableNumber;
             }
 
+            console.log(`[webhook] Creating new Order for orderId=${orderId}, subtotal=${pending.subtotal}, taxAmount=${pending.taxAmount}, tipAmount=${pending.tipAmount}, total=${pending.total}`);
             order = await Order.create({
                 businessId,
                 orderId,
@@ -325,8 +335,11 @@ export async function handleStripeWebhook(req, res) {
                 platformFeeMode:                  pending.platformFeeMode                  ?? "business_absorbs",
                 customerPlatformFeePercent:       pending.customerPlatformFeePercent       ?? 0,
                 platformFeeTotal:                 pending.customerPlatformFeeCents ? Number((pending.customerPlatformFeeCents / 100).toFixed(2)) : 0,
+                tipAmount: pending.tipAmount ?? 0,
+                tipType: pending.tipType ?? null,
+                tipPercentage: pending.tipPercentage ?? null,
 
-                subtotal: pending.subtotal || pending.total,
+                subtotal: pending.subtotal > 0 ? pending.subtotal : pending.items.reduce((s, i) => s + (i.lineTotal || 0), 0),
                 taxAmount: pending.taxAmount || 0,
 
                 receiptEmail: customerEmail,
@@ -385,7 +398,7 @@ export async function handleStripeWebhook(req, res) {
 
         return res.status(200).send();
     } catch (error) {
-        console.error("[stripeWebhook] Error processing webhook:", error);
+        console.error("[stripeWebhook] Error processing webhook:", error.message, error.stack);
         return res.status(500).send("Internal Server Error");
     }
 }
