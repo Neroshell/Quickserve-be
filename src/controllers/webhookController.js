@@ -8,7 +8,7 @@ import MenuItem from "../models/menuItem.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
 import { publishEvent } from "../utils/sseManager.js";
-import { sendReceiptEmail } from "../utils/emailService.js";
+import { sendReceiptEmail, sendEmail } from "../utils/emailService.js";
 import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js";
 import { deductTrackedStock } from "../services/inventoryService.js";
 import { buildOrderEstimate } from "../utils/orderEstimate.js";
@@ -39,6 +39,44 @@ function getSubscriptionPeriodUpdate(subscription) {
         nextInvoiceDate: period.invoiceAt,
         nextBillingDate: period.invoiceAt,
     };
+}
+
+async function handleBusinessRestorationIfNeeded(biz, updateFields) {
+    if (biz?.offlineServiceRestricted) {
+        updateFields.offlineServiceRestricted = false;
+        updateFields.offlineServiceRestrictedAt = null;
+        updateFields.offlineRestrictionEmailSentAt = null;
+        updateFields.overdueReminderSentAt = null;
+        updateFields.finalWarningSentAt = null;
+        updateFields.billingFailedAt = null;
+        updateFields.billingRestoredAt = new Date();
+
+        const recipient = biz.ownerEmail || biz.contactEmail || null;
+        if (recipient) {
+            const displayName = biz.displayName || biz.name || "there";
+            const emailBody = `
+                <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
+                    <p>Hi ${displayName},</p>
+                    <p>Good news! Your QuickServe billing has been resolved and <strong>your offline ordering services have been fully restored</strong>.</p>
+                    <p>Thank you for your prompt attention.</p>
+                </div>
+            `;
+            const from = process.env.EMAIL_FROM_BILLING || "QuickServe Billing <billing@quickservehq.com>";
+            try {
+                const emailSent = await sendEmail({
+                    to: recipient,
+                    subject: "QuickServe Services Restored",
+                    html: emailBody,
+                    from,
+                });
+                if (emailSent) {
+                    updateFields.billingRestoredEmailSentAt = new Date();
+                }
+            } catch (err) {
+                console.error(`[webhook] Failed to send restoration email to ${recipient}:`, err.message);
+            }
+        }
+    }
 }
 
 /**
@@ -126,39 +164,69 @@ export async function handleStripeWebhook(req, res) {
                                 i => i.price.id === targetPlan.stripeMeteredPriceId
                             );
 
+                            const updateFields = {
+                                currentPlan: biz.scheduledDowngradePlan,
+                                plan: biz.scheduledDowngradePlan,
+                                planActivatedAt: periodUpdate.currentPeriodStart || new Date(),
+                                stripeMeteredSubscriptionItemId: updatedMeteredItem?.id ?? null,
+                                stripeSubscriptionStatus: updated.status,
+                                scheduledDowngradePlan: null,
+                                scheduledPlanEffectiveDate: null,
+                                billingStatus: 'active',
+                                billingFailedAt: null,
+                                ...periodUpdate,
+                            };
+                            await handleBusinessRestorationIfNeeded(biz, updateFields);
+
                             await Business.findOneAndUpdate(
                                 { _id: biz._id },
-                                {
-                                    $set: {
-                                        currentPlan: biz.scheduledDowngradePlan,
-                                        plan: biz.scheduledDowngradePlan,
-                                        planActivatedAt: periodUpdate.currentPeriodStart || new Date(),
-                                        stripeMeteredSubscriptionItemId: updatedMeteredItem?.id ?? null,
-                                        stripeSubscriptionStatus: updated.status,
-                                        scheduledDowngradePlan: null,
-                                        scheduledPlanEffectiveDate: null,
-                                        billingStatus: 'active',
-                                        billingFailedAt: null,
-                                        ...periodUpdate,
-                                    }
-                                }
+                                { $set: updateFields }
                             );
                             console.log(`[webhook] Downgrade complete for business ${biz.businessId}`);
                         }
                     } else if (subscription) {
                         const periodUpdate = getSubscriptionPeriodUpdate(subscription);
                         if (Object.keys(periodUpdate).length > 0) {
+                            const updateFields = {
+                                stripeSubscriptionStatus: subscription.status,
+                                billingStatus: 'active',
+                                billingFailedAt: null,
+                                ...periodUpdate,
+                            };
+                            await handleBusinessRestorationIfNeeded(biz, updateFields);
+
                             await Business.findOneAndUpdate(
                                 { _id: biz._id },
-                                {
-                                    $set: {
-                                        stripeSubscriptionStatus: subscription.status,
-                                        billingStatus: 'active',
-                                        billingFailedAt: null,
-                                        ...periodUpdate,
-                                    }
-                                }
+                                { $set: updateFields }
                             );
+                        }
+                    }
+
+                    if (!biz.offlineServiceRestricted) {
+                        const recipient = biz.ownerEmail || biz.contactEmail || null;
+                        if (recipient) {
+                            const displayName = biz.displayName || biz.name || "there";
+                            const hasAmount = typeof invoice.total === "number";
+                            const amount = hasAmount ? (invoice.total / 100).toFixed(2) : null;
+                            const amountText = amount ? ` of €${amount}` : "";
+                            const emailBody = `
+                                <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
+                                    <p>Hi ${displayName},</p>
+                                    <p>Your recent QuickServe payment${amountText} has been successfully processed.</p>
+                                    <p>Thank you for your continued partnership!</p>
+                                </div>
+                            `;
+                            const from = process.env.EMAIL_FROM_BILLING || "QuickServe Billing <billing@quickservehq.com>";
+                            try {
+                                await sendEmail({
+                                    to: recipient,
+                                    subject: "QuickServe Payment Successful",
+                                    html: emailBody,
+                                    from,
+                                });
+                            } catch (err) {
+                                console.error(`[webhook] Failed to send payment receipt email to ${recipient}:`, err.message);
+                            }
                         }
                     }
                 }
@@ -201,6 +269,8 @@ export async function handleStripeWebhook(req, res) {
             if (biz) {
                 if ((subscription.status === "past_due" || subscription.status === "unpaid" || subscription.status === "canceled") && !biz.billingFailedAt) {
                     updateFields.billingFailedAt = new Date();
+                } else if (subscription.status === "active") {
+                    await handleBusinessRestorationIfNeeded(biz, updateFields);
                 }
                 
                 await Business.updateOne(

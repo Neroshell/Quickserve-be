@@ -36,7 +36,9 @@ function getBusinessDisplayName(business) {
 }
 
 function getBillingEmailFrom() {
-    return process.env.EMAIL_FROM_BILLING;
+    return (
+        process.env.EMAIL_FROM_BILLING || "QuickServe Billing <billing@quickservehq.com>"
+    );
 }
 
 async function getUpcomingInvoiceEstimate(stripe, business) {
@@ -107,7 +109,7 @@ async function sendUpcomingInvoiceReminders({ stripe, now, tomorrowString, busin
                     <p>Hi ${getBusinessDisplayName(business)},</p>
                     <p>Your next QuickServe invoice will be charged on <strong>${formattedDate}</strong>.</p>
                     ${amountHtml}
-                    <p>This includes your subscription and offline commission fees for this billing period.</p>
+                    <p>This includes your subscription(if any) and offline commission fees for this billing period.</p>
                     <p style="margin-top: 25px;">
                         <a href="${process.env.FRONTEND_BASE_URL || "http://localhost:3000"}/owner/billing" style="display: inline-block; padding: 10px 20px; background-color: #EA601A; color: #fff; text-decoration: none; border-radius: 5px; font-weight: bold;">Manage billing &rarr;</a>
                     </p>
