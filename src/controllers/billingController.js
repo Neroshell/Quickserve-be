@@ -1480,18 +1480,32 @@ export async function updatePlan(req, res) {
             activeSubscription = subscription
 
             if (isUpgrade) {
-                const items = buildSubscriptionUpdateItems(subscription, targetPlan)
-                const updated = await stripe.subscriptions.update(stripeSubscriptionId, {
-                    items,
-                    proration_behavior: 'create_prorations',
-                    metadata: {
-                        businessId,
-                        planSlug
-                    }
-                })
+                const existingItems = subscription.items?.data || []
+                const items = buildSubscriptionUpdateItems(existingItems, targetPlan)
 
-                activeSubscription = updated
-                stripeMeteredSubscriptionItemId = findMeteredItemId(updated, targetPlan.stripeMeteredPriceId)
+                console.log("[updatePlan] Existing subscription items:",
+                    existingItems.map(i => ({ id: i.id, priceId: i.price.id, usageType: i.price.recurring?.usage_type })))
+                console.log("[updatePlan] Target plan prices: base=", targetPlan.stripeBasePriceId, "metered=", targetPlan.stripeMeteredPriceId)
+                console.log("[updatePlan] Items to send to Stripe:", JSON.stringify(items, null, 2))
+
+                if (items.length === 0) {
+                    console.log("[updatePlan] No item changes needed — subscription already has target prices")
+                    // No item changes, just update metadata
+                    const updated = await stripe.subscriptions.update(stripeSubscriptionId, {
+                        proration_behavior: 'create_prorations',
+                        metadata: { businessId, planSlug }
+                    })
+                    activeSubscription = updated
+                } else {
+                    const updated = await stripe.subscriptions.update(stripeSubscriptionId, {
+                        items,
+                        proration_behavior: 'create_prorations',
+                        metadata: { businessId, planSlug }
+                    })
+                    activeSubscription = updated
+                }
+
+                stripeMeteredSubscriptionItemId = findMeteredItemId(activeSubscription, targetPlan.stripeMeteredPriceId)
             } else {
                 downgradeScheduled = true
                 effectivePlan = biz.currentPlan || 'basic'
@@ -1573,41 +1587,41 @@ function buildSubscriptionItems(plan) {
     return items
 }
 
-function buildSubscriptionUpdateItems(subscription, plan) {
+/**
+ * Build the items array for stripe.subscriptions.update() when changing plans.
+ *
+ * STRIPE RULE: You CANNOT change a subscription item's price if the old and new
+ * prices have different usage_type (e.g. metered → licensed or vice versa).
+ * The ONLY safe approach: DELETE the old item and ADD the new price as a fresh item.
+ *
+ * ALGORITHM (price-diff, usage_type-agnostic):
+ *   - Any existing item whose priceId is NOT in the target plan → mark deleted
+ *   - Any target plan priceId NOT already on the subscription → add fresh
+ *   - Prices present in both → leave untouched (no-op, not included in the call)
+ *
+ * This approach never attempts an in-place price swap, so it is safe regardless
+ * of usage_type differences between old and new prices.
+ */
+function buildSubscriptionUpdateItems(existingItems, targetPlan) {
+    const targetPriceIds = [...new Set([
+        targetPlan.stripeBasePriceId,
+        targetPlan.stripeMeteredPriceId,
+    ].filter(Boolean))] // deduplicate + remove nulls
+
+    const existingPriceIds = existingItems.map(i => i.price.id)
     const items = []
-    const existingItems = subscription?.items?.data || []
 
-    // Separate existing items by type (base = recurring, metered = metered)
-    const existingBase = existingItems.find(i => i.price.type === 'recurring' && i.price.recurring?.usage_type !== 'metered')
-    const existingMetered = existingItems.find(i => i.price.recurring?.usage_type === 'metered')
-
-    // Handle base price: swap in-place if exists, add if new, delete if no longer needed
-    if (plan.stripeBasePriceId) {
-        if (existingBase) {
-            items.push({ id: existingBase.id, price: plan.stripeBasePriceId })
-        } else {
-            items.push({ price: plan.stripeBasePriceId })
-        }
-    } else if (existingBase) {
-        // New plan has no base price (e.g. free tier), delete the old one
-        items.push({ id: existingBase.id, deleted: true })
-    }
-
-    // Handle metered price: swap in-place if exists, add if new
-    if (plan.stripeMeteredPriceId) {
-        if (existingMetered) {
-            items.push({ id: existingMetered.id, price: plan.stripeMeteredPriceId })
-        } else {
-            items.push({ price: plan.stripeMeteredPriceId })
-        }
-    } else if (existingMetered) {
-        items.push({ id: existingMetered.id, deleted: true })
-    }
-
-    // Clean up any other items that don't match base or metered
+    // Step 1: DELETE any existing item whose price is not needed on the target plan
     existingItems.forEach(item => {
-        if (item !== existingBase && item !== existingMetered) {
+        if (!targetPriceIds.includes(item.price.id)) {
             items.push({ id: item.id, deleted: true })
+        }
+    })
+
+    // Step 2: ADD any target price that doesn't already exist on the subscription
+    targetPriceIds.forEach(priceId => {
+        if (!existingPriceIds.includes(priceId)) {
+            items.push({ price: priceId })
         }
     })
 

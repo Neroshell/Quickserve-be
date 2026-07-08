@@ -296,7 +296,8 @@ export async function logoutUser(req, res) {
     try {
         // Mark staff as offline if applicable
         const sessionUser = req.session?.user;
-        if (sessionUser && (sessionUser.role === "waiter" || sessionUser.role === "staff" || sessionUser.role === "kitchen") && sessionUser.email) {
+        const STAFF_ROLES = ["waiter", "staff", "kitchen", "bartender", "manager", "co_owner"];
+        if (sessionUser && STAFF_ROLES.includes(sessionUser.role) && sessionUser.email) {
             try {
                 const staff = await Staff.findOne({ email: sessionUser.email });
                 if (staff) {

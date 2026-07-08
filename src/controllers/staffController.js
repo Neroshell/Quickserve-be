@@ -158,6 +158,7 @@ export async function createStaff(req, res) {
 
         const staff = await Staff.create({
             businessId,
+            restaurantId: businessId, // legacy alias required by old waiters collection indexes
             staffId,
             waiterId: staffId, // populate waiterId for backward compat
             role,
@@ -192,7 +193,7 @@ export async function createStaff(req, res) {
         })
     } catch (err) {
         console.error("[createStaff]", err)
-        return res.status(500).json({ error: "Failed to create staff member" })
+        return res.status(500).json({ error: "Failed to create staff member", details: err.message })
     }
 }
 

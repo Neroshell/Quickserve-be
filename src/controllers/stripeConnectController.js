@@ -58,7 +58,7 @@ export async function connectAccount(req, res) {
     const accountLink = await stripe.accountLinks.create({
       account: business.stripeAccountId,
       refresh_url: `${FRONTEND_URL}/owner/settings?tab=payments&refresh=true`,
-      return_url: `${FRONTEND_URL}/owner/settings?tab=payments&success=true`,
+      return_url: `${FRONTEND_URL}/owner/billing`,
       type: "account_onboarding",
     })
 

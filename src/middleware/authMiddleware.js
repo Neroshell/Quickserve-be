@@ -18,4 +18,6 @@ export function requireRole(...roles) {
 }
 
 export const requirePrimaryOwner = requireRole("owner")
-export const requireOwnerOrCoOwner = requireRole("owner", "co_owner")
+
+// Accepts primary owners, co-owners, and any legacy role variants stored in older sessions
+export const requireOwnerOrCoOwner = requireRole("owner", "co_owner", "restaurant_owner", "admin")
