@@ -16,6 +16,36 @@ dotenv.config();
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+function toCurrencyAmount(value) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Number(amount.toFixed(2)) : 0;
+}
+
+export function getReceiptServiceFeeAmount(order) {
+  const mode = order?.platformFeeMode;
+  const customerPlatformFeeCents = Number(order?.customerPlatformFeeCents);
+  const platformFeeTotal = toCurrencyAmount(order?.platformFeeTotal);
+  const platformFeeCents = Number(order?.platformFeeCents);
+  const modeAllowsCustomerFee =
+    mode === "customer_pays" ||
+    mode === "split" ||
+    (!mode && (customerPlatformFeeCents > 0 || platformFeeTotal > 0));
+
+  if (!modeAllowsCustomerFee) return 0;
+
+  if (Number.isFinite(customerPlatformFeeCents) && customerPlatformFeeCents > 0) {
+    return toCurrencyAmount(customerPlatformFeeCents / 100);
+  }
+
+  if (platformFeeTotal > 0) return platformFeeTotal;
+
+  if (mode === "customer_pays" && Number.isFinite(platformFeeCents) && platformFeeCents > 0) {
+    return toCurrencyAmount(platformFeeCents / 100);
+  }
+
+  return 0;
+}
+
 export async function sendEmail({ to, subject, html, from }) {
   try {
     const { data, error } = await resend.emails.send({
@@ -77,7 +107,7 @@ export async function sendReceiptEmail(order, toEmail) {
       })),
       subtotal: order.subtotal ?? order.items.reduce((sum, item) => sum + (item.lineTotal || 0), 0),
       taxAmount: order.taxAmount || 0,
-      serviceFeeAmount: order.platformFeeTotal || 0,
+      serviceFeeAmount: getReceiptServiceFeeAmount(order),
       tipAmount: order.tipAmount || 0,
       total: order.total || 0
     };

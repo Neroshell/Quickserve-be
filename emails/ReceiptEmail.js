@@ -366,13 +366,13 @@ export default function ReceiptEmail({
             e(Column, { align: "right" }, e(Text, { style: totalLabel }, "Subtotal")),
             e(Column, { align: "right", style: { width: "80px" } }, e(Text, { style: totalValue }, formatPrice(subtotal, currency)))
           ),
-          taxAmount > 0 ? e(Row, { style: totalRow },
-            e(Column, { align: "right" }, e(Text, { style: totalLabel }, "Tax")),
-            e(Column, { align: "right", style: { width: "80px" } }, e(Text, { style: totalValue }, formatPrice(taxAmount, currency)))
-          ) : null,
           serviceFeeAmount > 0 ? e(Row, { style: totalRow },
             e(Column, { align: "right" }, e(Text, { style: totalLabel }, "Service Fee")),
             e(Column, { align: "right", style: { width: "80px" } }, e(Text, { style: totalValue }, formatPrice(serviceFeeAmount, currency)))
+          ) : null,
+          taxAmount > 0 ? e(Row, { style: totalRow },
+            e(Column, { align: "right" }, e(Text, { style: totalLabel }, "Tax")),
+            e(Column, { align: "right", style: { width: "80px" } }, e(Text, { style: totalValue }, formatPrice(taxAmount, currency)))
           ) : null,
           tipAmount > 0 ? e(Row, { style: totalRow },
             e(Column, { align: "right" }, e(Text, { style: totalLabel }, "Tip")),

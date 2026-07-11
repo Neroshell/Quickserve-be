@@ -11,12 +11,19 @@ import Plan from "../models/Plan.js";
 export async function calculateOnlineCommission(totalInCents, planSlug) {
   let slug = planSlug?.toLowerCase() || "basic";
   const planDoc = await Plan.findOne({ slug }).lean();
-  const rate = planDoc?.commissionPercentage ?? 0;
+  const onlineRate = Number(planDoc?.commissionPercentage);
+  const fallbackRate = Number(planDoc?.offlineCommissionRate);
+  const rate = Number.isFinite(onlineRate) && onlineRate > 0
+    ? onlineRate
+    : (Number.isFinite(fallbackRate) ? fallbackRate : 0);
+  const sourceField = Number.isFinite(onlineRate) && onlineRate > 0
+    ? "commissionPercentage"
+    : "offlineCommissionRate";
   
   const commissionAmountCents = Math.round(totalInCents * (rate / 100));
 
   console.log(
-    `[platformFee] Online Stripe commission resolved — plan="${planDoc?.slug || planSlug}", sourceField="commissionPercentage", rate=${rate}%, total=${totalInCents}c, quickServeFee=${commissionAmountCents}c`
+    `[platformFee] Online Stripe commission resolved — plan="${planDoc?.slug || planSlug}", sourceField="${sourceField}", rate=${rate}%, total=${totalInCents}c, quickServeFee=${commissionAmountCents}c`
   );
 
   return {
@@ -55,7 +62,11 @@ export async function calculateOfflineCommission(totalInCents, planSlug) {
 export async function getPlanOnlineCommissionRate(planSlug) {
   let slug = planSlug?.toLowerCase() || "basic";
   const planDoc = await Plan.findOne({ slug }).lean();
-  return planDoc?.commissionPercentage ?? 0;
+  const onlineRate = Number(planDoc?.commissionPercentage);
+  const fallbackRate = Number(planDoc?.offlineCommissionRate);
+  return Number.isFinite(onlineRate) && onlineRate > 0
+    ? onlineRate
+    : (Number.isFinite(fallbackRate) ? fallbackRate : 0);
 }
 
 export async function getPlanOfflineCommissionRate(planSlug) {

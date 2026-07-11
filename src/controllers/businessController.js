@@ -110,6 +110,11 @@ export async function updateSettings(req, res) {
             if (req.body[field] !== undefined) updateObj[field] = req.body[field]
         }
 
+        // Sanitize countryCode if explicitly provided in request
+        if (updateObj.countryCode !== undefined) {
+            updateObj.countryCode = deriveCountryCode(updateObj.countryCode)
+        }
+
         // Handle nested settings if provided (schema-enforced boolean flags only)
         if (settings && typeof settings === 'object') {
             for (const [key, value] of Object.entries(settings)) {

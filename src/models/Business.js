@@ -73,7 +73,8 @@ const BusinessSchema = new mongoose.Schema({
         default: "mt", 
         lowercase: true, 
         trim: true, 
-        index: true 
+        index: true,
+        match: /^[a-z]{2}$/
     },
     taxRate: { type: Number, default: 0, min: 0 },
     businessType: {
