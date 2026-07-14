@@ -167,6 +167,32 @@ export async function sendOnboardingEmail({ to, userName, businessName, inviteLi
 }
 
 /**
+ * Send a self-service onboarding email verification code.
+ * @param {object} params
+ * @param {string} params.to - Recipient email address
+ * @param {string} params.userName - Display name of the signup owner
+ * @param {string} params.verificationCode - Six-digit verification code
+ * @param {string} params.verificationLink - Full URL that auto-verifies the code
+ */
+export async function sendOnboardingVerificationCode({ to, userName, verificationCode, verificationLink }) {
+  try {
+    const html = await render(React.createElement(OnboardingEmail, {
+      userName,
+      businessName: "QuickServe",
+      inviteLink: verificationLink,
+      verificationCode,
+      role: "owner"
+    }));
+    const subject = "Verify your QuickServe email";
+    const from = process.env.EMAIL_FROM_ONBOARDING || "QuickServe <onboarding@quickservehq.com>";
+    return await sendEmail({ to, subject, html, from });
+  } catch (error) {
+    console.error("[EmailService] Error in sendOnboardingVerificationCode:", error);
+    return false;
+  }
+}
+
+/**
  * Send a reservation request email to the business owner.
  */
 export async function sendReservationRequestEmail({ to, businessName, reservation }) {

@@ -57,8 +57,8 @@ const BusinessSchema = new mongoose.Schema({
     address: { type: String, default: "" },
     phoneNumber: { type: String, default: "" },
     contactEmail: { type: String, default: "" },
-    currency: { type: String, default: "USD" },
-    timezone: { type: String, default: "America/New_York" },
+    currency: { type: String, default: "EUR" },
+    timezone: { type: String, default: "Europe/Malta"},
     logoUrl: { type: String, default: "" },
     logoPublicId: { type: String, default: "" },
 
@@ -196,7 +196,26 @@ const BusinessSchema = new mongoose.Schema({
     // Legacy fields for backward compatibility
     orderingPreferences: { type: OrderingPreferencesSchema, default: () => ({}) },
     paymentPreferences: { type: PaymentPreferencesSchema, default: () => ({}) },
-    tablePreferences: { type: TablePreferencesSchema, default: () => ({}) }
+    tablePreferences: { type: TablePreferencesSchema, default: () => ({}) },
+    
+    // Post-signup Onboarding Tracking
+    onboardingCompleted: { type: Boolean, default: false },
+    onboardingStep: { type: String, default: null },
+    onboardingStartedAt: { type: Date, default: null },
+    onboardingCompletedAt: { type: Date, default: null },
+   
+    
+    setupChecklist: {
+        businessProfileCompleted: { type: Boolean, default: false },
+        operatingHoursCompleted: { type: Boolean, default: false },
+        preferencesCompleted: { type: Boolean, default: false },
+        billingCardCompleted: { type: Boolean, default: false },
+        stripeConnectCompleted: { type: Boolean, default: false },
+        servicePointsCompleted: { type: Boolean, default: false },
+        menuCompleted: { type: Boolean, default: false },
+        teamCompleted: { type: Boolean, default: false },
+        previewCompleted: { type: Boolean, default: false }
+    }
 }, { timestamps: true })
 
 // Compound index to ensure slug is unique per country

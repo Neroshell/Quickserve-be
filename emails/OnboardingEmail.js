@@ -71,11 +71,37 @@ const footerText = {
   lineHeight: "22px",
 };
 
-export default function OnboardingEmail({ userName, businessName, inviteLink, role }) {
+const codeBox = {
+  backgroundColor: "#fff7ed",
+  border: "1px solid #fed7aa",
+  borderRadius: "8px",
+  color: "#9a3412",
+  fontSize: "32px",
+  fontWeight: "800",
+  letterSpacing: "8px",
+  lineHeight: "40px",
+  margin: "24px 0 8px",
+  padding: "18px 16px",
+  textAlign: "center",
+};
+
+const smallText = {
+  fontSize: "13px",
+  color: "#64748b",
+  lineHeight: "20px",
+  margin: "8px 0 0",
+};
+
+export default function OnboardingEmail({ userName, businessName, inviteLink, role, verificationCode }) {
   const e = React.createElement;
   const isOwner = role === "owner";
+  const isVerification = Boolean(verificationCode);
   const headerColor = isOwner ? "#ea580c" : "#0284c7";
-  const headerSubtitle = isOwner ? "Partner Portal Onboarding" : "Staff Onboarding";
+  const headerSubtitle = isVerification
+    ? "Email Verification"
+    : isOwner
+      ? "Partner Portal Onboarding"
+      : "Staff Onboarding";
 
   const headerStyle = {
     backgroundColor: headerColor,
@@ -94,12 +120,14 @@ export default function OnboardingEmail({ userName, businessName, inviteLink, ro
   };
 
   const introText = isOwner
-    ? `Your business account for ${businessName} has been successfully created on QuickServe.`
+    ? isVerification
+      ? "Your QuickServe owner account has been created. Verify your email address to continue setting up your business."
+      : `Your business account for ${businessName} has been successfully created on QuickServe.`
     : "You have been added as a member of the Staff for a business on QuickServe.";
 
   return e(Html, null,
     e(Head, null),
-    e(Preview, null, "Set up your QuickServe account"),
+    e(Preview, null, isVerification ? "Your QuickServe verification code" : "Set up your QuickServe account"),
     e(Body, { style: main },
       e(Container, { style: container },
         e(Section, { style: headerStyle },
@@ -109,10 +137,23 @@ export default function OnboardingEmail({ userName, businessName, inviteLink, ro
         e(Section, { style: content },
           e(Text, { style: greetingStyle }, `Hello ${userName},`),
           e(Text, { style: text }, introText),
-          e(Text, { style: text }, "To access your dashboard, please set up your account password by clicking the button below:"),
-          e(Section, { style: buttonContainer },
-            e(Button, { href: inviteLink, style: buttonStyle }, "Set Up Your Password")
-          ),
+          isVerification
+            ? e(React.Fragment, null,
+                e(Text, { style: text }, "Enter this 6-digit code on the onboarding page:"),
+                e(Text, { style: codeBox }, verificationCode),
+                e(Text, { style: smallText }, "This code expires in 30 minutes."),
+                inviteLink
+                  ? e(Section, { style: buttonContainer },
+                      e(Button, { href: inviteLink, style: buttonStyle }, "Verify Email")
+                    )
+                  : null
+              )
+            : e(React.Fragment, null,
+                e(Text, { style: text }, "To access your dashboard, please set up your account password by clicking the button below:"),
+                e(Section, { style: buttonContainer },
+                  e(Button, { href: inviteLink, style: buttonStyle }, "Set Up Your Password")
+                )
+              ),
           e(Text, { style: footerText }, "Welcome aboard! The QuickServe Team")
         )
       )

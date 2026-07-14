@@ -20,6 +20,7 @@ import feedbackRoute from "./src/routes/feedback-route.js"
 import publicRoute from "./src/routes/public-route.js"
 import internalRoute from "./src/routes/internal-route.js"
 import guestProfileRoute from "./src/routes/guestProfileRoutes.js"
+import onboardingRoute from "./src/routes/onboarding-route.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 import helmet from "helmet"
 import { sessionMiddleware } from "./src/config/session.js"
@@ -106,6 +107,7 @@ app.use("/upload", uploadRoute)
 app.use("/feedback", feedbackRoute)
 app.use("/public", publicRoute)
 app.use("/internal", internalRoute)
+app.use("/onboarding", onboardingRoute)
 app.use(sseRoute)
 
 // Setup Swagger UI and Spec endpoints

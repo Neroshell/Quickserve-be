@@ -1,5 +1,5 @@
 import express from "express"
-import { ownerOrders, ownerAnalytics, getTableSessionsOverview, getDashboardData, getBranding, updateBranding } from "../controllers/ownerController.js"
+import { ownerOrders, ownerAnalytics, getTableSessionsOverview, getDashboardData, getBranding, updateBranding, getSetupChecklist, updateSetupChecklist } from "../controllers/ownerController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
 import { getTeam, inviteCoOwner, removeCoOwner } from "../controllers/teamController.js"
 import {
