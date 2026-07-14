@@ -5,7 +5,7 @@ import OnboardingSession from '../models/OnboardingSession.js'
 import Plan from '../models/Plan.js'
 import { hashToken } from '../utils/tokenHash.js'
 import { sendOnboardingVerificationCode } from '../utils/emailService.js'
-import { deriveCountryCode } from '../utils/countryHelper.js'
+import { isCountryResolutionError, resolveCountryMetadata, validateCountryMetadataPayload } from '../utils/countryHelper.js'
 
 const VERIFICATION_CODE_TTL_MS = 30 * 60 * 1000
 
@@ -256,7 +256,15 @@ export async function updateSession(req, res) {
 
         // Validate slug uniqueness early if slug is provided
         if (businessData?.slug && businessData?.country) {
-            const countryCode = deriveCountryCode(businessData.country)
+            let countryCode
+            try {
+                countryCode = resolveCountryMetadata(businessData.country).countryCode
+            } catch (err) {
+                if (isCountryResolutionError(err)) {
+                    return res.status(400).json({ message: err.message })
+                }
+                throw err
+            }
             const existingSlug = await Business.findOne({ slug: businessData.slug, countryCode })
             if (existingSlug) {
                 return res.status(400).json({ message: "A business with this URL already exists in this region." })
@@ -308,10 +316,18 @@ export async function completeOnboarding(req, res) {
         const businessPhoneNumber = data.phoneNumber.trim()
         const businessContactEmail = data.contactEmail.trim().toLowerCase()
 
-        const countryCode = deriveCountryCode(businessCountry)
+        let countryMetadata
+        try {
+            countryMetadata = validateCountryMetadataPayload(businessCountry, data)
+        } catch (err) {
+            if (isCountryResolutionError(err)) {
+                return res.status(400).json({ message: err.message })
+            }
+            throw err
+        }
 
         // Final slug check
-        const existingSlug = await Business.findOne({ slug: businessSlug, countryCode })
+        const existingSlug = await Business.findOne({ slug: businessSlug, countryCode: countryMetadata.countryCode })
         if (existingSlug) {
             return res.status(400).json({ message: "A business with this URL already exists in this region." })
         }
@@ -347,10 +363,10 @@ export async function completeOnboarding(req, res) {
             address: businessAddress,
             phoneNumber: businessPhoneNumber,
             contactEmail: businessContactEmail,
-            country: businessCountry,
-            countryCode,
-            currency: data.currency || 'USD',
-            timezone: data.timezone || 'America/New_York',
+            country: countryMetadata.country,
+            countryCode: countryMetadata.countryCode,
+            currency: countryMetadata.currency,
+            timezone: countryMetadata.timezone,
             language: data.language || 'en',
             
             plan: selectedPlanSlug,

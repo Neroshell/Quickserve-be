@@ -4,11 +4,11 @@ import Plan from "../models/Plan.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
 import { generateSlugFromName } from "../utils/slugify.js"
-import { deriveCountryCode } from "../utils/countryHelper.js"
+import { isCountryResolutionError, validateCountryMetadataPayload } from "../utils/countryHelper.js"
 import { hashToken } from "../utils/tokenHash.js"
 
 function generateBusinessId() {
-    return `rest_${crypto.randomBytes(7).toString("hex")}`
+    return `biz_${crypto.randomBytes(7).toString("hex")}`
 }
 
 // Secret / credential fields that must NEVER be returned by any API response,
@@ -37,7 +37,7 @@ function sanitizeBusiness(biz) {
 // cannot escalate their plan, bypass billing, or hijack ownership.
 const ALLOWED_SETTINGS_UPDATE_FIELDS = [
     "name", "displayName", "slug", "address", "phoneNumber", "contactEmail",
-    "currency", "timezone", "country", "countryCode", "language", "taxRate", "businessType",
+    "currency", "timezone", "country", "language", "taxRate", "businessType",
     "logoUrl", "logoPublicId", "platformFeeLabel", "passPlatformFeeToCustomer",
     "menuCategories",
 ]
@@ -110,9 +110,30 @@ export async function updateSettings(req, res) {
             if (req.body[field] !== undefined) updateObj[field] = req.body[field]
         }
 
-        // Sanitize countryCode if explicitly provided in request
-        if (updateObj.countryCode !== undefined) {
-            updateObj.countryCode = deriveCountryCode(updateObj.countryCode)
+        if (updateObj.country !== undefined) {
+            let countryMetadata
+            try {
+                countryMetadata = validateCountryMetadataPayload(updateObj.country, updateObj)
+            } catch (err) {
+                if (isCountryResolutionError(err)) {
+                    return res.status(400).json({ message: err.message })
+                }
+                throw err
+            }
+
+            const existingBiz = await Business.findOne({ businessId }).select("countryCode").lean()
+            if (!existingBiz) {
+                return res.status(404).json({ message: "Business not found" })
+            }
+
+            if (countryMetadata.countryCode !== existingBiz.countryCode) {
+                updateObj.country = countryMetadata.country
+                updateObj.countryCode = countryMetadata.countryCode
+                updateObj.currency = countryMetadata.currency
+                updateObj.timezone = countryMetadata.timezone
+            } else {
+                delete updateObj.country
+            }
         }
 
         // Handle nested settings if provided (schema-enforced boolean flags only)
@@ -134,12 +155,7 @@ export async function updateSettings(req, res) {
 
             const existingBiz = await Business.findOne({ businessId })
             
-            // If they are explicitly updating countryCode, use that. Otherwise use their existing countryCode.
-            let resolvedCountryCode = updateObj.countryCode
-            if (!resolvedCountryCode) {
-                resolvedCountryCode = updateObj.country ? deriveCountryCode(updateObj.country) : (existingBiz?.countryCode || 'mt')
-                updateObj.countryCode = resolvedCountryCode
-            }
+            const resolvedCountryCode = updateObj.countryCode || existingBiz?.countryCode || 'mt'
 
             const existing = await Business.findOne({ 
                 slug: updateObj.slug, 
@@ -157,11 +173,7 @@ export async function updateSettings(req, res) {
                 let newSlug = baseSlug;
                 let counter = 1;
                 
-                let resolvedCountryCode = updateObj.countryCode
-                if (!resolvedCountryCode) {
-                    resolvedCountryCode = updateObj.country ? deriveCountryCode(updateObj.country) : (existingBiz.countryCode || 'mt')
-                    updateObj.countryCode = resolvedCountryCode
-                }
+                const resolvedCountryCode = updateObj.countryCode || existingBiz.countryCode || 'mt'
 
                 while (await Business.exists({ slug: newSlug, countryCode: resolvedCountryCode, businessId: { $ne: businessId } })) {
                     newSlug = `${baseSlug}-${counter}`;
@@ -352,6 +364,7 @@ export async function createBusiness(req, res) {
             phone,
             address,
             country,
+            countryCode,
             currency,
             timezone,
             language,
@@ -383,9 +396,17 @@ export async function createBusiness(req, res) {
             return res.status(400).json({ message: "Slug: lowercase, letters, numbers, hyphens only" })
         }
 
-        const countryCode = deriveCountryCode(country)
+        let countryMetadata
+        try {
+            countryMetadata = validateCountryMetadataPayload(country, { countryCode, currency, timezone })
+        } catch (err) {
+            if (isCountryResolutionError(err)) {
+                return res.status(400).json({ message: err.message })
+            }
+            throw err
+        }
 
-        const existingSlug = await Business.findOne({ slug, countryCode })
+        const existingSlug = await Business.findOne({ slug, countryCode: countryMetadata.countryCode })
         if (existingSlug) {
             return res.status(400).json({ message: "A business with this slug already exists in this region." })
         }
@@ -401,10 +422,10 @@ export async function createBusiness(req, res) {
             contactEmail,
             phoneNumber: phone,
             address,
-            country,
-            countryCode,
-            currency,
-            timezone,
+            country: countryMetadata.country,
+            countryCode: countryMetadata.countryCode,
+            currency: countryMetadata.currency,
+            timezone: countryMetadata.timezone,
             language: language || "en",
             settings: settings || {
                 onlinePaymentEnabled: true,
@@ -630,6 +651,34 @@ export async function updateAdminBusiness(req, res) {
 
         // Never allow credential/secret fields to be set through the admin API.
         for (const field of SENSITIVE_BUSINESS_FIELDS) delete updateData[field]
+        if (updateData.country !== undefined) {
+            let countryMetadata
+            try {
+                countryMetadata = validateCountryMetadataPayload(updateData.country, updateData)
+            } catch (err) {
+                if (isCountryResolutionError(err)) {
+                    return res.status(400).json({ message: err.message })
+                }
+                throw err
+            }
+
+            const existingBusiness = await Business.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] }).select("countryCode").lean()
+            if (!existingBusiness) {
+                return res.status(404).json({ message: "Business not found" })
+            }
+
+            if (countryMetadata.countryCode !== existingBusiness.countryCode) {
+                updateData.country = countryMetadata.country
+                updateData.countryCode = countryMetadata.countryCode
+                updateData.currency = countryMetadata.currency
+                updateData.timezone = countryMetadata.timezone
+            } else {
+                delete updateData.country
+                delete updateData.countryCode
+            }
+        } else {
+            delete updateData.countryCode
+        }
 
         const business = await Business.findOneAndUpdate(
             { $or: [{ businessId: paramId }, { restaurantId: paramId }] },

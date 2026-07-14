@@ -1,5 +1,6 @@
 import Stripe from "stripe"
 import Business from "../models/Business.js"
+import { isCountryResolutionError, resolveCountryMetadata } from "../utils/countryHelper.js"
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
@@ -28,13 +29,26 @@ export async function connectAccount(req, res) {
 
     // ── Create Express account if not already linked ──────────────────────────
     if (!business.stripeAccountId) {
-      // TODO: remove MT fallback once all businesses have a country set
-      const country = business.country?.trim() || "MT"
+      let countryCode = business.countryCode
+      if (!countryCode && business.country) {
+        try {
+          countryCode = resolveCountryMetadata(business.country).countryCode
+        } catch (err) {
+          if (isCountryResolutionError(err)) {
+            return res.status(400).json({ error: err.message })
+          }
+          throw err
+        }
+      }
+
+      if (!countryCode) {
+        return res.status(400).json({ error: "Business country code is required before connecting Stripe." })
+      }
 
       const account = await stripe.accounts.create({
         type: "express",
         email: business.ownerEmail,
-        country,
+        country: countryCode.toUpperCase(),
         capabilities: {
           card_payments: { requested: true },
           transfers: { requested: true },
