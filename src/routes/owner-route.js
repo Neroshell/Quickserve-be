@@ -1,5 +1,6 @@
 import express from "express"
-import { ownerOrders, ownerAnalytics, getTableSessionsOverview, getDashboardData, getBranding, updateBranding, getSetupChecklist, updateSetupChecklist } from "../controllers/ownerController.js"
+import { ownerOrders, ownerAnalytics, getTableSessionsOverview, getDashboardData, getBranding, updateBranding } from "../controllers/ownerController.js"
+import { dismissSetupGuide, getSetupProgress } from "../controllers/setupProgressController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
 import { getTeam, inviteCoOwner, removeCoOwner } from "../controllers/teamController.js"
 import {
@@ -117,6 +118,8 @@ router.get("/orders", ownerOrders)
  *         description: Main dashboard analytics and status counters
  */
 router.get("/dashboard", getDashboardData)
+router.get("/setup-progress", getSetupProgress)
+router.post("/setup-progress/dismiss", requirePrimaryOwner, dismissSetupGuide)
 
 /**
  * @openapi

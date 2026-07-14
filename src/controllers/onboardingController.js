@@ -380,6 +380,9 @@ export async function completeOnboarding(req, res) {
                 menuCompleted: false,
                 teamCompleted: false,
                 previewCompleted: false
+            },
+            setupProgress: {
+                setupGuideDismissed: false
             }
         })
 

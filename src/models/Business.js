@@ -215,6 +215,10 @@ const BusinessSchema = new mongoose.Schema({
         menuCompleted: { type: Boolean, default: false },
         teamCompleted: { type: Boolean, default: false },
         previewCompleted: { type: Boolean, default: false }
+    },
+    setupProgress: {
+        setupGuideDismissed: { type: Boolean, default: false },
+        setupGuideDismissedAt: { type: Date, default: null }
     }
 }, { timestamps: true })
 
