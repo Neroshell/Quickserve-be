@@ -141,12 +141,7 @@ export default function OnboardingEmail({ userName, businessName, inviteLink, ro
             ? e(React.Fragment, null,
                 e(Text, { style: text }, "Enter this 6-digit code on the onboarding page:"),
                 e(Text, { style: codeBox }, verificationCode),
-                e(Text, { style: smallText }, "This code expires in 30 minutes."),
-                inviteLink
-                  ? e(Section, { style: buttonContainer },
-                      e(Button, { href: inviteLink, style: buttonStyle }, "Verify Email")
-                    )
-                  : null
+                e(Text, { style: smallText }, "This code expires in 30 minutes.")
               )
             : e(React.Fragment, null,
                 e(Text, { style: text }, "To access your dashboard, please set up your account password by clicking the button below:"),

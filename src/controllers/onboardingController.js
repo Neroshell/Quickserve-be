@@ -44,11 +44,6 @@ function getMissingBusinessFields(data) {
         .map(([field, label]) => ({ field, label }))
 }
 
-function buildVerificationLink(email, verificationCode) {
-    const frontendBaseUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:3000'
-    return `${frontendBaseUrl}/onboarding?token=${verificationCode}&email=${encodeURIComponent(email)}`
-}
-
 /**
  * Step 1: Start Signup (Create Account)
  */
@@ -97,12 +92,10 @@ export async function startSignup(req, res) {
             { new: true, upsert: true }
         )
 
-        const verificationLink = buildVerificationLink(normalizedEmail, verificationCode)
         const emailSent = await sendOnboardingVerificationCode({ 
             to: normalizedEmail, 
             userName: ownerName, 
-            verificationCode,
-            verificationLink
+            verificationCode
         })
 
         if (!emailSent) {
@@ -146,12 +139,10 @@ export async function resendVerificationEmail(req, res) {
         session.currentStep = 'verify_email'
         await session.save()
 
-        const verificationLink = buildVerificationLink(normalizedEmail, verificationCode)
         const emailSent = await sendOnboardingVerificationCode({
             to: normalizedEmail,
             userName: session.ownerName,
-            verificationCode,
-            verificationLink
+            verificationCode
         })
 
         if (!emailSent) {
