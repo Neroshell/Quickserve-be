@@ -25,6 +25,25 @@ function getVerificationExpiresAt() {
     return new Date(Date.now() + VERIFICATION_CODE_TTL_MS)
 }
 
+function hasRequiredText(value) {
+    return typeof value === "string" && value.trim().length > 0
+}
+
+function getMissingBusinessFields(data) {
+    const requiredFields = [
+        ["name", "business name"],
+        ["slug", "business URL"],
+        ["country", "country"],
+        ["address", "business address"],
+        ["phoneNumber", "phone number"],
+        ["contactEmail", "business email"]
+    ]
+
+    return requiredFields
+        .filter(([field]) => !hasRequiredText(data?.[field]))
+        .map(([field, label]) => ({ field, label }))
+}
+
 function buildVerificationLink(email, verificationCode) {
     const frontendBaseUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:3000'
     return `${frontendBaseUrl}/onboarding?token=${verificationCode}&email=${encodeURIComponent(email)}`
@@ -37,7 +56,7 @@ export async function startSignup(req, res) {
     try {
         const { firstName, lastName, email, password, termsAccepted } = req.body
 
-        if (!firstName || !lastName || !email || !password) {
+        if (!hasRequiredText(firstName) || !hasRequiredText(lastName) || !hasRequiredText(email) || !hasRequiredText(password)) {
             return res.status(400).json({ message: "All fields are required" })
         }
         if (!termsAccepted) {
@@ -274,14 +293,25 @@ export async function completeOnboarding(req, res) {
         }
 
         const data = session.businessData
-        if (!data.name || !data.slug || !data.country) {
-            return res.status(400).json({ message: "Missing required business information" })
+        const missingFields = getMissingBusinessFields(data)
+        if (missingFields.length) {
+            return res.status(400).json({
+                message: `Missing required business information: ${missingFields.map(({ label }) => label).join(", ")}`,
+                fields: missingFields.map(({ field }) => field)
+            })
         }
 
-        const countryCode = deriveCountryCode(data.country)
+        const businessName = data.name.trim()
+        const businessSlug = data.slug.trim().toLowerCase()
+        const businessCountry = data.country.trim()
+        const businessAddress = data.address.trim()
+        const businessPhoneNumber = data.phoneNumber.trim()
+        const businessContactEmail = data.contactEmail.trim().toLowerCase()
+
+        const countryCode = deriveCountryCode(businessCountry)
 
         // Final slug check
-        const existingSlug = await Business.findOne({ slug: data.slug, countryCode })
+        const existingSlug = await Business.findOne({ slug: businessSlug, countryCode })
         if (existingSlug) {
             return res.status(400).json({ message: "A business with this URL already exists in this region." })
         }
@@ -310,14 +340,14 @@ export async function completeOnboarding(req, res) {
         const business = await Business.create({
             businessId,
             restaurantId: businessId,
-            name: data.name,
-            displayName: data.displayName || data.name,
-            slug: data.slug,
+            name: businessName,
+            displayName: data.displayName || businessName,
+            slug: businessSlug,
             businessType: data.businessType || 'restaurant',
-            address: data.address || '',
-            phoneNumber: data.phoneNumber || '',
-            contactEmail: data.contactEmail || session.ownerEmail,
-            country: data.country,
+            address: businessAddress,
+            phoneNumber: businessPhoneNumber,
+            contactEmail: businessContactEmail,
+            country: businessCountry,
             countryCode,
             currency: data.currency || 'USD',
             timezone: data.timezone || 'America/New_York',
