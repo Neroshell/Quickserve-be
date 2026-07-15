@@ -2,6 +2,7 @@ import Staff from "../models/Staff.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
 import { hashToken } from "../utils/tokenHash.js"
+import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
 
@@ -123,6 +124,20 @@ export async function createStaff(req, res) {
             })
         }
 
+        email = normalizeAccountEmail(email)
+        if (!email) {
+            return res.status(400).json({ error: "A valid email is required" })
+        }
+
+        try {
+            await assertEmailAvailable(email)
+        } catch (err) {
+            if (isEmailAlreadyInUseError(err)) {
+                return sendEmailInUseResponse(res)
+            }
+            throw err
+        }
+
         // Auto-generate staffId if omitted
         if (!staffId || !staffId.trim()) {
             staffId = await generateStaffId(businessId)
@@ -142,13 +157,6 @@ export async function createStaff(req, res) {
         if (existingStaffId) {
             return res.status(409).json({
                 message: "A staff member with this ID already exists in your business."
-            })
-        }
-
-        const existingEmail = await Staff.findOne({ businessId, email: email.toLowerCase().trim() })
-        if (existingEmail) {
-            return res.status(409).json({
-                message: "A staff member with this email already exists in your business."
             })
         }
 

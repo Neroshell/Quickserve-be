@@ -3,6 +3,7 @@ import Business from "../models/Business.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
 import { hashToken } from "../utils/tokenHash.js"
+import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
 
 function resolveBusinessId(req) {
     return req.session?.user?.businessId || req.query.businessId
@@ -62,13 +63,18 @@ export async function inviteCoOwner(req, res) {
             return res.status(400).json({ error: "name and email are required" })
         }
 
-        email = email.toLowerCase().trim()
+        email = normalizeAccountEmail(email)
+        if (!email) {
+            return res.status(400).json({ error: "A valid email is required" })
+        }
 
-        const existingStaff = await Staff.findOne({ businessId, email })
-        if (existingStaff) {
-            return res.status(409).json({
-                message: "A staff member or co-owner with this email already exists in your business."
-            })
+        try {
+            await assertEmailAvailable(email)
+        } catch (err) {
+            if (isEmailAlreadyInUseError(err)) {
+                return sendEmailInUseResponse(res)
+            }
+            throw err
         }
 
         const staffId = `COW-${Math.floor(1000 + Math.random() * 9000)}`

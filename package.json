@@ -10,6 +10,7 @@
     "dev": "nodemon server.js",
     "seed": "node scripts/seed.js",
     "billing:bootstrap": "node scripts/bootstrap-billing-plans.js",
+    "audit:account-emails": "node scripts/audit-account-email-duplicates.js",
     "plan:seed": "npm run seed",
     "setup:payment-plans": "npm run seed && npm run billing:bootstrap",
     "setup:db": "npm run setup:payment-plans"

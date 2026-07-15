@@ -4,6 +4,7 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { sendAuthEmail, sendEmailChangeVerification, sendEmailChangeNotification } from "../utils/emailService.js";
 import { hashToken } from "../utils/tokenHash.js";
+import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from "../utils/emailAvailability.js";
 
 /**
  * Validate an invitation token
@@ -596,11 +597,18 @@ export async function changeEmail(req, res) {
             return res.status(401).json({ message: "Incorrect current password" });
         }
 
-        // Check uniqueness of the requested new email
-        const existingBusiness = await Business.findOne({ ownerEmail: normalizedEmail });
-        const existingStaff = await Staff.findOne({ email: normalizedEmail });
-        if (existingBusiness || existingStaff) {
-            return res.status(400).json({ message: "Email address is already in use by another account" });
+        try {
+            await assertEmailAvailable(normalizedEmail, {
+                exclude: {
+                    businessObjectId: user._id,
+                    businessId: user.businessId || user.restaurantId
+                }
+            });
+        } catch (err) {
+            if (isEmailAlreadyInUseError(err)) {
+                return sendEmailInUseResponse(res, 400);
+            }
+            throw err;
         }
 
         // Generate a cryptographically secure token
@@ -660,9 +668,18 @@ export async function confirmEmailChange(req, res) {
         const userName = user.ownerName;
 
         // Double-check uniqueness at confirmation time (race-condition safety)
-        const existingBusiness = await Business.findOne({ ownerEmail: newEmail, _id: { $ne: user._id } });
-        const existingStaff = await Staff.findOne({ email: newEmail });
-        if (existingBusiness || existingStaff) {
+        try {
+            await assertEmailAvailable(newEmail, {
+                exclude: {
+                    businessObjectId: user._id,
+                    businessId: user.businessId || user.restaurantId
+                }
+            });
+        } catch (err) {
+            if (!isEmailAlreadyInUseError(err)) {
+                throw err;
+            }
+
             user.pendingEmailChange = null;
             user.emailChangeToken = undefined;
             user.emailChangeTokenExpires = undefined;

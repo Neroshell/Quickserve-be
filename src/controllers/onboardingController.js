@@ -6,11 +6,12 @@ import Plan from '../models/Plan.js'
 import { hashToken } from '../utils/tokenHash.js'
 import { sendOnboardingVerificationCode } from '../utils/emailService.js'
 import { isCountryResolutionError, resolveCountryMetadata, validateCountryMetadataPayload } from '../utils/countryHelper.js'
+import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from '../utils/emailAvailability.js'
 
 const VERIFICATION_CODE_TTL_MS = 30 * 60 * 1000
 
 function generateBusinessId() {
-    return `rest_${crypto.randomBytes(7).toString("hex")}`
+    return `biz_${crypto.randomBytes(7).toString("hex")}`
 }
 
 function generateSessionId() {
@@ -60,10 +61,13 @@ export async function startSignup(req, res) {
 
         const normalizedEmail = email.trim().toLowerCase()
 
-        // Check if owner already exists in Business
-        const existingBusinessOwner = await Business.findOne({ ownerEmail: normalizedEmail })
-        if (existingBusinessOwner) {
-            return res.status(409).json({ message: "An account with this email already exists." })
+        try {
+            await assertEmailAvailable(normalizedEmail)
+        } catch (err) {
+            if (isEmailAlreadyInUseError(err)) {
+                return sendEmailInUseResponse(res)
+            }
+            throw err
         }
 
         // Generate tokens and hash password
@@ -341,6 +345,20 @@ export async function completeOnboarding(req, res) {
         }
 
         const selectedPlanSlug = resolvedPlanSlug || 'basic'
+
+        try {
+            await assertEmailAvailable(session.ownerEmail, {
+                exclude: {
+                    onboardingSessionObjectId: session._id,
+                    onboardingSessionId: session.sessionId
+                }
+            })
+        } catch (err) {
+            if (isEmailAlreadyInUseError(err)) {
+                return sendEmailInUseResponse(res)
+            }
+            throw err
+        }
 
         const businessId = generateBusinessId()
 

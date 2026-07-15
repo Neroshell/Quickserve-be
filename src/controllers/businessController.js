@@ -6,6 +6,7 @@ import { sendOnboardingEmail } from "../utils/emailService.js"
 import { generateSlugFromName } from "../utils/slugify.js"
 import { isCountryResolutionError, validateCountryMetadataPayload } from "../utils/countryHelper.js"
 import { hashToken } from "../utils/tokenHash.js"
+import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
 
 function generateBusinessId() {
     return `biz_${crypto.randomBytes(7).toString("hex")}`
@@ -475,11 +476,18 @@ export async function createAdminOwner(req, res) {
             return res.status(400).json({ message: "This business already has an owner assigned" })
         }
 
-        // Check for existing owner account across all businesses
-        const normalizedOwnerEmail = ownerEmail.trim().toLowerCase()
-        const existingOwner = await Business.findOne({ ownerEmail: normalizedOwnerEmail })
-        if (existingOwner) {
-            return res.status(409).json({ message: "An owner account with this email already exists." })
+        const normalizedOwnerEmail = normalizeAccountEmail(ownerEmail)
+        if (!normalizedOwnerEmail) {
+            return res.status(400).json({ message: "A valid owner email is required" })
+        }
+
+        try {
+            await assertEmailAvailable(normalizedOwnerEmail)
+        } catch (err) {
+            if (isEmailAlreadyInUseError(err)) {
+                return sendEmailInUseResponse(res)
+            }
+            throw err
         }
 
         const inviteToken = crypto.randomBytes(32).toString("hex")
@@ -651,6 +659,37 @@ export async function updateAdminBusiness(req, res) {
 
         // Never allow credential/secret fields to be set through the admin API.
         for (const field of SENSITIVE_BUSINESS_FIELDS) delete updateData[field]
+
+        if (updateData.ownerEmail !== undefined) {
+            const normalizedOwnerEmail = normalizeAccountEmail(updateData.ownerEmail)
+            if (!normalizedOwnerEmail) {
+                return res.status(400).json({ message: "A valid owner email is required" })
+            }
+
+            const existingBusinessForOwner = await Business.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] })
+                .select("_id businessId restaurantId")
+                .lean()
+            if (!existingBusinessForOwner) {
+                return res.status(404).json({ message: "Business not found" })
+            }
+
+            try {
+                await assertEmailAvailable(normalizedOwnerEmail, {
+                    exclude: {
+                        businessObjectId: existingBusinessForOwner._id,
+                        businessId: existingBusinessForOwner.businessId || existingBusinessForOwner.restaurantId
+                    }
+                })
+            } catch (err) {
+                if (isEmailAlreadyInUseError(err)) {
+                    return sendEmailInUseResponse(res)
+                }
+                throw err
+            }
+
+            updateData.ownerEmail = normalizedOwnerEmail
+        }
+
         if (updateData.country !== undefined) {
             let countryMetadata
             try {
