@@ -467,7 +467,7 @@ export async function getReservationByToken(req, res) {
     }
 
     const reservation = await Reservation.findOne({ secureToken })
-      .select("-stripeSessionId -paymentExpiresAt")
+      .select("-stripeSessionId")
       .lean();
     if (!reservation) {
       return res.status(404).json({ error: "Reservation not found" });
