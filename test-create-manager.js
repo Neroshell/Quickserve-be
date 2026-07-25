@@ -8,9 +8,9 @@ async function test() {
 
     const StaffSchema = new mongoose.Schema({
         businessId: { type: String, required: true, index: true },
-        restaurantId: { type: String, index: true, sparse: true },
+        businessId: { type: String, index: true, sparse: true },
         staffId: { type: String, required: true },
-        waiterId: { type: String },
+        staffId: { type: String },
         role: {
             type: String,
             enum: ALLOWED_ROLES,
@@ -51,7 +51,7 @@ async function test() {
         const staff = await Staff.create({
             businessId: "test_biz",
             staffId: "MGR-1234",
-            waiterId: "MGR-1234",
+            staffId: "MGR-1234",
             role: "manager",
             name: "Test Manager",
             email: "test.mgr@test.com",

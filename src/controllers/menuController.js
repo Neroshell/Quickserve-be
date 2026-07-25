@@ -1,14 +1,14 @@
 import MenuItem from "../models/menuItem.js"
 import Order from "../models/order.js"
 
-/** Accept businessId with fallback to legacy restaurantId */
+/** Accept businessId with fallback to legacy businessId */
 function resolveBusinessId(req) {
     return (
         req.session?.user?.businessId ||
         req.query.businessId ||
-        req.query.restaurantId ||
+        req.query.businessId ||
         req.body?.businessId ||
-        req.body?.restaurantId
+        req.body?.businessId
     )
 }
 

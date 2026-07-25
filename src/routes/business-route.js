@@ -1,11 +1,12 @@
 import express from "express"
-import { getSettings, updateSettings, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory } from "../controllers/businessController.js"
+import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory } from "../controllers/businessController.js"
 
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
 
 const router = express.Router()
 
 const requireManager = [requireAuth, requireRole("owner", "admin", "manager")]
+const requireOwner = [requireAuth, requireRole("owner", "co_owner")]
 
 /**
  * @openapi
@@ -43,6 +44,12 @@ router.get("/settings", requireManager, getSettings)
  *         description: Settings updated successfully
  */
 router.patch("/settings", requireManager, updateSettings)
+
+/**
+ * Hotel owners can add or remove Food Service without changing the hotel's
+ * business identity or its required Lodging module.
+ */
+router.patch("/settings/modules", requireOwner, updateOwnerBusinessModules)
 
 /**
  * @openapi

@@ -32,7 +32,7 @@ export async function getGuests(req, res) {
     const query = { businessId };
 
     // Fetch business for timezone
-    const business = await Business.findOne({ $or: [{ businessId }, { restaurantId: businessId }] }).lean();
+    const business = await Business.findOne({ $or: [{ businessId }, { businessId: businessId }] }).lean();
     const timezone = business?.timezone || "UTC";
 
     // Search by email or name

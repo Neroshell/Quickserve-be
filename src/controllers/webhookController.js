@@ -407,18 +407,18 @@ export async function handleStripeWebhook(req, res) {
 
             // Prefer the label already cached on PendingCheckout (stored at checkout creation).
             // Fall back to a live ServicePoint lookup for older pending docs missing it.
-            let tableLabel = pending.tableLabel || "";
-            if (!tableLabel) {
-                const sp = await ServicePoint.findOne({ servicePointId: pending.tableNumber, businessId }).lean();
-                tableLabel = sp?.label || sp?.code || pending.tableNumber;
+            let displayLabel = pending.servicePointLabel || "";
+            if (!displayLabel) {
+                const sp = await ServicePoint.findOne({ servicePointId: pending.servicePointLabel, businessId }).lean();
+                displayLabel = sp?.label || sp?.code || pending.servicePointLabel;
             }
 
             console.log(`[webhook] Creating new Order for orderId=${orderId}, subtotal=${pending.subtotal}, taxAmount=${pending.taxAmount}, tipAmount=${pending.tipAmount}, total=${pending.total}`);
             order = await Order.create({
                 businessId,
                 orderId,
-                tableNumber: pending.tableNumber,
-                tableLabel,
+                servicePointLabel: pending.servicePointLabel,
+                displayLabel: displayLabel,
                 orderType: pending.orderType,
                 sessionId: pending.sessionId,
                 items: pending.items,

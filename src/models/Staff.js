@@ -4,14 +4,9 @@ const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender", "co_owner"]
 
 const StaffSchema = new mongoose.Schema({
     businessId: { type: String, required: true, index: true },
-    // Legacy alias kept for backward compat — do not use in new code
-    restaurantId: { type: String, index: true, sparse: true },
 
     // Unified staff identifier (STF-XXXX). Required for all new records.
     staffId: { type: String, required: true },
-
-    // Legacy identifier kept for backward compatibility
-    waiterId: { type: String },
 
     // Staff role — set by the owner via card selection, never free-text
     role: {
@@ -21,11 +16,11 @@ const StaffSchema = new mongoose.Schema({
     },
 
     name: { type: String, required: true },
-    email: { 
-        type: String, 
-        required: true, 
-        lowercase: true, 
-        trim: true 
+    email: {
+        type: String,
+        required: true,
+        lowercase: true,
+        trim: true
     },
     accountStatus: {
         type: String,
@@ -38,10 +33,10 @@ const StaffSchema = new mongoose.Schema({
         default: "offline"
     },
     // Keep 'status' for backward compatibility (UI currently uses it)
-    status: { 
-        type: String, 
-        enum: ["active", "offline"], 
-        default: "offline" 
+    status: {
+        type: String,
+        enum: ["active", "offline"],
+        default: "offline"
     },
     passwordHash: { type: String },
     inviteToken: { type: String, select: false },
@@ -50,11 +45,8 @@ const StaffSchema = new mongoose.Schema({
     passwordResetExpires: { type: Date },
 }, { timestamps: true })
 
-// Unified staffId must be unique per business
+// Unique staffId per business
 StaffSchema.index({ businessId: 1, staffId: 1 }, { unique: true })
-
-// Legacy waiterId index — sparse so null values are ignored
-StaffSchema.index({ businessId: 1, waiterId: 1 }, { unique: true, sparse: true })
 
 // Ensure email is unique per business
 StaffSchema.index({ businessId: 1, email: 1 }, { unique: true })

@@ -1,6 +1,6 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { createCheckoutSession } from "../controllers/paymentController.js";
+import { createCheckoutSession, createReservationCheckoutSession } from "../controllers/paymentController.js";
 
 const router = express.Router();
 
@@ -47,5 +47,15 @@ const checkoutLimiter = rateLimit({
  *                   type: string
  */
 router.post("/checkout", checkoutLimiter, createCheckoutSession);
+
+/**
+ * @openapi
+ * /payments/checkout-reservation:
+ *   post:
+ *     summary: Create a Stripe Checkout Session for reservation payment
+ *     tags:
+ *       - Payments
+ */
+router.post("/checkout-reservation", checkoutLimiter, createReservationCheckoutSession);
 
 export default router;

@@ -20,7 +20,7 @@ export async function upsertGuestProfileFromOrder({ businessId, order, email, ma
 
   try {
     // Fetch business to determine timezone
-    const business = await Business.findOne({ $or: [{ businessId }, { restaurantId: businessId }] }).lean();
+    const business = await Business.findOne({ $or: [{ businessId }, { businessId: businessId }] }).lean();
     const timezone = business?.timezone || "UTC";
 
     const orderDate = order.createdAt ? new Date(order.createdAt) : new Date();

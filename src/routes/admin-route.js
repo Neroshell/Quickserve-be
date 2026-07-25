@@ -1,5 +1,5 @@
 import express from "express"
-import { createBusiness, getAdminBusinesses, getAdminOwners, createAdminOwner, getAdminBusinessById, updateAdminBusiness, getAdminDashboardStats, deleteAdminBusiness } from "../controllers/businessController.js"
+import { createBusiness, getAdminBusinesses, getAdminOwners, createAdminOwner, getAdminBusinessById, updateAdminBusiness, getAdminDashboardStats, deleteAdminBusiness, getAdminBusinessModuleCatalog } from "../controllers/businessController.js"
 import { getPlans, updatePlan } from "../controllers/planController.js"
 
 import { requirePlatformAdmin } from "../middleware/platformAdminAuth.js"
@@ -9,6 +9,8 @@ const router = express.Router()
 // Platform admin (QuickServe backoffice) only — Supabase bearer token + email allowlist.
 // This is separate from tenant owner/manager/staff auth.
 router.use(requirePlatformAdmin)
+
+router.get("/business-modules", getAdminBusinessModuleCatalog)
 
 /**
  * @openapi

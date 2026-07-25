@@ -10,15 +10,15 @@ const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
 
 /**
  * Resolve business identity from request — accepts businessId (preferred) or
- * restaurantId (legacy fallback) from either query string or body.
+ * businessId (legacy fallback) from either query string or body.
  */
 function resolveBusinessId(req) {
     return (
         req.session?.user?.businessId ||
         req.query.businessId ||
-        req.query.restaurantId || // legacy fallback
+        req.query.businessId || // legacy fallback
         req.body?.businessId ||
-        req.body?.restaurantId
+        req.body?.businessId
     )
 }
 
@@ -77,14 +77,14 @@ export async function getStaff(req, res) {
         // Shape response: always expose staffId, role on each record
         const result = staff.map((s) => ({
             staffId: s.staffId,
-            waiterId: s.waiterId,   // backward compat
+            staffId: s.staffId,   // backward compat
             role: s.role,
             name: s.name,
             email: s.email,
             accountStatus: s.accountStatus,
             presenceStatus: s.presenceStatus,
             businessId: s.businessId,
-            restaurantId: s.businessId, // legacy alias
+            businessId: s.businessId, // legacy alias
             createdAt: s.createdAt,
             updatedAt: s.updatedAt
         }))
@@ -166,9 +166,9 @@ export async function createStaff(req, res) {
 
         const staff = await Staff.create({
             businessId,
-            restaurantId: businessId, // legacy alias required by old waiters collection indexes
+            businessId: businessId, // legacy alias required by old waiters collection indexes
             staffId,
-            waiterId: staffId, // populate waiterId for backward compat
+            staffId: staffId, // populate staffId for backward compat
             role,
             name,
             email,
@@ -189,14 +189,14 @@ export async function createStaff(req, res) {
 
         return res.status(201).json({
             staffId: staff.staffId,
-            waiterId: staff.waiterId,
+            staffId: staff.staffId,
             role: staff.role,
             name: staff.name,
             email: staff.email,
             accountStatus: staff.accountStatus,
             presenceStatus: staff.presenceStatus,
             businessId: staff.businessId,
-            restaurantId: staff.businessId, // legacy alias
+            businessId: staff.businessId, // legacy alias
             createdAt: staff.createdAt
         })
     } catch (err) {
@@ -218,10 +218,10 @@ export async function deleteStaff(req, res) {
             return res.status(400).json({ error: "businessId is required" })
         }
 
-        // Try staffId first, fall back to waiterId for old records
+        // Try staffId first, fall back to staffId for old records
         let result = await Staff.findOneAndDelete({ businessId, staffId })
         if (!result) {
-            result = await Staff.findOneAndDelete({ businessId, waiterId: staffId })
+            result = await Staff.findOneAndDelete({ businessId, staffId: staffId })
         }
 
         if (!result) {
@@ -235,7 +235,7 @@ export async function deleteStaff(req, res) {
     }
 }
 
-// ─── Legacy exports (backward compat — keep /owner/waiters working) ───────────
+// ─── Legacy exports (backward compat — keep /owner/staff working) ───────────
 
 /**
  * @deprecated Use getStaff instead. Kept for backward compat.
@@ -246,12 +246,12 @@ export async function getWaiters(req, res) {
 
 /**
  * @deprecated Use createStaff instead. Kept for backward compat.
- * Accepts the old { waiterId, name, email } shape and maps to new schema.
+ * Accepts the old { staffId, name, email } shape and maps to new schema.
  */
 export async function createWaiter(req, res) {
-    // Map old waiterId field → staffId for the new flow
-    if (req.body.waiterId && !req.body.staffId) {
-        req.body.staffId = req.body.waiterId
+    // Map old staffId field → staffId for the new flow
+    if (req.body.staffId && !req.body.staffId) {
+        req.body.staffId = req.body.staffId
     }
     // Default role to "waiter" for legacy callers
     if (!req.body.role) {

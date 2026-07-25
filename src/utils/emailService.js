@@ -8,8 +8,10 @@ import OnboardingEmail from "../../emails/OnboardingEmail.js";
 import ReservationRequestEmail from "../../emails/ReservationRequestEmail.js";
 import ReservationRequestReceivedEmail from "../../emails/ReservationRequestReceivedEmail.js";
 import ReservationConfirmedEmail from "../../emails/ReservationConfirmedEmail.js";
+import ReservationPaymentEmail from "../../emails/ReservationPaymentEmail.js";
 import ReservationCancelledEmail from "../../emails/ReservationCancelledEmail.js";
 import EmailChangeEmail from "../../emails/EmailChangeEmail.js";
+import HotelPaymentConfirmationEmail from "../../emails/HotelPaymentConfirmationEmail.js";
 import Business from "../models/Business.js";
 
 dotenv.config();
@@ -91,8 +93,8 @@ export async function sendReceiptEmail(order, toEmail) {
       businessLogoUrl,
       orderId: order.orderId,
       orderDate: new Date(order.createdAt).toLocaleString(),
-      servicePointLabel: order.tableLabel,
-      servicePointCode: order.tableNumber,
+      servicePointLabel: order.displayLabel || order.servicePointLabel,
+      servicePointCode: order.displayLabel || order.servicePointLabel,
       servicePointTerm,
       orderType: order.orderType,
       paymentMethod: order.paidVia || order.paymentChannel,
@@ -242,6 +244,20 @@ export async function sendReservationConfirmedEmail({ to, businessName, business
 }
 
 /**
+ * Customer-facing: notify the customer their reservation is accepted but requires payment.
+ */
+export async function sendReservationPaymentEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
+  try {
+    const html = await render(React.createElement(ReservationPaymentEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
+    const subject = `Action Required: Payment for your Reservation - ${businessName}`;
+    return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
+  } catch (error) {
+    console.error("[EmailService]  Error in sendReservationPaymentEmail:", error);
+    return false;
+  }
+}
+
+/**
  * Customer-facing: notify the customer their reservation cannot be accommodated.
  */
 export async function sendReservationCancelledEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
@@ -280,6 +296,55 @@ export async function sendEmailChangeNotification({ to, userName, oldEmail, newE
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
     console.error("[EmailService] Error in sendEmailChangeNotification:", error);
+    return false;
+  }
+}
+
+/**
+ * Send hotel check-in / payment confirmation email
+ */
+export async function sendHotelPaymentConfirmationEmail({ reservation, business, plainCheckInCode, validFrom, expiresAt }) {
+  try {
+    const formatCurrency = (amount, currency) => {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: currency || "USD",
+      }).format(amount || 0);
+    };
+
+    const businessName = business?.displayName || business?.name || "QuickServe Hotel";
+    const primaryColor = business?.branding?.primaryColor || "#ea580c";
+    
+    const formatDate = (date) => date ? new Date(date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
+    
+    const html = await render(React.createElement(HotelPaymentConfirmationEmail, {
+      businessName,
+      businessLogoUrl: business?.logoUrl,
+      primaryColor,
+      customerName: reservation.name,
+      publicReference: reservation.publicReference || reservation._id.toString(),
+      servicePointLabel: reservation.servicePointLabel || "Room",
+      checkInDate: formatDate(reservation.checkInDate || reservation.date),
+      checkOutDate: formatDate(reservation.checkOutDate || reservation.date),
+      guestCount: reservation.guestCount || 1,
+      accommodationLabel: "Accommodation",
+      formattedSubtotal: formatCurrency(reservation.subtotal, reservation.currency),
+      taxLabel: "Tax",
+      formattedTaxAmount: formatCurrency(reservation.taxAmount, reservation.currency),
+      platformFeeLabel: "Platform Fee",
+      formattedPlatformFeeAmount: formatCurrency(reservation.platformFeeAmount || 0, reservation.currency),
+      formattedAmount: formatCurrency(reservation.totalAmount || reservation.total, reservation.currency),
+      checkInCode: plainCheckInCode,
+      validFrom: validFrom ? new Date(validFrom).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "numeric", hour12: true }) : "",
+      expiresAt: expiresAt ? new Date(expiresAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "numeric", hour12: true }) : "",
+    }));
+
+    const subject = `Your booking at ${businessName} is confirmed`;
+    const from = process.env.EMAIL_FROM_RESERVATIONS || "QuickServe Reservations <reservations@quickservehq.com>";
+    
+    return await sendEmail({ to: reservation.email, subject, html, from });
+  } catch (error) {
+    console.error("[EmailService] Error in sendHotelPaymentConfirmationEmail:", error);
     return false;
   }
 }

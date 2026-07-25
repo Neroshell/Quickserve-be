@@ -24,10 +24,10 @@ function getBusinessDayRange() {
 }
 
 // ✅ NEW: waiter can fetch ANY status (ready/placed/in_progress/completed/all)
-// GET /waiter?status=ready
+// GET /waitstaff?status=ready
 export async function waiterOrders(req, res) {
     try {
-        const businessId = req.query.businessId || req.query.restaurantId
+        const businessId = req.query.businessId || req.query.businessId
         if (!businessId) {
             return res.status(400).json({ error: "businessId is required" })
         }
@@ -51,7 +51,7 @@ export async function waiterOrders(req, res) {
             {
                 _id: 0,
                 orderId: 1,
-                tableNumber: 1,
+                servicePointLabel: 1,
                 orderType: 1,
                 status: 1,
                 createdAt: 1,
@@ -101,7 +101,7 @@ export async function waiterOrders(req, res) {
 
             return {
                 orderId: o.orderId,
-                tableNumber: o.tableNumber,
+                servicePointLabel: o.servicePointLabel,
                 orderType: o.orderType,
                 status: o.status,
                 createdAt: o.createdAt,

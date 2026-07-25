@@ -21,7 +21,7 @@ export async function connectAccount(req, res) {
     }
 
     const business = await Business.findOne({
-      $or: [{ businessId }, { restaurantId: businessId }],
+      $or: [{ businessId }, { businessId: businessId }],
     })
     if (!business) {
       return res.status(404).json({ error: "Business not found" })
@@ -97,7 +97,7 @@ export async function getStripeStatus(req, res) {
     }
 
     const business = await Business.findOne({
-      $or: [{ businessId }, { restaurantId: businessId }],
+      $or: [{ businessId }, { businessId: businessId }],
     })
     if (!business) {
       return res.status(404).json({ error: "Business not found" })
@@ -154,7 +154,7 @@ export async function getStripeDashboardLink(req, res) {
     }
 
     const business = await Business.findOne({
-      $or: [{ businessId }, { restaurantId: businessId }],
+      $or: [{ businessId }, { businessId: businessId }],
     })
     if (!business) {
       return res.status(404).json({ error: "Business not found" })
@@ -221,7 +221,7 @@ export async function getPayoutSummary(req, res) {
     }
 
     const business = await Business.findOne({
-      $or: [{ businessId }, { restaurantId: businessId }],
+      $or: [{ businessId }, { businessId: businessId }],
     }).lean()
     if (!business) {
       return res.status(404).json({ error: "Business not found" })

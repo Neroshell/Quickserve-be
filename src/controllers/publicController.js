@@ -3,6 +3,7 @@ import Reservation, { timeStringToMinutes, MIN_DURATION_MINUTES } from "../model
 import ServicePoint from "../models/ServicePoint.js";
 import Plan from "../models/Plan.js";
 import { sendReservationRequestEmail, sendReservationRequestReceivedEmail } from "../utils/emailService.js";
+import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "../services/reservationPricingService.js";
 
 const SERVABLE_STATUSES = ["active", "onboarding", "draft"];
 
@@ -136,6 +137,9 @@ export async function getBusinessBySlug(req, res) {
       branding: business.branding,
       operatingHours: business.operatingHours,
       settings: business.settings, // things like dineInEnabled etc.
+      hotelSettings: business.hotelSettings,
+      businessType: business.businessType,
+      modules: business.modules,
       servicePoints: servicePoints,
     };
 
@@ -165,8 +169,143 @@ export async function createReservation(req, res) {
       servicePointId,
       servicePointLabel,
       specialRequest,
+      // Hotel-specific
+      checkInDate,
+      checkOutDate,
+      isHotelBooking,
     } = req.body;
 
+    // ── HOTEL BOOKING PATH ────────────────────────────────────────────────────
+    if (isHotelBooking) {
+      if (!businessSlug || !customerName || !phone || !email || !checkInDate || !checkOutDate || !guestCount || !servicePointId) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      if (checkOutDate <= checkInDate) {
+        return res.status(400).json({ error: "Check-out must be after check-in." });
+      }
+
+      if (checkInDate < new Date().toISOString().split("T")[0]) {
+        return res.status(400).json({ error: "Check-in date cannot be in the past." });
+      }
+
+      const guests = parseInt(guestCount, 10);
+      if (isNaN(guests) || guests < 1 || guests > 50) {
+        return res.status(400).json({ error: "Guest count must be between 1 and 50." });
+      }
+
+      if (specialRequest && specialRequest.length > 500) {
+        return res.status(400).json({ error: "Special request is too long (max 500 characters)." });
+      }
+
+      const business = await Business.findOne({
+        slug: businessSlug.toLowerCase(),
+        status: { $in: ["active", "onboarding", "draft"] },
+      }).lean();
+      if (!business) {
+        return res.status(404).json({ error: "Business not found or inactive" });
+      }
+
+      // Look up the service point — authoritative source for pricePerNight
+      const sp = await ServicePoint.findOne({
+        servicePointId,
+        businessId: business.businessId,
+        isActive: { $ne: false },
+        reservable: { $ne: false },
+      }).lean();
+      if (!sp) {
+        return res.status(400).json({ error: "The selected room is not available for booking." });
+      }
+
+      // Capacity check
+      if (sp.capacity != null && guests > sp.capacity) {
+        return res.status(400).json({ error: `This room accommodates a maximum of ${sp.capacity} guests.` });
+      }
+
+      // Conflict check — no overlapping confirmed/pending reservations for the same service point
+      const conflict = await Reservation.findOne({
+        businessId: business.businessId,
+        servicePointId,
+        status: { $in: ["confirmed", "pending", "accepted_awaiting_payment", "checked_in"] },
+        checkInDate:  { $lt: checkOutDate },
+        checkOutDate: { $gt: checkInDate },
+      }).lean();
+      if (conflict) {
+        return res.status(409).json({ error: "This room is already booked for the selected dates." });
+      }
+
+      // Compute nights and authoritative pricing
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const numberOfNights = Math.round((new Date(checkOutDate) - new Date(checkInDate)) / msPerDay);
+      const pricePerNight = sp.pricePerNight || 0;
+
+      const hotelReservation = new Reservation({
+        businessId: business.businessId,
+        businessSlug: business.slug,
+        customerName,
+        phone,
+        email,
+        checkInDate,
+        checkOutDate,
+        guestCount: guests,
+        servicePointId: sp.servicePointId,
+        servicePointLabel: sp.displayLabel || sp.label,
+        specialRequest,
+        pricePerNight,
+        numberOfNights,
+        currency: business.currency || "eur",
+        status: "pending",
+        source: "public_hub",
+      });
+
+      // Build authoritative pricing snapshot
+      try {
+        const snapshot = await buildReservationPricingSnapshot({ reservation: hotelReservation, business });
+        Object.assign(hotelReservation, snapshot);
+      } catch (pricingErr) {
+        console.error("[createReservation] Pricing snapshot failed:", pricingErr);
+        // Non-fatal: save without snapshot, it can be recomputed later
+      }
+
+      await hotelReservation.save();
+
+      const reservationObj = hotelReservation.toObject();
+      const businessDisplayName = business.displayName || business.name;
+      const targetEmail = business.contactEmail || business.ownerEmail;
+
+      if (targetEmail) {
+        sendReservationRequestEmail({
+          to: targetEmail,
+          businessName: businessDisplayName,
+          reservation: reservationObj,
+        }).catch(err => console.error("[createReservation hotel] Owner email failed:", err));
+      }
+      if (reservationObj.email) {
+        sendReservationRequestReceivedEmail({
+          to: reservationObj.email,
+          businessName: businessDisplayName,
+          businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
+          primaryColor: business.branding?.primaryColor,
+          reservation: reservationObj,
+        }).catch(err => console.error("[createReservation hotel] Customer email failed:", err));
+      }
+
+      return res.status(201).json({
+        message: "Hotel booking request received.",
+        reservationId: hotelReservation._id,
+        pricing: {
+          pricePerNight,
+          numberOfNights,
+          subtotal: hotelReservation.subtotal,
+          taxAmount: hotelReservation.taxAmount,
+          platformFeeTotal: hotelReservation.platformFeeTotal,
+          totalPrice: hotelReservation.totalPrice,
+          currency: hotelReservation.currency,
+        },
+      });
+    }
+
+    // ── RESTAURANT / BAR BOOKING PATH ─────────────────────────────────────────
     if (!businessSlug || !customerName || !phone || !email || !date || !startTime || !endTime || !guestCount) {
       return res.status(400).json({ error: "Missing required fields" });
     }
@@ -317,6 +456,111 @@ export async function createReservation(req, res) {
     });
   } catch (error) {
     console.error("[publicController.createReservation] Error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * GET /public/reservations/by-token/:secureToken
+ * Fetch a reservation by its secure token (used for the payment flow).
+ * Only returns safe, customer-facing fields.
+ */
+export async function getReservationByToken(req, res) {
+  try {
+    const { secureToken } = req.params;
+    if (!secureToken) {
+      return res.status(400).json({ error: "secureToken is required" });
+    }
+
+    const reservation = await Reservation.findOne({ secureToken })
+      .select("-stripeSessionId -paymentExpiresAt")
+      .lean();
+    if (!reservation) {
+      return res.status(404).json({ error: "Reservation not found" });
+    }
+
+    const business = await Business.findOne({ businessId: reservation.businessId })
+      .select("businessId name displayName logoUrl currency country countryCode slug")
+      .lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
+    }
+
+    const pricing = getCustomerReservationPricing(reservation);
+
+    // Strip internal fields before sending to client
+    delete reservation.secureToken;
+    delete reservation.stripeCheckoutSessionId;
+    delete reservation.stripePaymentIntentId;
+    delete reservation.stripeConnectedAccountId;
+    delete reservation.platformFeeCents;
+    delete reservation.businessAbsorbedPlatformFeeCents;
+    delete reservation.platformFeeMode;
+    delete reservation.customerPlatformFeePercent;
+    delete reservation.planApplied;
+    delete reservation.commissionRateApplied;
+    delete reservation.commissionAmountCents;
+    delete reservation.planAtOrder;
+    delete reservation.commissionRateAtOrder;
+    delete reservation.platformFeeRateAtOrder;
+    delete reservation.grossAmount;
+    delete reservation.netToBusinessAmount;
+    delete reservation.amountPaidCents;
+
+    res.json({ reservation: { ...reservation, pricing }, business });
+  } catch (error) {
+    console.error("[publicController.getReservationByToken] Error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * GET /public/reservations/by-id/:reservationId
+ * Fetch a reservation by its MongoDB _id for the confirmation page (post-payment).
+ * Only returns safe fields; does NOT expose secureToken.
+ */
+export async function getReservationById(req, res) {
+  try {
+    const { reservationId } = req.params;
+    if (!reservationId) {
+      return res.status(400).json({ error: "reservationId is required" });
+    }
+
+    const reservation = await Reservation.findById(reservationId)
+      .select("-secureToken -stripeSessionId -paymentExpiresAt")
+      .lean();
+    if (!reservation) {
+      return res.status(404).json({ error: "Reservation not found" });
+    }
+
+    const business = await Business.findOne({ businessId: reservation.businessId })
+      .select("businessId name displayName logoUrl currency country countryCode slug")
+      .lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
+    }
+
+    const pricing = getCustomerReservationPricing(reservation);
+    delete reservation.stripeCheckoutSessionId;
+    delete reservation.stripePaymentIntentId;
+    delete reservation.stripeConnectedAccountId;
+    delete reservation.platformFeeCents;
+    delete reservation.businessAbsorbedPlatformFeeCents;
+    delete reservation.platformFeeMode;
+    delete reservation.customerPlatformFeePercent;
+    delete reservation.planApplied;
+    delete reservation.commissionRateApplied;
+    delete reservation.commissionAmountCents;
+    delete reservation.planAtOrder;
+    delete reservation.commissionRateAtOrder;
+    delete reservation.platformFeeRateAtOrder;
+    delete reservation.grossAmount;
+    delete reservation.netToBusinessAmount;
+    delete reservation.amountPaidCents;
+
+    res.json({ reservation: { ...reservation, pricing }, business });
+  } catch (error) {
+    console.error("[publicController.getReservationById] Error:", error);
     res.status(500).json({ error: "Server error" });
   }
 }

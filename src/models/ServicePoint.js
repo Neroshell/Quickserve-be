@@ -9,14 +9,10 @@ export function generateServicePointId() {
 }
 
 /**
- * Derive servicePointType from the business's businessType.
- *   hotel_apartment → "room"
+ * Historical defaults are now resolved by businessCapabilityService.
+ *   hotel → "room"
  *   everything else (restaurant, bar_lounge, …) → "table"
  */
-export function deriveServicePointType(businessType) {
-    return businessType === "hotel_apartment" ? "room" : "table"
-}
-
 const ServicePointSchema = new mongoose.Schema(
     {
         // Stable URL-safe identifier — used in QR codes, sessions, etc.
@@ -51,17 +47,18 @@ const ServicePointSchema = new mongoose.Schema(
         },
 
         // Auto-derived from businessType — "table" or "room"
-        servicePointType: {
-            type: String,
-            enum: ["table", "room", "booth", "other"],
-            default: "table",
-        },
+        // servicePointType: {
+        //     type: String,
+        //     enum: ["table", "room", "booth", "other"],
+        //     default: "table",
+        // },
 
         // Optional seating/guest capacity
         capacity: {
             type: Number,
             min: 1,
             default: null,
+            required: true,
         },
 
         // Whether this service point is currently in service
@@ -71,11 +68,19 @@ const ServicePointSchema = new mongoose.Schema(
             index: true,
         },
 
-        // Whether this service point can be selected by customers during reservation
         reservable: {
             type: Boolean,
             default: true,
         },
+
+        // Hotel-specific metadata
+        fullDescription: { type: String, trim: true },
+        pricePerNight: { type: Number, min: 0 },
+        maxGuests: { type: Number, min: 1 },
+        beds: { type: Number, min: 0 },
+        bedType: { type: String, trim: true },
+        amenities: [{ type: String, trim: true }],
+        images: [{ type: String, trim: true }],
     },
     { timestamps: true }
 )

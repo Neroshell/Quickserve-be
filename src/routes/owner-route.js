@@ -1,5 +1,5 @@
 import express from "express"
-import { ownerOrders, ownerAnalytics, getTableSessionsOverview, getDashboardData, getBranding, updateBranding } from "../controllers/ownerController.js"
+import { ownerOrders, ownerTransactions, ownerAnalytics, getTableSessionsOverview, getDashboardData, getBranding, updateBranding } from "../controllers/ownerController.js"
 import { dismissSetupGuide, getSetupProgress } from "../controllers/setupProgressController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
 import { getTeam, inviteCoOwner, removeCoOwner } from "../controllers/teamController.js"
@@ -25,7 +25,9 @@ import {
 import {
     getReservations,
     updateReservationStatus,
-    deleteReservation
+    checkInHotelReservation,
+    deleteReservation,
+    resendReservationConfirmation
 } from "../controllers/reservationController.js"
 
 import { requireAuth, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
@@ -105,6 +107,7 @@ router.patch("/branding", updateBranding)
  *         description: List of orders
  */
 router.get("/orders", ownerOrders)
+router.get("/transactions", ownerTransactions)
 
 /**
  * @openapi
@@ -301,7 +304,7 @@ router.delete("/team/co-owner/:staffId", requirePrimaryOwner, removeCoOwner)
 
 /**
  * @openapi
- * /owner/waiters:
+ * /owner/staff:
  *   get:
  *     summary: Retrieve legacy waitstaff list (Backward Compatibility)
  *     tags:
@@ -310,11 +313,11 @@ router.delete("/team/co-owner/:staffId", requirePrimaryOwner, removeCoOwner)
  *       200:
  *         description: List of waiters
  */
-router.get("/waiters", getWaiters)
+router.get("/staff", getWaiters)
 
 /**
  * @openapi
- * /owner/waiters:
+ * /owner/staff:
  *   post:
  *     summary: Create legacy waiter account (Backward Compatibility)
  *     tags:
@@ -337,11 +340,11 @@ router.get("/waiters", getWaiters)
  *       201:
  *         description: Waiter created successfully
  */
-router.post("/waiters", createWaiter)
+router.post("/staff", createWaiter)
 
 /**
  * @openapi
- * /owner/waiters/{id}:
+ * /owner/staff/{id}:
  *   delete:
  *     summary: Delete legacy waiter account (Backward Compatibility)
  *     tags:
@@ -356,7 +359,7 @@ router.post("/waiters", createWaiter)
  *       200:
  *         description: Waiter deleted successfully
  */
-router.delete("/waiters/:id", deleteWaiter)
+router.delete("/staff/:id", deleteWaiter)
 
 // ─── Service Point Management ─────────────────────────────────────────────────
 
@@ -364,7 +367,7 @@ router.delete("/waiters/:id", deleteWaiter)
  * @openapi
  * /owner/service-points:
  *   get:
- *     summary: List all service points (tables/rooms)
+ *     summary: List all ServicePoints
  *     tags:
  *       - Owner Service Points
  *     parameters:
@@ -382,7 +385,7 @@ router.get("/service-points", listServicePoints)
  * @openapi
  * /owner/service-points:
  *   post:
- *     summary: Create a new service point (table or room)
+ *     summary: Create a new ServicePoint
  *     tags:
  *       - Owner Service Points
  *     requestBody:
@@ -566,6 +569,44 @@ router.patch("/reservations/:id/status", updateReservationStatus)
 
 /**
  * @openapi
+ * /owner/reservations/{id}/check-in:
+ *   post:
+ *     summary: Check in a hotel guest using their six-digit confirmation code
+ *     tags:
+ *       - Owner Reservations
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - code
+ *             properties:
+ *               code:
+ *                 type: string
+ *                 pattern: '^\\d{6}$'
+ *                 example: '123456'
+ *     responses:
+ *       200:
+ *         description: Guest checked in successfully
+ *       401:
+ *         description: Incorrect check-in code
+ *       409:
+ *         description: Reservation is not eligible or the code is not active yet
+ *       423:
+ *         description: Check-in code is locked
+ */
+router.post("/reservations/:id/check-in", checkInHotelReservation)
+
+/**
+ * @openapi
  * /owner/reservations/{id}:
  *   delete:
  *     summary: Delete a reservation record
@@ -582,6 +623,30 @@ router.patch("/reservations/:id/status", updateReservationStatus)
  *         description: Reservation deleted successfully
  */
 router.delete("/reservations/:id", deleteReservation)
+
+/**
+ * @openapi
+ * /owner/reservations/{id}/resend-confirmation:
+ *   post:
+ *     summary: Resend hotel payment confirmation email with a new check-in code
+ *     tags:
+ *       - Owner Reservations
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Confirmation email resent successfully
+ *       400:
+ *         description: Reservation not eligible
+ *       404:
+ *         description: Reservation not found
+ */
+router.post("/reservations/:id/resend-confirmation", resendReservationConfirmation)
+
 
 // ─── Stripe Connect ───────────────────────────────────────────────────────────
 

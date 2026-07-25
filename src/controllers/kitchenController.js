@@ -64,7 +64,6 @@ export async function kitchenOrders(req, res) {
         // Recalculate allergies/notes based on filtered items if needed?
         // The prompt says: "allergies: [...new Set(foodItems.flatMap(i => i.allergies || []))]" 
         // asking to update kitchenController logic specifically.
-        // Let's implement the specific logic requested in TASK 5.
       }
     }).filter(Boolean)
 

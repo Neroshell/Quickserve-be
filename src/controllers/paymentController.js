@@ -1,11 +1,17 @@
 import Stripe from "stripe";
-import TableSession from "../models/TableSession.js";
+import GuestSession from "../models/GuestSession.js";
 import PendingCheckout from "../models/PendingCheckout.js";
+import Reservation from "../models/Reservation.js";
 import Business from "../models/Business.js";
 import MenuItem from "../models/menuItem.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { generateOrderId } from "../utils/orderId.js";
-import { calculateOnlineCommission } from "../utils/platformFee.js";
+import { calculateOnlinePricing } from "../services/pricingService.js";
+import {
+    buildReservationStripeLineItems,
+    ensureReservationPricingSnapshot,
+    getCustomerReservationPricing,
+} from "../services/reservationPricingService.js";
 import { validateTrackedStock } from "../services/inventoryService.js";
 import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
 import { normalizeTip } from "../utils/tips.js";
@@ -25,7 +31,7 @@ const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:300
 export async function createCheckoutSession(req, res) {
     try {
         const {
-            tableNumber,
+            servicePointLabel,
             items,
             sessionId,
             tableSessionToken,
@@ -44,8 +50,8 @@ export async function createCheckoutSession(req, res) {
             return res.status(400).json({ message: "sessionId is required" });
         if (!isWaiter && !tableSessionToken)
             return res.status(400).json({ message: "tableSessionToken is required" });
-        if (!tableNumber || !Array.isArray(items) || items.length === 0)
-            return res.status(400).json({ message: "tableNumber and items are required" });
+        if (!servicePointLabel || !Array.isArray(items) || items.length === 0)
+            return res.status(400).json({ message: "servicePointLabel and items are required" });
 
         const allowedTypes = ["dine-in", "takeout"];
         const finalOrderType = orderType || "dine-in";
@@ -56,17 +62,17 @@ export async function createCheckoutSession(req, res) {
 
         if (!isWaiter) {
             // --- Validate table session token ---
-            const ts = await TableSession.findOne({ token: tableSessionToken });
+            const ts = await GuestSession.findOne({ token: tableSessionToken });
             if (!ts)
                 return res.status(403).json({ message: "Invalid or expired table session." });
             if (ts.expiresAt.getTime() < Date.now())
                 return res.status(403).json({ message: "Session expired." });
-            if (ts.tableId !== tableNumber)
+            if (ts.servicePointId !== servicePointLabel)
                 return res.status(403).json({ message: "Table session mismatch." });
 
             // Bind session to first device ATOMICALLY
             if (!ts.boundSessionId) {
-                const updatedTs = await TableSession.findOneAndUpdate(
+                const updatedTs = await GuestSession.findOneAndUpdate(
                     { _id: ts._id, boundSessionId: null },
                     { $set: { boundSessionId: sessionId } },
                     { new: true }
@@ -144,7 +150,7 @@ export async function createCheckoutSession(req, res) {
 
         // --- Resolve business and check Stripe Connect readiness ---
         const business = await Business.findOne({
-            $or: [{ businessId: businessIdToUse }, { restaurantId: businessIdToUse }],
+            $or: [{ businessId: businessIdToUse }, { businessId: businessIdToUse }],
         }).lean();
 
         if (!business) {
@@ -162,21 +168,17 @@ export async function createCheckoutSession(req, res) {
         }
 
         // --- Resolve service point label for display ---
-        // tableNumber is the internal servicePointId (e.g. sp_xxxx); we resolve the
+        // servicePointLabel is the internal servicePointId (e.g. sp_xxxx); we resolve the
         // human-friendly label once here so the webhook can copy it without a second lookup.
-        const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId: businessIdToUse }).lean();
-        const tableLabel = sp?.label || sp?.code || tableNumber;
-        const tableCode  = sp?.code  || sp?.label || tableNumber;
+        const sp = await ServicePoint.findOne({ servicePointId: servicePointLabel, businessId: businessIdToUse }).lean();
+        const displayLabel = sp?.label || sp?.code || servicePointLabel;
+        const servicePointQrCode  = sp?.code  || sp?.label || displayLabel;
 
         // --- Save cart data temporarily (not an Order yet) ---
         const now = new Date();
-        const orderId = generateOrderId(tableCode, now);
+        const orderId = generateOrderId(servicePointQrCode, now);
 
         const subtotal = Number(serverTotal.toFixed(2));
-        const taxRate = business.taxRate || 0;
-        const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2));
-        const taxAmountCents = Math.round(taxAmount * 100);
-
         const tip = normalizeTip({
             tipsEnabled: business.settings?.tipsEnabled === true || business.tipsEnabled === true,
             subtotal,
@@ -185,12 +187,29 @@ export async function createCheckoutSession(req, res) {
             tipPercentage,
         });
         const tipAmountCents = Math.round(tip.tipAmount * 100);
+        const subtotalCents = Math.round(serverTotal * 100);
+        const pricing = await calculateOnlinePricing({
+            subtotalCents,
+            business,
+            tipAmountCents,
+        });
+        const {
+            taxAmount,
+            taxAmountCents,
+            commissionAmountCents,
+            commissionRateApplied,
+            planApplied,
+            customerPlatformFeeCents,
+            businessAbsorbedPlatformFeeCents,
+            platformFeeMode,
+            customerPlatformFeePercent,
+        } = pricing;
 
         if (taxAmountCents > 0) {
             lineItems.push({
                 price_data: {
                     currency: finalCurrency,
-                    product_data: { name: "Tax" },
+                    product_data: { name: pricing.taxLabel },
                     unit_amount: taxAmountCents,
                 },
                 quantity: 1,
@@ -211,8 +230,8 @@ export async function createCheckoutSession(req, res) {
         const pending = await PendingCheckout.create({
             businessId: businessIdToUse,
             orderId,
-            tableNumber,   // internal servicePointId — preserved for routing
-            tableLabel,    // human-friendly — copied to Order by webhook
+            servicePointLabel,   // internal servicePointId — preserved for routing
+            displayLabel,        // human-friendly — copied to Order by webhook
             orderType: finalOrderType,
             sessionId,
             items: enrichedItems,
@@ -221,27 +240,16 @@ export async function createCheckoutSession(req, res) {
             tipAmount: tip.tipAmount,
             tipType: tip.tipType,
             tipPercentage: tip.tipPercentage,
-            total: subtotal + taxAmount + tip.tipAmount, // This will be updated again below with customerPlatformFeeFloat
+            total: subtotal + taxAmount + tip.tipAmount,
             currency: finalCurrency.toUpperCase(),
             receiptEmail: receiptEmail || null,
         });
-
-        // --- Compute platform fee (plan-based rate) ---
-        const totalInCents = Math.round(serverTotal * 100);
-        const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOnlineCommission(totalInCents, business.currentPlan || business.plan || "basic");
-
-        // --- Platform Fee Split logic ---
-        let mode = business.platformFeeMode || (business.passPlatformFeeToCustomer ? "customer_pays" : "business_absorbs");
-        let percent = mode === "split" ? (business.customerPlatformFeePercent || 0) : (mode === "customer_pays" ? 100 : 0);
-
-        const customerPlatformFeeCents = Math.round(commissionAmountCents * percent / 100);
-        const businessAbsorbedPlatformFeeCents = commissionAmountCents - customerPlatformFeeCents;
 
         if (customerPlatformFeeCents > 0) {
             lineItems.push({
                 price_data: {
                     currency: finalCurrency,
-                    product_data: { name: business.platformFeeLabel || "Platform Fee" },
+                    product_data: { name: pricing.platformFeeLabel },
                     unit_amount: customerPlatformFeeCents,
                 },
                 quantity: 1,
@@ -256,7 +264,7 @@ export async function createCheckoutSession(req, res) {
             metadata: {
                 pendingCheckoutId: pending._id.toString(),
                 orderId,
-                tableNumber,
+                servicePointLabel: displayLabel,
                 businessId: businessIdToUse,
             },
             // Route payment to connected account; platform fee stays with QuickServe
@@ -270,8 +278,8 @@ export async function createCheckoutSession(req, res) {
                     businessId: businessIdToUse,
                 },
             },
-            success_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/confirmation?payment=success&orderId=${orderId}&businessId=${businessIdToUse}`,
-            cancel_url: `${FRONTEND_BASE_URL}/table/${tableNumber}/order?payment=cancelled&businessId=${businessIdToUse}`,
+            success_url: `${FRONTEND_BASE_URL}/s/${servicePointLabel}/confirmation?payment=success&orderId=${orderId}&businessId=${businessIdToUse}`,
+            cancel_url: `${FRONTEND_BASE_URL}/s/${servicePointLabel}/order?payment=cancelled&businessId=${businessIdToUse}`,
         };
 
         if (receiptEmail) {
@@ -295,12 +303,12 @@ export async function createCheckoutSession(req, res) {
         pending.platformFeeCents                 = commissionAmountCents;
         pending.customerPlatformFeeCents         = customerPlatformFeeCents;
         pending.businessAbsorbedPlatformFeeCents = businessAbsorbedPlatformFeeCents;
-        pending.platformFeeMode                  = mode;
-        pending.customerPlatformFeePercent       = percent;
+        pending.platformFeeMode                  = platformFeeMode;
+        pending.customerPlatformFeePercent       = customerPlatformFeePercent;
 
-        pending.grossAmount              = totalInCents + taxAmountCents + customerPlatformFeeCents + tipAmountCents;
-        pending.netToBusinessAmount      = totalInCents + taxAmountCents + tipAmountCents - businessAbsorbedPlatformFeeCents;
-        pending.total                    = subtotal + taxAmount + tip.tipAmount + Number((customerPlatformFeeCents / 100).toFixed(2));
+        pending.grossAmount              = pricing.grossAmountCents;
+        pending.netToBusinessAmount      = pricing.netToBusinessAmountCents;
+        pending.total                    = pricing.total;
         await pending.save();
 
         return res.status(201).json({
@@ -309,5 +317,111 @@ export async function createCheckoutSession(req, res) {
     } catch (err) {
         console.error("[createCheckoutSession] Error:", err);
         return res.status(500).json({ message: "Server error creating checkout session" });
+    }
+}
+
+/**
+ * POST /payments/checkout-reservation
+ * 
+ * Creates a Stripe Checkout Session for a hotel reservation.
+ */
+export async function createReservationCheckoutSession(req, res) {
+    try {
+        const { secureToken } = req.body;
+        
+        if (!secureToken) {
+            return res.status(400).json({ message: "secureToken is required" });
+        }
+
+        const reservation = await Reservation.findOne({ secureToken });
+        if (!reservation) {
+            return res.status(404).json({ message: "Reservation not found" });
+        }
+
+        if (reservation.status !== "accepted_awaiting_payment") {
+            return res.status(400).json({ message: "Reservation is not awaiting payment" });
+        }
+
+        if (reservation.paymentExpiresAt && new Date(reservation.paymentExpiresAt) < new Date()) {
+            reservation.status = "expired";
+            await reservation.save();
+            return res.status(400).json({ message: "Payment link has expired" });
+        }
+
+        const business = await Business.findOne({ businessId: reservation.businessId }).lean();
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" });
+        }
+
+        if (
+            !business.stripeAccountId ||
+            business.stripeChargesEnabled !== true ||
+            business.stripePayoutsEnabled !== true
+        ) {
+            return res.status(400).json({ message: "Online payments are not available for this business." });
+        }
+
+        await ensureReservationPricingSnapshot({ reservation, business });
+        const pricing = getCustomerReservationPricing(reservation);
+
+        if (!pricing.totalCents || pricing.totalCents <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "This reservation does not have a valid payment amount. Please contact the business.",
+          });
+        }
+
+        const amountCents = pricing.totalCents;
+        if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid payment amount",
+          });
+        }
+
+        const currency = (business.currency || reservation.currency || "eur").toLowerCase();
+        const lineItems = buildReservationStripeLineItems({
+            pricing,
+            currency,
+            businessName: business.displayName || business.name,
+        });
+
+        const stripeSessionConfig = {
+            payment_method_types: ["card"],
+            mode: "payment",
+            line_items: lineItems,
+            metadata: {
+                reservationId: reservation._id.toString(),
+                businessId: business.businessId,
+                type: "reservation_payment",
+                pricingSnapshotVersion: String(reservation.pricingSnapshotVersion),
+            },
+            payment_intent_data: {
+                application_fee_amount: reservation.commissionAmountCents,
+                transfer_data: { destination: business.stripeAccountId },
+                metadata: {
+                    reservationId: reservation._id.toString(),
+                    businessId: business.businessId,
+                    type: "reservation_payment"
+                },
+            },
+            success_url: `${FRONTEND_BASE_URL}/reservation/confirmation/${reservation._id}`,
+            cancel_url: `${FRONTEND_BASE_URL}/reservation/pay/${secureToken}?payment=cancelled`,
+        };
+
+        if (reservation.email) {
+            stripeSessionConfig.customer_email = reservation.email;
+        }
+
+        const stripeSession = await stripe.checkout.sessions.create(stripeSessionConfig);
+
+        reservation.stripeSessionId = stripeSession.id;
+        reservation.stripeConnectedAccountId = business.stripeAccountId;
+        await reservation.save();
+
+        return res.status(201).json({ sessionUrl: stripeSession.url });
+    } catch (err) {
+        console.error("[createReservationCheckoutSession] Error:", err);
+        return res.status(500).json({ message: "Server error creating reservation checkout session" });
     }
 }

@@ -7,6 +7,14 @@ import { generateSlugFromName } from "../utils/slugify.js"
 import { isCountryResolutionError, validateCountryMetadataPayload } from "../utils/countryHelper.js"
 import { hashToken } from "../utils/tokenHash.js"
 import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
+import {
+    attachBusinessCapabilities,
+    getBusinessModuleCatalog,
+    getDefaultBusinessModules,
+    resolveBusinessModules,
+    setBusinessModuleEnabled,
+    validateBusinessModulesForType,
+} from "../services/businessCapabilityService.js"
 
 function generateBusinessId() {
     return `biz_${crypto.randomBytes(7).toString("hex")}`
@@ -30,7 +38,7 @@ function sanitizeBusiness(biz) {
     if (!biz) return biz
     const obj = typeof biz.toObject === "function" ? biz.toObject() : { ...biz }
     for (const field of SENSITIVE_BUSINESS_FIELDS) delete obj[field]
-    return obj
+    return attachBusinessCapabilities(obj)
 }
 
 // Profile/config fields a tenant manager may edit via PATCH /business/settings.
@@ -42,6 +50,10 @@ const ALLOWED_SETTINGS_UPDATE_FIELDS = [
     "logoUrl", "logoPublicId", "platformFeeLabel", "passPlatformFeeToCustomer",
     "menuCategories",
 ]
+
+function isValidTimeString(value) {
+    return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
+}
 
 export async function getSettings(req, res) {
     try {
@@ -89,7 +101,7 @@ export async function getSettings(req, res) {
             }
         }
 
-        return res.json(bizObj)
+        return res.json(attachBusinessCapabilities(bizObj))
     } catch (err) {
         console.error("Get settings error:", err)
         return res.status(500).json({ message: "Server error" })
@@ -99,7 +111,7 @@ export async function getSettings(req, res) {
 
 export async function updateSettings(req, res) {
     try {
-        const { settings } = req.body
+        const { settings, hotelSettings } = req.body
         const businessId = req.session?.user?.businessId
         if (!businessId) {
             return res.status(401).json({ message: "Unauthorized" })
@@ -109,6 +121,27 @@ export async function updateSettings(req, res) {
         const updateObj = {}
         for (const field of ALLOWED_SETTINGS_UPDATE_FIELDS) {
             if (req.body[field] !== undefined) updateObj[field] = req.body[field]
+        }
+
+        if (updateObj.businessType !== undefined) {
+            if (!VALID_BUSINESS_TYPES.includes(updateObj.businessType)) {
+                return res.status(400).json({ message: `Invalid businessType. Must be one of: ${VALID_BUSINESS_TYPES.join(", ")}` })
+            }
+
+            const existingIdentity = await Business.findOne({ businessId }).select("businessType modules").lean()
+            if (!existingIdentity) {
+                return res.status(404).json({ message: "Business not found" })
+            }
+
+            try {
+                const preservedModules = resolveBusinessModules(existingIdentity)
+                updateObj.modules = validateBusinessModulesForType(
+                    updateObj.businessType,
+                    [...preservedModules, ...getDefaultBusinessModules(updateObj.businessType)]
+                )
+            } catch (err) {
+                return res.status(400).json({ message: err.message })
+            }
         }
 
         if (updateObj.country !== undefined) {
@@ -141,6 +174,24 @@ export async function updateSettings(req, res) {
         if (settings && typeof settings === 'object') {
             for (const [key, value] of Object.entries(settings)) {
                 updateObj[`settings.${key}`] = value
+            }
+        }
+
+        if (hotelSettings && typeof hotelSettings === "object") {
+            const { checkInTime, checkOutTime } = hotelSettings
+
+            if (checkInTime !== undefined) {
+                if (!isValidTimeString(checkInTime)) {
+                    return res.status(400).json({ message: "checkInTime must be in HH:mm format" })
+                }
+                updateObj["hotelSettings.checkInTime"] = checkInTime
+            }
+
+            if (checkOutTime !== undefined) {
+                if (!isValidTimeString(checkOutTime)) {
+                    return res.status(400).json({ message: "checkOutTime must be in HH:mm format" })
+                }
+                updateObj["hotelSettings.checkOutTime"] = checkOutTime
             }
         }
 
@@ -197,6 +248,54 @@ export async function updateSettings(req, res) {
         return res.json(business)
     } catch (err) {
         console.error("Update settings error:", err)
+        return res.status(500).json({ message: "Server error" })
+    }
+}
+
+export async function updateOwnerBusinessModules(req, res) {
+    try {
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+
+        const { foodServiceEnabled } = req.body
+        if (typeof foodServiceEnabled !== "boolean") {
+            return res.status(400).json({ message: "foodServiceEnabled must be a boolean" })
+        }
+
+        const business = await Business.findOne({ businessId })
+            .select(SAFE_BUSINESS_PROJECTION)
+
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
+        }
+
+        if (business.businessType !== "hotel") {
+            return res.status(400).json({
+                message: "Food Service can only be enabled or disabled from owner settings for hotel businesses",
+            })
+        }
+
+        try {
+            business.modules = setBusinessModuleEnabled(
+                business,
+                "foodService",
+                foodServiceEnabled
+            )
+        } catch (err) {
+            return res.status(400).json({ message: err.message })
+        }
+
+        await business.save()
+
+        const updatedBusiness = attachBusinessCapabilities(business)
+        return res.json({
+            modules: updatedBusiness.modules,
+            capabilities: updatedBusiness.capabilities,
+        })
+    } catch (err) {
+        console.error("Update owner business modules error:", err)
         return res.status(500).json({ message: "Server error" })
     }
 }
@@ -352,7 +451,7 @@ export async function updateTablePreferences(req, res) {
     }
 }
 
-const VALID_BUSINESS_TYPES = ["restaurant", "bar_lounge", "hotel_apartment"]
+const VALID_BUSINESS_TYPES = ["restaurant", "bar_lounge", "hotel"]
 const VALID_PLANS = ["basic", "starter", "growth", "pro"]
 
 export async function createBusiness(req, res) {
@@ -371,6 +470,7 @@ export async function createBusiness(req, res) {
             language,
             settings,
             businessType,
+            modules,
             plan,
             planId,
             notes
@@ -384,6 +484,17 @@ export async function createBusiness(req, res) {
         // businessType validation
         if (businessType && !VALID_BUSINESS_TYPES.includes(businessType)) {
             return res.status(400).json({ message: `Invalid businessType. Must be one of: ${VALID_BUSINESS_TYPES.join(", ")}` })
+        }
+
+        const resolvedBusinessType = businessType || "restaurant"
+        let resolvedModules
+        try {
+            resolvedModules = validateBusinessModulesForType(
+                resolvedBusinessType,
+                modules === undefined ? getDefaultBusinessModules(resolvedBusinessType) : modules
+            )
+        } catch (err) {
+            return res.status(400).json({ message: err.message })
         }
 
         // plan validation
@@ -416,7 +527,7 @@ export async function createBusiness(req, res) {
 
         const business = await Business.create({
             businessId,
-            restaurantId: businessId, // legacy alias stored in DB for existing integrations
+            businessId: businessId, // legacy alias stored in DB for existing integrations
             name,
             displayName,
             slug,
@@ -437,7 +548,8 @@ export async function createBusiness(req, res) {
                 takeoutEnabled: false,
                 callWaiterEnabled: true
             },
-            businessType,
+            businessType: resolvedBusinessType,
+            modules: resolvedModules,
             plan,
             planId,
             notes,
@@ -461,7 +573,7 @@ export async function createBusiness(req, res) {
 export async function createAdminOwner(req, res) {
     try {
         const { ownerName, ownerEmail } = req.body
-        const businessId = req.body.businessId || req.body.restaurantId
+        const businessId = req.body.businessId || req.body.businessId
 
         if (!businessId || !ownerName || !ownerEmail) {
             return res.status(400).json({ message: "Missing required fields (businessId, ownerName, ownerEmail)" })
@@ -530,7 +642,7 @@ export async function getAdminBusinesses(req, res) {
             const stats = await Order.aggregate([
                 { 
                     $match: { 
-                        $or: [{ businessId: biz.businessId }, { restaurantId: biz.restaurantId }],
+                        $or: [{ businessId: biz.businessId }, { businessId: biz.businessId }],
                         paymentStatus: "paid"
                     } 
                 },
@@ -551,7 +663,7 @@ export async function getAdminBusinesses(req, res) {
             const commission = metrics.totalSales * (commissionRate / 100)
 
             return {
-                ...biz,
+                ...attachBusinessCapabilities(biz),
                 owner: {
                     id: biz._id,
                     name: biz.ownerName || "Unknown",
@@ -599,7 +711,7 @@ export async function getAdminOwners(req, res) {
 export async function getAdminBusinessById(req, res) {
     try {
         const { businessId: paramId } = req.params
-        const business = await Business.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] }).select(SAFE_BUSINESS_PROJECTION).populate("planId").lean()
+        const business = await Business.findOne({ $or: [{ businessId: paramId }, { businessId: paramId }] }).select(SAFE_BUSINESS_PROJECTION).populate("planId").lean()
 
         if (!business) {
             return res.status(404).json({ message: "Business not found" })
@@ -609,7 +721,7 @@ export async function getAdminBusinessById(req, res) {
         const stats = await Order.aggregate([
             { 
                 $match: { 
-                    $or: [{ businessId: business.businessId }, { restaurantId: business.restaurantId }],
+                    $or: [{ businessId: business.businessId }, { businessId: business.businessId }],
                     paymentStatus: "paid"
                 } 
             },
@@ -630,7 +742,7 @@ export async function getAdminBusinessById(req, res) {
         const commission = metrics.totalSales * (commissionRate / 100)
 
         const enrichedBusiness = {
-            ...business,
+            ...attachBusinessCapabilities(business),
             owner: {
                 id: business._id,
                 name: business.ownerName || "Unknown",
@@ -660,24 +772,43 @@ export async function updateAdminBusiness(req, res) {
         // Never allow credential/secret fields to be set through the admin API.
         for (const field of SENSITIVE_BUSINESS_FIELDS) delete updateData[field]
 
+        const existingBusinessForUpdate = await Business.findOne({
+            $or: [{ businessId: paramId }, { businessId: paramId }]
+        }).select("_id businessId businessId businessType modules countryCode").lean()
+        if (!existingBusinessForUpdate) {
+            return res.status(404).json({ message: "Business not found" })
+        }
+
+        const nextBusinessType = updateData.businessType || existingBusinessForUpdate.businessType || "restaurant"
+        if (!VALID_BUSINESS_TYPES.includes(nextBusinessType)) {
+            return res.status(400).json({ message: `Invalid businessType. Must be one of: ${VALID_BUSINESS_TYPES.join(", ")}` })
+        }
+
+        try {
+            if (updateData.modules !== undefined) {
+                updateData.modules = validateBusinessModulesForType(nextBusinessType, updateData.modules)
+            } else if (nextBusinessType !== existingBusinessForUpdate.businessType) {
+                const preservedModules = resolveBusinessModules(existingBusinessForUpdate)
+                updateData.modules = validateBusinessModulesForType(
+                    nextBusinessType,
+                    [...preservedModules, ...getDefaultBusinessModules(nextBusinessType)]
+                )
+            }
+        } catch (err) {
+            return res.status(400).json({ message: err.message })
+        }
+
         if (updateData.ownerEmail !== undefined) {
             const normalizedOwnerEmail = normalizeAccountEmail(updateData.ownerEmail)
             if (!normalizedOwnerEmail) {
                 return res.status(400).json({ message: "A valid owner email is required" })
             }
 
-            const existingBusinessForOwner = await Business.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] })
-                .select("_id businessId restaurantId")
-                .lean()
-            if (!existingBusinessForOwner) {
-                return res.status(404).json({ message: "Business not found" })
-            }
-
             try {
                 await assertEmailAvailable(normalizedOwnerEmail, {
                     exclude: {
-                        businessObjectId: existingBusinessForOwner._id,
-                        businessId: existingBusinessForOwner.businessId || existingBusinessForOwner.restaurantId
+                        businessObjectId: existingBusinessForUpdate._id,
+                        businessId: existingBusinessForUpdate.businessId || existingBusinessForUpdate.businessId
                     }
                 })
             } catch (err) {
@@ -701,12 +832,7 @@ export async function updateAdminBusiness(req, res) {
                 throw err
             }
 
-            const existingBusiness = await Business.findOne({ $or: [{ businessId: paramId }, { restaurantId: paramId }] }).select("countryCode").lean()
-            if (!existingBusiness) {
-                return res.status(404).json({ message: "Business not found" })
-            }
-
-            if (countryMetadata.countryCode !== existingBusiness.countryCode) {
+            if (countryMetadata.countryCode !== existingBusinessForUpdate.countryCode) {
                 updateData.country = countryMetadata.country
                 updateData.countryCode = countryMetadata.countryCode
                 updateData.currency = countryMetadata.currency
@@ -720,9 +846,9 @@ export async function updateAdminBusiness(req, res) {
         }
 
         const business = await Business.findOneAndUpdate(
-            { $or: [{ businessId: paramId }, { restaurantId: paramId }] },
+            { $or: [{ businessId: paramId }, { businessId: paramId }] },
             { $set: updateData },
-            { new: true }
+            { new: true, runValidators: true }
         )
 
         if (!business) {
@@ -734,6 +860,10 @@ export async function updateAdminBusiness(req, res) {
         console.error("Update business error:", err)
         return res.status(500).json({ message: "Server error updating business" })
     }
+}
+
+export function getAdminBusinessModuleCatalog(req, res) {
+    return res.json(getBusinessModuleCatalog())
 }
 
 export async function getAdminDashboardStats(req, res) {
@@ -873,7 +1003,7 @@ export async function getAdminDashboardStats(req, res) {
 
 export async function getCategories(req, res) {
     try {
-        const businessId = req.query.businessId || req.query.restaurantId || req.user?.businessId || req.user?.restaurantId
+        const businessId = req.query.businessId || req.query.businessId || req.user?.businessId || req.user?.businessId
         if (!businessId) {
             return res.status(400).json({ message: "businessId is required" })
         }
@@ -971,7 +1101,7 @@ export async function deleteAdminBusiness(req, res) {
             return res.status(400).json({ message: "Business ID is required" });
         }
 
-        const deletedBusiness = await Business.findOneAndDelete({ $or: [{ businessId: paramId }, { restaurantId: paramId }] });
+        const deletedBusiness = await Business.findOneAndDelete({ $or: [{ businessId: paramId }, { businessId: paramId }] });
 
         if (!deletedBusiness) {
             return res.status(404).json({ message: "Business not found" });

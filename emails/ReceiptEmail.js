@@ -244,7 +244,6 @@ export default function ReceiptEmail({
   orderDate,
   servicePointLabel,
   servicePointCode,
-  servicePointTerm = "Table",
   orderType = "dine-in",
   paymentMethod = "offline",
   paymentStatus = "unpaid",

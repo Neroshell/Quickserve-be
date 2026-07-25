@@ -27,8 +27,8 @@ const PendingCheckoutSchema = new mongoose.Schema(
     {
         businessId: { type: String, required: true },
         orderId: { type: String, required: true },
-        tableNumber: { type: String, required: true }, // internal servicePointId â€” e.g. sp_xxxx
-        tableLabel: { type: String, default: "" },      // human-friendly â€” e.g. "Table 10"
+        servicePointLabel: { type: String, required: true }, // internal servicePointId â€” e.g. sp_xxxx
+        displayLabel: { type: String, default: "" },      // human-friendly â€” e.g. "Table 10"
         orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in" },
         sessionId: { type: String, required: true },
         items: { type: [PendingItemSchema], required: true },

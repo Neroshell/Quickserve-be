@@ -1,8 +1,9 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
-import TableSession from "../models/TableSession.js"
+import GuestSession from "../models/GuestSession.js"
 import ServicePoint from "../models/ServicePoint.js"
-import WaiterCall from "../models/WaiterCall.js"
+import ServiceRequest from "../models/ServiceRequest.js"
+import { readOwnerTransactions } from "../services/transactionReadService.js"
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
 
@@ -93,13 +94,13 @@ export async function ownerOrders(req, res) {
         }
 
         // If we strictly want search DB-side we can implement it, OR we fetch the array and the frontend trims. 
-        // Frontend search is generally fine for <1000 orders/day, but doing it backend scales better. (Regex on orderId/tableNumber).
+        // Frontend search is generally fine for <1000 orders/day, but doing it backend scales better. (Regex on orderId/servicePointLabel).
         if (search) {
             const escapeRegex = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const searchRegex = new RegExp(escapeRegex(search), "i")
             filter.$or = [
                 { orderId: { $regex: searchRegex } },
-                { tableNumber: { $regex: searchRegex } }
+                { servicePointLabel: { $regex: searchRegex } }
             ]
         }
 
@@ -110,8 +111,7 @@ export async function ownerOrders(req, res) {
             {
                 _id: 0,
                 orderId: 1,
-                tableNumber: 1,
-                tableLabel: 1,
+                servicePointLabel: 1,
                 orderType: 1,
                 status: 1,
                 createdAt: 1,
@@ -140,24 +140,6 @@ export async function ownerOrders(req, res) {
         )
             .sort({ updatedAt: -1, createdAt: -1 })
             .lean()
-
-        // // Batch-hydrate tableLabel for any order that is missing it.
-        // // This covers online orders created before the fix was deployed.
-        // const unlabelled = rawOrders.filter(o => !o.tableLabel && o.tableNumber?.startsWith("sp_"));
-        // if (unlabelled.length > 0) {
-        //     const uniqueSpIds = [...new Set(unlabelled.map(o => o.tableNumber))];
-        //     const sps = await ServicePoint.find(
-        //         { servicePointId: { $in: uniqueSpIds }, businessId },
-        //         "servicePointId label code"
-        //     ).lean();
-        //     const spMap = {};
-        //     for (const sp of sps) {
-        //         spMap[sp.servicePointId] = sp.label || sp.code || sp.servicePointId;
-        //     }
-        //     for (const o of unlabelled) {
-        //         o.tableLabel = spMap[o.tableNumber] || o.tableNumber;
-        //     }
-        // }
 
         // 4. Calculate Status Counts across the ACTIVE date range
         // Note: Counts ignore the current 'status' or 'search' filter so UI tabs show total accurate pool volume
@@ -195,8 +177,7 @@ export async function ownerOrders(req, res) {
 
             return {
                 orderId: o.orderId,
-                tableNumber: o.tableNumber,
-                tableLabel: o.tableLabel || o.tableNumber || "",
+                servicePointLabel: o.servicePointLabel || "",
                 orderType: o.orderType,
                 status: o.status,
                 createdAt: o.createdAt,
@@ -250,7 +231,7 @@ export async function getTableSessionsOverview(req, res) {
 
         const now = new Date()
 
-        const sessions = await TableSession.aggregate([
+        const sessions = await GuestSession.aggregate([
             {
                 $match: {
                     businessId,
@@ -259,7 +240,7 @@ export async function getTableSessionsOverview(req, res) {
             },
             {
                 $group: {
-                    _id: "$tableId",
+                    _id: "$servicePointId",
                     activeDevices: { $sum: 1 }
                 }
             },
@@ -287,7 +268,7 @@ export async function getTableSessionsOverview(req, res) {
         const activeTablesNow = sessions.length
         
         const tables = sessions.map(s => ({
-            tableNumber: s._id,
+            servicePointLabel: s._id,
             label: labelMap[s._id] || s._id,
             activeDevices: s.activeDevices
         }))
@@ -363,7 +344,7 @@ export async function ownerAnalytics(req, res) {
                 createdAt: { $gte: startDateJS, $lt: endDateJS }
             }).lean(),
 
-            WaiterCall.aggregate([
+            ServiceRequest.aggregate([
                 {
                     $match: {
                         businessId,
@@ -421,8 +402,8 @@ export async function ownerAnalytics(req, res) {
                 },
                 {
                     $group: {
-                        _id: "$tableNumber",
-                        label:       { $first: "$tableLabel" },
+                        _id: "$servicePointLabel",
+                        label:       { $first: "$servicePointLabel" },
                         orderCount:  { $sum: 1 },
                         totalRevenue:{ $sum: { $subtract: [{ $ifNull: ["$total", 0] }, { $ifNull: ["$tipAmount", 0] }] } },
                         paidOrders:  { $sum: { $cond: [{ $eq: ["$paymentStatus", "paid"] }, 1, 0] } },
@@ -433,7 +414,7 @@ export async function ownerAnalytics(req, res) {
             ]),
 
             // Per-staff waiter call metrics (acknowledged + resolved, with timing)
-            WaiterCall.aggregate([
+            ServiceRequest.aggregate([
                 {
                     $match: {
                         businessId,
@@ -964,7 +945,7 @@ export async function getDashboardData(req, res) {
 
         // Expire stale waiter calls before querying
         const now = new Date()
-        await WaiterCall.updateMany(
+        await ServiceRequest.updateMany(
             { businessId, status: "pending", pendingExpiresAt: { $lte: now } },
             { $set: { status: "missed", missedAt: now } }
         )
@@ -983,7 +964,7 @@ export async function getDashboardData(req, res) {
             Order.find({
                 ...dateFilter,
                 status: { $in: ["placed", "in_progress", "ready", "completed"] }
-            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, tableLabel: 1, tableNumber: 1, orderType: 1, paymentChannel: 1, tipAmount: 1 }).lean(),
+            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, servicePointLabel: 1, servicePointLabel: 1, orderType: 1, paymentChannel: 1, tipAmount: 1 }).lean(),
 
             Business.findOne({ businessId }).lean(),
 
@@ -994,9 +975,9 @@ export async function getDashboardData(req, res) {
 
             Staff.find({ businessId, $or: [{ presenceStatus: "active" }, { status: "active" }] }).lean(),
 
-            WaiterCall.find({ businessId, status: "pending", createdAt: { $gte: startDateJS, $lt: endDateJS } }).lean(),
+            ServiceRequest.find({ businessId, status: "pending", createdAt: { $gte: startDateJS, $lt: endDateJS } }).lean(),
 
-            WaiterCall.find({ businessId, status: "missed", createdAt: { $gte: startDateJS, $lt: endDateJS } }).lean(),
+            ServiceRequest.find({ businessId, status: "missed", createdAt: { $gte: startDateJS, $lt: endDateJS } }).lean(),
 
             MenuItem.countDocuments({ businessId }),
 
@@ -1079,7 +1060,7 @@ export async function getDashboardData(req, res) {
         }
 
         if (staffOnlineCount === 0) {
-            actionItems.push({ type: "staff", severity: "info", message: "No staff members are currently active.", href: "/owner/waiters" })
+            actionItems.push({ type: "staff", severity: "info", message: "No staff members are currently active.", href: "/owner/staff" })
         }
 
         // â”€â”€ Recent Activity (latest orders + feedback) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1091,7 +1072,7 @@ export async function getDashboardData(req, res) {
             .slice(0, 8)
 
         for (const o of latestOrders) {
-            const label = o.tableLabel || o.tableNumber || ""
+            const label = o.servicePointLabel || ""
             if (o.paymentStatus === "paid") {
                 recentActivity.push({ type: "payment", icon: "ðŸ’³", message: `Order ${o.orderId} paid`, sub: label, time: o.createdAt })
             } else {
@@ -1299,5 +1280,72 @@ export async function updateSetupChecklist(req, res) {
     } catch (err) {
         console.error("[updateSetupChecklist]", err);
         return res.status(500).json({ error: "Server error updating checklist" });
+    }
+}
+
+// GET /owner/transactions
+// Unified transaction read model for food-service orders and hotel reservations.
+export async function ownerTransactions(req, res) {
+    try {
+        const { range = "today", from, to, search = "" } = req.query
+        const businessId = req.session?.user?.businessId
+
+        if (!businessId) {
+            return res.status(400).json({ error: "businessId is required" })
+        }
+
+        const { start: todayStart, end: todayEnd } = getBusinessDayRange()
+        let startDateJS
+        let endDateJS
+
+        switch (range) {
+            case "yesterday":
+                startDateJS = todayStart.minus({ days: 1 }).toJSDate()
+                endDateJS = todayEnd.minus({ days: 1 }).toJSDate()
+                break
+            case "7days":
+                startDateJS = todayStart.minus({ days: 6 }).toJSDate()
+                endDateJS = todayEnd.toJSDate()
+                break
+            case "thisMonth":
+                startDateJS = todayStart
+                    .startOf("month")
+                    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
+                    .toJSDate()
+                endDateJS = todayEnd.toJSDate()
+                break
+            case "custom": {
+                if (!from || !to) {
+                    return res.status(400).json({ error: "Missing 'from' or 'to' for custom range" })
+                }
+                const customStart = DateTime.fromISO(from, { zone: BUSINESS_TZ })
+                    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
+                const customEnd = DateTime.fromISO(to, { zone: BUSINESS_TZ })
+                    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
+                    .plus({ days: 1 })
+                if (!customStart.isValid || !customEnd.isValid) {
+                    return res.status(400).json({ error: "Invalid date format for custom range" })
+                }
+                startDateJS = customStart.toJSDate()
+                endDateJS = customEnd.toJSDate()
+                break
+            }
+            case "today":
+            default:
+                startDateJS = todayStart.toJSDate()
+                endDateJS = todayEnd.toJSDate()
+                break
+        }
+
+        const transactions = await readOwnerTransactions({
+            businessId,
+            createdAt: { $gte: startDateJS, $lt: endDateJS },
+            search,
+        })
+
+        return res.json({ range, transactions })
+    } catch (err) {
+        console.error("[ownerTransactions]", err)
+        return res.status(500).json({ error: "Failed to fetch owner transactions" })
     }
 }

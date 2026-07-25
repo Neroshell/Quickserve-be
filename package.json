@@ -6,11 +6,15 @@
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "test:check-in": "node --test test/checkInCode.test.js test/hotelCheckInController.test.js",
+    "test:capabilities": "node --test test/businessCapabilityService.test.js",
+    "test:pricing": "node --test test/pricingService.test.js test/hotelPricingEmail.test.js",
     "start": "node server.js",
     "dev": "nodemon server.js",
     "seed": "node scripts/seed.js",
     "billing:bootstrap": "node scripts/bootstrap-billing-plans.js",
     "audit:account-emails": "node scripts/audit-account-email-duplicates.js",
+    "modules:backfill": "node scripts/backfill-business-modules.js",
     "plan:seed": "npm run seed",
     "setup:payment-plans": "npm run seed && npm run billing:bootstrap",
     "setup:db": "npm run setup:payment-plans"

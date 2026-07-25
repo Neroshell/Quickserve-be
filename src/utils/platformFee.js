@@ -34,7 +34,7 @@ export async function calculateOnlineCommission(totalInCents, planSlug) {
 }
 
 /**
- * Calculates the QuickServe commission for offline cash/POS/waiter orders.
+ * Calculates the QuickServe commission for offline cash/POS/waitstaff orders.
  * Looks up the given planSlug in the Plan collection and uses `offlineCommissionRate`.
  *
  * @param {number} totalInCents - The gross order total in cents
@@ -57,16 +57,6 @@ export async function calculateOfflineCommission(totalInCents, planSlug) {
     commissionRateApplied: rate,
     planApplied: planDoc?.slug || planSlug || "basic",
   };
-}
-
-export async function getPlanOnlineCommissionRate(planSlug) {
-  let slug = planSlug?.toLowerCase() || "basic";
-  const planDoc = await Plan.findOne({ slug }).lean();
-  const onlineRate = Number(planDoc?.commissionPercentage);
-  const fallbackRate = Number(planDoc?.offlineCommissionRate);
-  return Number.isFinite(onlineRate) && onlineRate > 0
-    ? onlineRate
-    : (Number.isFinite(fallbackRate) ? fallbackRate : 0);
 }
 
 export async function getPlanOfflineCommissionRate(planSlug) {

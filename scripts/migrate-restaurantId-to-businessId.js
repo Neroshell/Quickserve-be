@@ -1,13 +1,13 @@
 /**
- * migrate-restaurantId-to-businessId.js
+ * migrate-businessId-to-businessId.js
  *
- * One-time migration script to rename the `restaurantId` field to `businessId`
+ * One-time migration script to rename the `businessId` field to `businessId`
  * across all relevant MongoDB collections.
  *
  * Safe to run multiple times — skips documents that already have `businessId`.
  *
  * Usage:
- *   node scripts/migrate-restaurantId-to-businessId.js
+ *   node scripts/migrate-businessId-to-businessId.js
  *
  * Requires MONGODB_URI in environment (or .env file).
  */
@@ -26,8 +26,8 @@ const COLLECTIONS = [
     "restaurants",   // Restaurant model
     "waiters",       // Staff model (stored in "waiters" collection)
     "orders",        // Order model
-    "tablesessions", // TableSession model
-    "waitercalls",   // WaiterCall model
+    "tablesessions", // GuestSession model
+    "waitercalls",   // ServiceRequest model
     "menuitems",     // MenuItem model
     "pendingcheckouts" // PendingCheckout model
 ]
@@ -35,9 +35,9 @@ const COLLECTIONS = [
 async function migrateCollection(db, collectionName) {
     const collection = db.collection(collectionName)
 
-    // Count documents that still only have restaurantId (no businessId yet)
+    // Count documents that still only have businessId (no businessId yet)
     const pending = await collection.countDocuments({
-        restaurantId: { $exists: true },
+        businessId: { $exists: true },
         businessId: { $exists: false }
     })
 
@@ -48,16 +48,16 @@ async function migrateCollection(db, collectionName) {
 
     console.log(`  🔄 ${collectionName}: ${pending} document(s) to migrate...`)
 
-    // Rename restaurantId → businessId for all docs where businessId doesn't exist yet
+    // Rename businessId → businessId for all docs where businessId doesn't exist yet
     const result = await collection.updateMany(
         {
-            restaurantId: { $exists: true },
+            businessId: { $exists: true },
             businessId: { $exists: false }
         },
         [
             {
                 $set: {
-                    businessId: "$restaurantId"
+                    businessId: "$businessId"
                 }
             }
         ]
@@ -68,7 +68,7 @@ async function migrateCollection(db, collectionName) {
 }
 
 async function run() {
-    console.log("\n🚀 QuickServe Migration: restaurantId → businessId\n")
+    console.log("\n🚀 QuickServe Migration: businessId → businessId\n")
     console.log(`Connecting to MongoDB...`)
 
     await mongoose.connect(MONGO_URI)
@@ -87,7 +87,7 @@ async function run() {
     }
 
     console.log(`\n✅ Migration complete. Total documents updated: ${totalMigrated}`)
-    console.log("ℹ️  The legacy restaurantId field has been kept in all documents for backward compatibility.")
+    console.log("ℹ️  The legacy businessId field has been kept in all documents for backward compatibility.")
     console.log("ℹ️  You may remove it later by running a follow-up script once all code has been deployed.\n")
 
     await mongoose.disconnect()

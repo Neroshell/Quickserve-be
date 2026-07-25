@@ -3,9 +3,8 @@ import mongoose from "mongoose"
 const WaiterCallSchema = new mongoose.Schema(
   {
     businessId: { type: String, required: true, index: true },
-    tableNumber: { type: String, required: true, index: true },
-    tableLabel: { type: String, default: "" },
-    tableCode: { type: String, default: "" },
+    servicePointLabel: { type: String, required: true, index: true },
+    servicePointQrCode: { type: String, default: "" },
 
     // Unique per-device identifier sent by the customer frontend
     // Used for device-level anti-spam and SSE notification targeting
@@ -45,4 +44,4 @@ const WaiterCallSchema = new mongoose.Schema(
   { timestamps: true },
 )
 
-export default mongoose.models.WaiterCall || mongoose.model("WaiterCall", WaiterCallSchema)
+export default mongoose.models.ServiceRequest || mongoose.model("ServiceRequest", WaiterCallSchema)

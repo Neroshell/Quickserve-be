@@ -18,13 +18,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { redisPub, REDIS_CHANNEL } from "../config/redisClient.js"
-import TableSession from "../models/TableSession.js"
+import GuestSession from "../models/GuestSession.js"
 
 // Which SSE channel(s) a given authenticated staff role is allowed to subscribe to.
 // The channel is derived from the session role — NOT the client-supplied query —
 // so a kitchen/bar staffer can't spoof role=waiter to read the full order stream.
 // (Staff role enum is waiter/kitchen/manager/bartender/co_owner/owner; the SSE
-// channel names are kitchen/bar/waiter — note bartender → "bar".)
+// channel names are kitchen/bar/waitstaff — note bartender → "bar".)
 const SSE_CHANNELS_BY_ROLE = {
     kitchen: ["kitchen"],
     bartender: ["bar"],
@@ -58,7 +58,7 @@ function removeClient(client) {
 // ── SSE HTTP handler ─────────────────────────────────────────────────────────
 export async function sseHandler(req, res) {
     let role = req.query.role || "anon"
-    const businessId = req.query.businessId || req.query.restaurantId
+    const businessId = req.query.businessId || req.query.businessId
     const token = req.query.token
 
     if (!businessId) {
@@ -71,13 +71,13 @@ export async function sseHandler(req, res) {
         if (!token) {
             return res.status(401).end("Missing session token")
         }
-        const ts = await TableSession.findOne({ token, businessId }).lean()
+        const ts = await GuestSession.findOne({ token, businessId }).lean()
         if (!ts || ts.expiresAt < new Date()) {
             return res.status(403).end("Invalid or expired table session")
         }
         // Per-table isolation: this customer stream only receives events for its
         // own table (see broadcastLocal). Staff streams stay business-wide.
-        clientTableId = ts.tableId || null
+        clientTableId = ts.servicePointId || null
     } else {
         // Staff roles (waiter, kitchen, bartender, owner, etc.)
         if (!req.session || !req.session.user) {
@@ -104,7 +104,7 @@ export async function sseHandler(req, res) {
     res.setHeader("X-Accel-Buffering", "no")   // disable nginx proxy buffering
     res.flushHeaders?.()
 
-    const client = { res, role, businessId, tableId: clientTableId }
+    const client = { res, role, businessId, servicePointId: clientTableId }
 
     addClient(client)
 
@@ -149,10 +149,10 @@ export function broadcastLocal(msg) {
     const data = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
 
     // The table this event belongs to, if any. Orders and waiter calls carry the
-    // service-point id in tableNumber; used to scope customer streams below.
+    // service-point id in servicePointLabel; used to scope customer streams below.
     const msgTableId =
-        payload?.order?.tableNumber ||
-        payload?.call?.tableNumber ||
+        payload?.order?.servicePointLabel ||
+        payload?.call?.servicePointLabel ||
         null
 
     let matched = 0
@@ -165,10 +165,10 @@ export function broadcastLocal(msg) {
         if (targets && targets.length > 0 && !targets.includes(client.role)) continue
 
         // Per-table isolation for customer streams: a diner only receives events
-        // for their own table. Staff channels (kitchen/bar/waiter/owner) are
-        // business-wide and skip this. Falls open if either side lacks a tableId
+        // for their own table. Staff channels (kitchen/bar/waitstaff/owner) are
+        // business-wide and skip this. Falls open if either side lacks a servicePointId
         // (e.g. a non-table-specific event) so nothing legitimate is dropped.
-        if (CUSTOMER_ROLES.has(client.role) && msgTableId && client.tableId && msgTableId !== client.tableId) {
+        if (CUSTOMER_ROLES.has(client.role) && msgTableId && client.servicePointId && msgTableId !== client.servicePointId) {
             continue
         }
 
@@ -225,41 +225,3 @@ export async function publishEvent(event, businessId, targets, payload) {
     }
 }
 
-// ── Legacy compatibility shims ────────────────────────────────────────────────
-// These allow existing call sites that have not been migrated yet to keep working.
-// They are thin wrappers over publishEvent and will be removed once all controllers
-// use publishEvent directly.
-
-/**
- * @deprecated Use publishEvent() instead.
- */
-export function broadcast(eventName, payload, filterFn = null) {
-    const businessId =
-        payload.businessId ||
-        payload.restaurantId ||
-        (payload.order && payload.order.businessId) ||
-        (payload.order && payload.order.restaurantId) ||
-        (payload.call && payload.call.businessId) ||
-        (payload.call && payload.call.restaurantId)
-
-    publishEvent(eventName, businessId, null, payload).catch((err) =>
-        console.error("[SSE] broadcast shim error:", err)
-    )
-}
-
-/**
- * @deprecated Use publishEvent() instead.
- */
-export function broadcastToRole(targetRole, eventName, payload) {
-    const businessId =
-        payload.businessId ||
-        payload.restaurantId ||
-        (payload.order && payload.order.businessId) ||
-        (payload.order && payload.order.restaurantId) ||
-        (payload.call && payload.call.businessId) ||
-        (payload.call && payload.call.restaurantId)
-
-    publishEvent(eventName, businessId, [targetRole], payload).catch((err) =>
-        console.error("[SSE] broadcastToRole shim error:", err)
-    )
-}

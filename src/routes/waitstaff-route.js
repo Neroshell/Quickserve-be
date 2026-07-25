@@ -1,5 +1,5 @@
 import express from "express"
-import { waiterOrders, waiterPastOrders, createWaiterOrder, cancelWaiterOrder } from "../controllers/waiterOrdersController.js"
+import { waiterOrders, waiterPastOrders, createWaiterOrder, cancelWaiterOrder } from "../controllers/waitstaffOrdersController.js"
 import { updateOrderStatus } from "../controllers/kitchenController.js"
 import { markPaid, reconcileComplete } from "../controllers/orderController.js"
 import {
@@ -7,7 +7,7 @@ import {
     listWaiterCalls,
     claimWaiterCall,
     resolveWaiterCall,
-} from "../controllers/waiterCallController.js"
+} from "../controllers/serviceRequestController.js"
 
 import { listServicePoints } from "../controllers/servicePointController.js"
 
@@ -23,7 +23,7 @@ const router = express.Router()
 // Calls access
 /**
  * @openapi
- * /waiter/calls:
+ * /waitstaff/calls:
  *   get:
  *     summary: List active waiter calls for the table/customer device (Polled)
  *     tags:
@@ -42,7 +42,7 @@ router.get("/calls", listWaiterCalls)
 
 /**
  * @openapi
- * /waiter/calls:
+ * /waitstaff/calls:
  *   post:
  *     summary: Create a new waiter assistance call from a table/customer device
  *     tags:
@@ -55,12 +55,12 @@ router.get("/calls", listWaiterCalls)
  *             type: object
  *             required:
  *               - businessId
- *               - tableId
+ *               - servicePointId
  *               - type
  *             properties:
  *               businessId:
  *                 type: string
- *               tableId:
+ *               servicePointId:
  *                 type: string
  *               type:
  *                 type: string
@@ -79,7 +79,7 @@ const requireReconciliationRole = requireRole("waiter", "manager", "owner", "co_
 
 /**
  * @openapi
- * /waiter/past-orders:
+ * /waitstaff/past-orders:
  *   get:
  *     summary: Search and filter past waiter orders for recovery workflows
  *     tags:
@@ -92,7 +92,7 @@ router.get("/past-orders", requireAuth, requireReconciliationRole, waiterPastOrd
 
 /**
  * @openapi
- * /waiter/orders/{orderId}/mark-paid:
+ * /waitstaff/orders/{orderId}/mark-paid:
  *   patch:
  *     summary: Mark an order as paid (Offline POS / Cash)
  *     tags:
@@ -105,7 +105,7 @@ router.patch("/orders/:orderId/mark-paid", requireAuth, requireReconciliationRol
 
 /**
  * @openapi
- * /waiter/orders/{orderId}/reconcile-complete:
+ * /waitstaff/orders/{orderId}/reconcile-complete:
  *   patch:
  *     summary: Operational recovery - mark a forgotten open order as completed
  *     tags:
@@ -120,7 +120,7 @@ router.use(requireAuth, requireRole("waiter"))
 
 /**
  * @openapi
- * /waiter/:
+ * /waitstaff/:
  *   get:
  *     summary: Get all waiter orders for the authenticated waiter's business
  *     tags:
@@ -136,9 +136,9 @@ router.get("/", waiterOrders)
 
 /**
  * @openapi
- * /waiter/orders:
+ * /waitstaff/orders:
  *   post:
- *     summary: Create an offline/waiter-assisted order on behalf of a customer
+ *     summary: Create an offline/waitstaff-assisted order on behalf of a customer
  *     tags:
  *       - Waiter
  *     requestBody:
@@ -148,10 +148,10 @@ router.get("/", waiterOrders)
  *           schema:
  *             type: object
  *             required:
- *               - tableId
+ *               - servicePointId
  *               - items
  *             properties:
- *               tableId:
+ *               servicePointId:
  *                 type: string
  *               items:
  *                 type: array
@@ -172,7 +172,7 @@ router.post("/orders", requireOfflineServiceActive, createWaiterOrder)
 
 /**
  * @openapi
- * /waiter/orders/{orderId}/status:
+ * /waitstaff/orders/{orderId}/status:
  *   patch:
  *     summary: Update status of an order
  *     tags:
@@ -205,7 +205,7 @@ router.patch("/orders/:orderId/status", updateOrderStatus)
 
 /**
  * @openapi
- * /waiter/orders/{orderId}/cancel:
+ * /waitstaff/orders/{orderId}/cancel:
  *   post:
  *     summary: Cancel an offline order before preparation begins
  *     tags:
@@ -226,9 +226,9 @@ router.post("/orders/:orderId/cancel", cancelWaiterOrder)
 
 /**
  * @openapi
- * /waiter/service-points:
+ * /waitstaff/service-points:
  *   get:
- *     summary: List all service points (tables/rooms) for the waiter's business
+ *     summary: List all ServicePoints for the waiter's business
  *     tags:
  *       - Waiter
  *     responses:
@@ -239,7 +239,7 @@ router.get("/service-points", listServicePoints)
 
 /**
  * @openapi
- * /waiter/calls/{id}/claim:
+ * /waitstaff/calls/{id}/claim:
  *   patch:
  *     summary: Claim an active assistance call
  *     tags:
@@ -258,7 +258,7 @@ router.patch("/calls/:id/claim", claimWaiterCall)
 
 /**
  * @openapi
- * /waiter/calls/{id}/resolve:
+ * /waitstaff/calls/{id}/resolve:
  *   patch:
  *     summary: Resolve assistance call
  *     tags:

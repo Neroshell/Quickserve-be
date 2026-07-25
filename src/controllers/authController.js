@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { sendAuthEmail, sendEmailChangeVerification, sendEmailChangeNotification } from "../utils/emailService.js";
 import { hashToken } from "../utils/tokenHash.js";
 import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from "../utils/emailAvailability.js";
+import { resolveBusinessCapabilities, resolveBusinessModules } from "../services/businessCapabilityService.js";
 
 /**
  * Validate an invitation token
@@ -73,7 +74,7 @@ export async function validateStaffToken(req, res) {
         return res.json({ 
             valid: true, 
             staffId: staff.staffId,
-            waiterId: staff.waiterId, // backward compat
+            staffId: staff.staffId, // backward compat
             name: staff.name,
             email: staff.email,
             role: staff.role || "waiter",
@@ -205,7 +206,7 @@ export async function loginUser(req, res) {
                 name: business.ownerName,
                 email: business.ownerEmail,
                 role: "owner",
-                businessId: business.businessId || business.restaurantId
+                businessId: business.businessId || business.businessId
             };
 
             return new Promise((resolve, reject) => {
@@ -223,8 +224,8 @@ export async function loginUser(req, res) {
                         resolve(res.json({
                             message: "Login successful",
                             type: "owner",
-                            businessId: business.businessId || business.restaurantId,
-                            restaurantId: business.businessId || business.restaurantId,
+                            businessId: business.businessId || business.businessId,
+                            businessId: business.businessId || business.businessId,
                             ownerName: business.ownerName,
                             ownerEmail: business.ownerEmail,
                             displayName: business.displayName
@@ -257,7 +258,7 @@ export async function loginUser(req, res) {
                 staffId: staff.staffId,
                 name: staff.name,
                 email: staff.email,
-                businessId: staff.businessId || staff.restaurantId
+                businessId: staff.businessId || staff.businessId
             };
 
             return new Promise((resolve, reject) => {
@@ -271,9 +272,9 @@ export async function loginUser(req, res) {
                             type: "staff",
                             staffId: staff.staffId,
                             role: staff.role || "waitstaff",
-                            businessId: staff.businessId || staff.restaurantId,
-                            restaurantId: staff.businessId || staff.restaurantId,
-                            waiterId: staff.waiterId,
+                            businessId: staff.businessId || staff.businessId,
+                            businessId: staff.businessId || staff.businessId,
+                            staffId: staff.staffId,
                             name: staff.name,
                             email: staff.email
                         }));
@@ -350,7 +351,9 @@ export async function getMe(req, res) {
                 ...req.session.user, 
                 displayName: business.displayName, 
                 name: business.ownerName,
-                businessType: business.businessType || "restaurant"
+                businessType: business.businessType || "restaurant",
+                modules: resolveBusinessModules(business),
+                capabilities: resolveBusinessCapabilities(business)
             });
         } else {
             const staff = await Staff.findOne({ email, accountStatus: "active" }).select('-passwordHash');
@@ -360,15 +363,17 @@ export async function getMe(req, res) {
             const business = await Business.findOne({ 
                 $or: [
                     { businessId: staff.businessId },
-                    { restaurantId: staff.businessId }
+                    { businessId: staff.businessId }
                 ]
-            }).select('businessType').lean();
+            }).select('businessType modules').lean();
 
             return res.json({ 
                 ...req.session.user, 
                 name: staff.name, 
-                waiterId: staff.waiterId,
-                businessType: business?.businessType || "restaurant"
+                staffId: staff.staffId,
+                businessType: business?.businessType || "restaurant",
+                modules: resolveBusinessModules(business),
+                capabilities: resolveBusinessCapabilities(business)
             });
         }
     } catch (err) {
@@ -601,7 +606,7 @@ export async function changeEmail(req, res) {
             await assertEmailAvailable(normalizedEmail, {
                 exclude: {
                     businessObjectId: user._id,
-                    businessId: user.businessId || user.restaurantId
+                    businessId: user.businessId || user.businessId
                 }
             });
         } catch (err) {
@@ -672,7 +677,7 @@ export async function confirmEmailChange(req, res) {
             await assertEmailAvailable(newEmail, {
                 exclude: {
                     businessObjectId: user._id,
-                    businessId: user.businessId || user.restaurantId
+                    businessId: user.businessId || user.businessId
                 }
             });
         } catch (err) {

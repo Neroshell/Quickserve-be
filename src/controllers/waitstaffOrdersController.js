@@ -9,7 +9,7 @@ import { generateOrderId } from "../utils/orderId.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
-import { calculateOfflineCommission } from "../utils/platformFee.js"
+import { calculateOfflinePricing } from "../services/pricingService.js"
 import { validateTrackedStock, deductTrackedStock, restoreTrackedStock } from "../services/inventoryService.js"
 import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
 import { normalizeTip } from "../utils/tips.js"
@@ -174,19 +174,19 @@ export async function waiterPastOrders(req, res) {
                     businessId,
                     name: { $regex: searchRegex },
                 },
-                { staffId: 1, waiterId: 1 }
+                { staffId: 1, staffId: 1 }
             ).lean()
 
             const matchingStaffIds = matchingStaff
-                .flatMap((staff) => [staff.staffId, staff.waiterId])
+                .flatMap((staff) => [staff.staffId, staff.staffId])
                 .filter(Boolean)
 
             filter.$or = [
                 { orderId: { $regex: searchRegex } },
                 { receiptEmail: { $regex: searchRegex } },
                 { crmEmail: { $regex: searchRegex } },
-                { tableNumber: { $regex: searchRegex } },
-                { tableLabel: { $regex: searchRegex } },
+                { servicePointLabel: { $regex: searchRegex } },
+                { servicePointLabel: { $regex: searchRegex } },
                 { paidByName: { $regex: searchRegex } },
                 { servedByName: { $regex: searchRegex } },
                 { completedBy: { $regex: searchRegex } },
@@ -205,8 +205,7 @@ export async function waiterPastOrders(req, res) {
             _id: 0,
             orderId: 1,
             businessId: 1,
-            tableNumber: 1,
-            tableLabel: 1,
+            servicePointLabel: 1,
             orderType: 1,
             status: 1,
             createdAt: 1,
@@ -261,25 +260,24 @@ export async function waiterPastOrders(req, res) {
                     businessId,
                     $or: [
                         { staffId: { $in: staffIds } },
-                        { waiterId: { $in: staffIds } },
+                        { staffId: { $in: staffIds } },
                     ],
                 },
-                { staffId: 1, waiterId: 1, name: 1 }
+                { staffId: 1, staffId: 1, name: 1 }
             ).lean()
             : []
 
         const staffById = new Map()
         for (const staff of staffRows) {
             if (staff.staffId) staffById.set(staff.staffId, staff.name)
-            if (staff.waiterId) staffById.set(staff.waiterId, staff.name)
+            if (staff.staffId) staffById.set(staff.staffId, staff.name)
         }
 
         const orders = rawOrders.map((order) => ({
             orderId: order.orderId,
             businessId: order.businessId,
-            tableNumber: order.tableNumber,
-            tableLabel: order.tableLabel || order.tableNumber,
-            servicePoint: order.tableLabel || order.tableNumber,
+            servicePointLabel: order.servicePointLabel || order.servicePointLabel,
+            servicePoint: order.servicePointLabel || order.servicePointLabel,
             orderType: order.orderType,
             status: order.status,
             createdAt: order.createdAt,
@@ -344,7 +342,7 @@ export async function waiterPastOrders(req, res) {
     }
 }
 // ✅ NEW: waiter can fetch ANY status (ready/placed/in_progress/completed/all)
-// GET /waiter?status=ready
+// GET /waitstaff?status=ready
 export async function waiterOrders(req, res) {
     try {
         const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
@@ -359,7 +357,7 @@ export async function waiterOrders(req, res) {
         // Surface the waiter-ordering setting so the dashboard can show/hide the
         // "+ Take Order" button. Defaults to enabled when unset.
         const bizPrefs = await Business.findOne(
-            { $or: [{ businessId }, { restaurantId: businessId }] },
+            { $or: [{ businessId }, { businessId: businessId }] },
             { "orderingPreferences.enableWaiterOrdering": 1 }
         ).lean()
         const enableWaiterOrdering = bizPrefs?.orderingPreferences?.enableWaiterOrdering !== false
@@ -379,8 +377,7 @@ export async function waiterOrders(req, res) {
             {
                 _id: 0,
                 orderId: 1,
-                tableNumber: 1,
-                tableLabel: 1,
+                servicePointLabel: 1,
                 orderType: 1,
                 status: 1,
                 createdAt: 1,
@@ -434,10 +431,9 @@ export async function waiterOrders(req, res) {
 
             return {
                 businessId: o.businessId,
-                restaurantId: o.businessId, // legacy alias
+                businessId: o.businessId, // legacy alias
                 orderId: o.orderId,
-                tableNumber: o.tableNumber,
-                tableLabel: o.tableLabel || o.tableNumber,
+                servicePointLabel: o.servicePointLabel,
                 orderType: o.orderType,
                 status: o.status,
                 createdAt: o.createdAt,
@@ -497,10 +493,10 @@ export async function createWaiterOrder(req, res) {
       return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
     }
 
-    const { tableNumber, items, orderType, currency, tipAmount, tipType, tipPercentage } = req.body
+    const { servicePointLabel, items, orderType, currency, tipAmount, tipType, tipPercentage } = req.body
 
-    if (!tableNumber || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "tableNumber and items are required" })
+    if (!servicePointLabel || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "servicePointLabel and items are required" })
     }
 
     const allowedTypes = ["dine-in", "takeout"]
@@ -511,13 +507,13 @@ export async function createWaiterOrder(req, res) {
     }
 
     // Verify service point belongs to this business
-    const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId }).lean()
+    const sp = await ServicePoint.findOne({ servicePointId: servicePointLabel, businessId }).lean()
     if (!sp) {
       return res.status(403).json({ message: "Invalid service point for this business." })
     }
 
     const business = await Business.findOne({
-      $or: [{ businessId }, { restaurantId: businessId }],
+      $or: [{ businessId }, { businessId: businessId }],
     }).lean()
 
     if (!business) {
@@ -540,11 +536,11 @@ export async function createWaiterOrder(req, res) {
       })
     }
 
-    const tableLabel = sp.label || sp.code || tableNumber
-    const tableCode = sp.code || sp.label || tableNumber
+    const displayLabel = sp.label || sp.code || servicePointLabel
+    const servicePointQrCode = sp.code || sp.label || displayLabel
 
     const now = new Date()
-    const orderId = generateOrderId(tableCode, now)
+    const orderId = generateOrderId(servicePointQrCode, now)
 
     // Pre-validate stock before calculating prices
     const stockFailures = await validateTrackedStock(items, businessId)
@@ -589,23 +585,23 @@ export async function createWaiterOrder(req, res) {
     const initialStatus = hasFood ? "placed" : "ready"
 
     const subtotal = Number(calculatedTotal.toFixed(2))
-    const taxRate = business.taxRate || 0
-    const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2))
-
     const totalInCentsForFee = Math.round(subtotal * 100)
-    const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOfflineCommission(totalInCentsForFee, business.currentPlan || "basic")
-    
-    let mode = business.platformFeeMode || (business.passPlatformFeeToCustomer ? "customer_pays" : "business_absorbs");
-    let percent = mode === "split" ? (business.customerPlatformFeePercent || 0) : (mode === "customer_pays" ? 100 : 0);
-
-    const fullPlatformFeeFloat = Number((subtotal * (commissionRateApplied / 100)).toFixed(2));
-    const fullPlatformFeeCents = Math.round(fullPlatformFeeFloat * 100);
-
-    const customerPlatformFeeCents = Math.round(fullPlatformFeeCents * percent / 100);
-    const customerPlatformFeeFloat = Number((customerPlatformFeeCents / 100).toFixed(2));
-    const businessAbsorbedPlatformFeeCents = fullPlatformFeeCents - customerPlatformFeeCents;
-
-    const finalCommissionAmountCents = fullPlatformFeeCents;
+    const pricing = await calculateOfflinePricing({
+      subtotalCents: totalInCentsForFee,
+      business,
+    })
+    const {
+      taxAmount,
+      platformFeeMode: mode,
+      customerPlatformFeePercent: percent,
+      platformFeeCents: fullPlatformFeeCents,
+      customerPlatformFeeCents,
+      customerPlatformFeeAmount: customerPlatformFeeFloat,
+      businessAbsorbedPlatformFeeCents,
+      commissionRateApplied,
+      planApplied,
+      commissionAmountCents: finalCommissionAmountCents,
+    } = pricing
 
     const tip = normalizeTip({
       tipsEnabled: business.settings?.tipsEnabled === true,
@@ -622,8 +618,8 @@ export async function createWaiterOrder(req, res) {
     const saved = await Order.create({
       orderId,
       businessId,
-      tableNumber,
-      tableLabel,
+      servicePointLabel,
+      displayLabel,
       orderType: finalOrderType,
       sessionId: `waiter_${staffId}_${Date.now()}`,
       items: enrichedItems,

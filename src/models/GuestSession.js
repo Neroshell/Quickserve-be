@@ -3,7 +3,7 @@ import mongoose from "mongoose"
 const TableSessionSchema = new mongoose.Schema(
   {
     businessId: { type: String, required: true, index: true },
-    tableId: { type: String, required: true, index: true },
+    servicePointId: { type: String, required: true, index: true },
     token: { type: String, required: true, unique: true, index: true },
 
     // first device that successfully places an order binds the token
@@ -18,4 +18,4 @@ const TableSessionSchema = new mongoose.Schema(
 // TTL index (Mongo deletes docs when expiresAt < now)
 TableSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
 
-export default mongoose.models.TableSession || mongoose.model("TableSession", TableSessionSchema)
+export default mongoose.models.GuestSession || mongoose.model("GuestSession", TableSessionSchema)

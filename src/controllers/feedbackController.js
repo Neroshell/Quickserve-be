@@ -69,7 +69,7 @@ export async function submitFeedback(req, res) {
                 sentiment,
                 wouldRecommend,
                 orderType: order.orderType,
-                servicePointId: order.tableNumber,
+                servicePointId: order.servicePointLabel,
                 orderValue: order.total || 0
             });
         } catch (dbErr) {

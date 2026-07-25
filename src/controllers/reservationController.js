@@ -1,6 +1,19 @@
 import Reservation from "../models/Reservation.js";
 import Business from "../models/Business.js";
-import { sendReservationConfirmedEmail, sendReservationCancelledEmail } from "../utils/emailService.js";
+import ServicePoint from "../models/ServicePoint.js";
+import crypto from "crypto";
+import { sendReservationConfirmedEmail, sendReservationCancelledEmail, sendReservationPaymentEmail } from "../utils/emailService.js";
+import { generateHotelCheckInCredentials } from "../services/hotelCheckInService.js";
+import { CHECK_IN_CODE_PATTERN, normalizeCheckInCode, verifyCheckInCode } from "../utils/checkInCode.js";
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js";
+import { ensureReservationPricingSnapshot } from "../services/reservationPricingService.js";
+
+const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
+export const HOTEL_PAYMENT_WINDOW_MINUTES = 30;
+
+export function getHotelPaymentExpiresAt(now = Date.now()) {
+  return new Date(now + HOTEL_PAYMENT_WINDOW_MINUTES * 60 * 1000);
+}
 
 /**
  * Get reservations for a specific business (Owner authenticated)
@@ -48,6 +61,12 @@ export async function updateReservationStatus(req, res) {
       return res.status(400).json({ error: "status is required" });
     }
 
+    if (status === "checked_in") {
+      return res.status(400).json({
+        error: "Use the reservation check-in action and provide the guest's check-in code.",
+      });
+    }
+
     const reservation = await Reservation.findById(id);
     if (!reservation) {
       return res.status(404).json({ error: "Reservation not found" });
@@ -67,37 +86,51 @@ export async function updateReservationStatus(req, res) {
     }
 
     // Basic status validation
-    const validStatuses = ["pending", "confirmed", "cancelled", "seated", "completed", "no_show"];
+    const validStatuses = ["pending", "confirmed", "cancelled", "seated", "completed", "no_show",
+      "accepted_awaiting_payment", "expired"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
     }
 
-    // Conflict check when confirming
-    if (status === "confirmed") {
+    // Conflict check when confirming (restaurant/café only — hotels use date-overlap via accepted_awaiting_payment)
+    const isHotel = resolveBusinessCapabilities(business).reservations.primaryMode === "stay";
+    if (status === "confirmed" && !isHotel) {
       // Operating hours validation
-      const [year, month, day] = reservation.date.split("-").map(Number);
-      const dayOfWeek = new Date(year, month - 1, day).toLocaleDateString('en-US', { weekday: 'long' });
-      const dayConfig = business.operatingHours?.[dayOfWeek];
-      
-      if (!dayConfig || !dayConfig.enabled || reservation.startTime < dayConfig.openTime || reservation.endTime > dayConfig.closeTime) {
-        return res.status(400).json({ error: "Reservations are only available during business hours." });
-      }
+      const [year, month, day] = (reservation.date || "").split("-").map(Number);
+      if (year && month && day) {
+        const dayOfWeek = new Date(year, month - 1, day).toLocaleDateString('en-US', { weekday: 'long' });
+        const dayConfig = business.operatingHours?.[dayOfWeek];
 
-      if (reservation.servicePointId) {
-        const existingReservation = await Reservation.findOne({
-          businessId: reservation.businessId,
-          servicePointId: reservation.servicePointId,
-          date: reservation.date,
-          status: "confirmed",
-          startTime: { $lt: reservation.endTime },
-          endTime: { $gt: reservation.startTime },
-          _id: { $ne: reservation._id }
-        }).lean();
+        if (!dayConfig || !dayConfig.enabled || reservation.startTime < dayConfig.openTime || reservation.endTime > dayConfig.closeTime) {
+          return res.status(400).json({ error: "Reservations are only available during business hours." });
+        }
 
-        if (existingReservation) {
-          return res.status(409).json({ error: "This place is already booked and confirmed for the selected time." });
+        if (reservation.servicePointId) {
+          const existingReservation = await Reservation.findOne({
+            businessId: reservation.businessId,
+            servicePointId: reservation.servicePointId,
+            date: reservation.date,
+            status: "confirmed",
+            startTime: { $lt: reservation.endTime },
+            endTime: { $gt: reservation.startTime },
+            _id: { $ne: reservation._id }
+          }).lean();
+
+          if (existingReservation) {
+            return res.status(409).json({ error: "This place is already booked and confirmed for the selected time." });
+          }
         }
       }
+    }
+
+    if (status === "accepted_awaiting_payment") {
+      await ensureReservationPricingSnapshot({
+        reservation,
+        business,
+        save: false,
+      });
+      reservation.secureToken = crypto.randomBytes(32).toString("hex");
+      reservation.paymentExpiresAt = getHotelPaymentExpiresAt();
     }
 
     const previousStatus = reservation.status;
@@ -114,7 +147,7 @@ export async function updateReservationStatus(req, res) {
 
       if (!reservationObj.email) {
         console.log("Reservation status changed but no customer email found in DB.", reservationObj);
-      } else if (status === "confirmed" || status === "cancelled") {
+      } else if (status === "confirmed" || status === "cancelled" || status === "accepted_awaiting_payment") {
         console.log("[Reservation Email] Customer email:", reservationObj.email);
         console.log(`[Reservation Email] Sending ${status} email`);
 
@@ -126,21 +159,27 @@ export async function updateReservationStatus(req, res) {
           reservation: reservationObj,
         };
 
-        const sender = status === "confirmed" ? sendReservationConfirmedEmail : sendReservationCancelledEmail;
-        try {
-          console.log("[Reservation Email] Awaiting sender...");
-          const success = await sender(emailArgs);
-          console.log(`[Reservation Email] Sender returned:`, success);
-          if (!success) {
+        let sender;
+        if (status === "confirmed") sender = sendReservationConfirmedEmail;
+        else if (status === "cancelled" || status === "declined") sender = sendReservationCancelledEmail;
+        else if (status === "accepted_awaiting_payment") sender = sendReservationPaymentEmail;
+
+        if (sender) {
+          try {
+            console.log("[Reservation Email] Awaiting sender...");
+            const success = await sender(emailArgs);
+            console.log(`[Reservation Email] Sender returned:`, success);
+            if (!success) {
+              emailStatus = "failed";
+              console.error(`[Reservation Email] Failed to send ${status} email (sender returned false)`);
+            } else {
+              emailStatus = "sent";
+              console.log(`[Reservation Email] Successfully sent ${status} email`);
+            }
+          } catch (emailError) {
+            console.error(`[Reservation Email] Exception in sender for ${status} email:`, emailError);
             emailStatus = "failed";
-            console.error(`[Reservation Email] Failed to send ${status} email (sender returned false)`);
-          } else {
-            emailStatus = "sent";
-            console.log(`[Reservation Email] Successfully sent ${status} email`);
           }
-        } catch (emailError) {
-          console.error(`[Reservation Email] Exception in sender for ${status} email:`, emailError);
-          emailStatus = "failed";
         }
       }
     }
@@ -149,6 +188,128 @@ export async function updateReservationStatus(req, res) {
   } catch (error) {
     console.error("[reservationController.updateReservationStatus] Error:", error);
     res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * Check in a paid, confirmed hotel guest using the code from their confirmation email.
+ * POST /owner/reservations/:id/check-in
+ */
+export async function checkInHotelReservation(req, res) {
+  try {
+    const { id } = req.params;
+    const code = normalizeCheckInCode(req.body?.code);
+    const sessionUser = req.session?.user;
+
+    if (!CHECK_IN_CODE_PATTERN.test(code)) {
+      return res.status(400).json({ error: "A valid 6-digit check-in code is required." });
+    }
+
+    const reservation = await Reservation.findById(id).select("+checkInCodeHash");
+    if (!reservation) {
+      return res.status(404).json({ error: "Reservation not found" });
+    }
+
+    const isAdmin = sessionUser?.role === "admin";
+    if (!isAdmin && (!sessionUser?.businessId || sessionUser.businessId !== reservation.businessId)) {
+      return res.status(403).json({ error: "Unauthorized access to this business" });
+    }
+
+    if (!reservation.checkInDate) {
+      return res.status(400).json({ error: "Only hotel reservations can be checked in with a code." });
+    }
+
+    if (reservation.status === "checked_in" || reservation.checkInCodeUsedAt) {
+      return res.status(409).json({ error: "This guest is already checked in." });
+    }
+
+    if (reservation.status !== "confirmed" || reservation.paymentStatus !== "paid") {
+      return res.status(409).json({ error: "Only paid, confirmed reservations can be checked in." });
+    }
+
+    if (!reservation.checkInCodeHash || !reservation.checkInCodeValidFrom || !reservation.checkInCodeExpiresAt) {
+      return res.status(409).json({
+        error: "This reservation does not have an active check-in code. Resend the confirmation email to generate one.",
+      });
+    }
+
+    if (reservation.checkInCodeLockedAt) {
+      return res.status(423).json({
+        error: "This check-in code is locked. Resend the confirmation email to issue a new code.",
+      });
+    }
+
+    const now = new Date();
+    if (now < reservation.checkInCodeValidFrom) {
+      return res.status(409).json({
+        error: "This check-in code is not active yet.",
+        validFrom: reservation.checkInCodeValidFrom,
+      });
+    }
+
+    if (now > reservation.checkInCodeExpiresAt) {
+      return res.status(410).json({ error: "This check-in code has expired." });
+    }
+
+    if (!verifyCheckInCode(code, reservation.checkInCodeHash)) {
+      const failedAttempts = (reservation.checkInCodeFailedAttempts || 0) + 1;
+      const shouldLock = failedAttempts >= MAX_CHECK_IN_CODE_ATTEMPTS;
+      await Reservation.updateOne(
+        { _id: reservation._id, checkInCodeUsedAt: null },
+        {
+          $set: {
+            checkInCodeFailedAttempts: failedAttempts,
+            ...(shouldLock ? { checkInCodeLockedAt: now } : {}),
+          },
+        }
+      );
+
+      if (shouldLock) {
+        return res.status(423).json({
+          error: "Too many incorrect attempts. Resend the confirmation email to issue a new code.",
+        });
+      }
+
+      return res.status(401).json({
+        error: "Incorrect check-in code.",
+        attemptsRemaining: MAX_CHECK_IN_CODE_ATTEMPTS - failedAttempts,
+      });
+    }
+
+    const updatedReservation = await Reservation.findOneAndUpdate(
+      {
+        _id: reservation._id,
+        status: "confirmed",
+        checkInCodeUsedAt: null,
+        checkInCodeLockedAt: null,
+      },
+      {
+        $set: {
+          status: "checked_in",
+          checkInCodeUsedAt: now,
+          checkedInAt: now,
+          checkedInBy: {
+            userId: sessionUser?.userId || sessionUser?.staffId || null,
+            name: sessionUser?.name || null,
+            email: sessionUser?.email || null,
+            role: sessionUser?.role || null,
+          },
+        },
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedReservation) {
+      return res.status(409).json({ error: "The reservation could not be checked in because it was updated elsewhere." });
+    }
+
+    return res.json({
+      message: "Guest checked in successfully.",
+      reservation: updatedReservation,
+    });
+  } catch (error) {
+    console.error("[reservationController.checkInHotelReservation] Error:", error);
+    return res.status(500).json({ error: "Server error" });
   }
 }
 
@@ -177,3 +338,121 @@ export async function deleteReservation(req, res) {
     res.status(500).json({ error: "Server error" });
   }
 }
+
+/**
+ * GET /public/reservations/available-rooms
+ * Fetch ServicePoints available for a stay based on check-in and check-out dates.
+ * The legacy URL is retained for compatibility.
+ */
+export async function getAvailableStayServicePoints(req, res) {
+  try {
+    const { businessSlug, checkInDate, checkOutDate, guestCount } = req.query;
+
+    if (!businessSlug || !checkInDate || !checkOutDate) {
+      return res.status(400).json({ error: "businessSlug, checkInDate, and checkOutDate are required" });
+    }
+
+    const business = await Business.findOne({ slug: businessSlug.toLowerCase() }).lean();
+    if (!business || !resolveBusinessCapabilities(business).reservations.modes.includes("stay")) {
+      return res.status(404).json({ error: "Hotel not found" });
+    }
+
+    if (business.settings?.reservationsEnabled === false) {
+      return res.status(403).json({ error: "Reservations are disabled." });
+    }
+
+    // A ServicePoint is unavailable when the requested stay overlaps an
+    // existing blocking reservation.
+    const overlappingReservations = await Reservation.find({
+      businessId: business.businessId,
+      status: { $in: ["accepted_awaiting_payment", "confirmed", "checked_in"] }, // blocking statuses
+      checkInDate: { $lt: checkOutDate },
+      checkOutDate: { $gt: checkInDate }
+    }).lean();
+
+    const unavailableServicePointIds = overlappingReservations
+      .map((reservation) => reservation.servicePointId)
+      .filter(Boolean);
+
+    let servicePoints = await ServicePoint.find({
+      businessId: business.businessId,
+      isActive: true,
+      reservable: true
+    }).lean();
+
+    // Filter by capacity if guestCount is provided
+    if (guestCount) {
+      const parsedGuestCount = parseInt(guestCount, 10);
+      if (!isNaN(parsedGuestCount)) {
+        servicePoints = servicePoints.filter(
+          (servicePoint) => !servicePoint.capacity || servicePoint.capacity >= parsedGuestCount
+        );
+      }
+    }
+
+    const availableServicePoints = servicePoints.filter(
+      (servicePoint) => !unavailableServicePointIds.includes(servicePoint.servicePointId)
+    );
+
+    res.json(availableServicePoints);
+  } catch (error) {
+    console.error("[reservationController.getAvailableStayServicePoints] Error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * POST /owner/reservations/:id/resend-confirmation
+ * Resend the hotel payment confirmation email with a new check-in code
+ */
+export async function resendReservationConfirmation(req, res) {
+  try {
+    const { id } = req.params;
+    
+    // Find the reservation
+    const reservation = await Reservation.findById(id);
+    if (!reservation) {
+      return res.status(404).json({ error: "Reservation not found" });
+    }
+
+    // Ensure it belongs to the authenticated owner's business
+    const business = await Business.findOne({ businessId: reservation.businessId, ownerEmail: req.session.user.email }).lean();
+    if (!business && req.session.user.role !== "admin") {
+      return res.status(403).json({ error: "Unauthorized access to this business" });
+    }
+
+    // Must be a hotel check-in
+    if (!reservation.checkInDate) {
+      return res.status(400).json({ error: "Only hotel reservations are eligible for check-in codes" });
+    }
+
+    // Must be paid and confirmed
+    if (reservation.paymentStatus !== "paid" || reservation.status === "cancelled") {
+      return res.status(400).json({ error: "Reservation must be paid and not cancelled" });
+    }
+
+    // Generate new credentials and resend email
+    try {
+      await generateHotelCheckInCredentials(reservation, business);
+      
+      // Update resend tracking
+      await Reservation.updateOne(
+        { _id: reservation._id },
+        { 
+          $set: { confirmationEmailResentAt: new Date() },
+          $inc: { confirmationEmailSendCount: 1 } 
+        }
+      );
+
+      return res.json({ message: "Confirmation email resent successfully." });
+    } catch (emailErr) {
+      console.error("[reservationController.resendReservationConfirmation] Email failed:", emailErr);
+      return res.status(500).json({ error: "Failed to send the email. Please check your provider settings." });
+    }
+
+  } catch (err) {
+    console.error("[reservationController.resendReservationConfirmation] Error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+

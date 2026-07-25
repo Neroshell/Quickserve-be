@@ -23,8 +23,8 @@ function asStringId(value) {
 
 function isExcluded(record, exclude = {}) {
     const recordObjectId = asStringId(record._id || record.id)
-    const recordBusinessId = record.businessId || record.restaurantId || ""
-    const recordStaffId = record.staffId || record.waiterId || ""
+    const recordBusinessId = record.businessId || record.businessId || ""
+    const recordStaffId = record.staffId || record.staffId || ""
     const recordSessionId = record.sessionId || ""
 
     return (
@@ -43,8 +43,8 @@ function toAccount(source, type, record, emailField) {
         type,
         email: record[emailField],
         id: asStringId(record._id),
-        businessId: record.businessId || record.restaurantId || undefined,
-        staffId: record.staffId || record.waiterId || undefined,
+        businessId: record.businessId || record.businessId || undefined,
+        staffId: record.staffId || record.staffId || undefined,
         sessionId: record.sessionId || undefined,
         status: record.ownerStatus || record.accountStatus || record.currentStep || undefined,
     }
@@ -57,16 +57,16 @@ export async function findAccountByEmail(email, options = {}) {
     const exclude = options.exclude || {}
     const [owner, pendingOwnerChange, staff, onboardingSession] = await Promise.all([
         Business.findOne({ ownerEmail: normalizedEmail })
-            .select("_id businessId restaurantId ownerEmail ownerStatus")
+            .select("_id businessId businessId ownerEmail ownerStatus")
             .lean(),
         Business.findOne({
             pendingEmailChange: normalizedEmail,
             emailChangeTokenExpires: { $gt: new Date() }
         })
-            .select("_id businessId restaurantId pendingEmailChange ownerStatus")
+            .select("_id businessId businessId pendingEmailChange ownerStatus")
             .lean(),
         Staff.findOne({ email: normalizedEmail })
-            .select("_id businessId restaurantId staffId waiterId email role accountStatus")
+            .select("_id businessId businessId staffId staffId email role accountStatus")
             .lean(),
         OnboardingSession.findOne({ ownerEmail: normalizedEmail })
             .select("_id sessionId ownerEmail currentStep emailVerified")
@@ -116,16 +116,16 @@ function addRecord(groups, email, record) {
 export async function findDuplicateAccountEmails() {
     const [owners, pendingOwnerChanges, staff, onboardingSessions] = await Promise.all([
         Business.find({ ownerEmail: { $type: "string", $ne: "" } })
-            .select("_id businessId restaurantId ownerEmail ownerStatus")
+            .select("_id businessId businessId ownerEmail ownerStatus")
             .lean(),
         Business.find({
             pendingEmailChange: { $type: "string", $ne: "" },
             emailChangeTokenExpires: { $gt: new Date() }
         })
-            .select("_id businessId restaurantId pendingEmailChange ownerStatus emailChangeTokenExpires")
+            .select("_id businessId businessId pendingEmailChange ownerStatus emailChangeTokenExpires")
             .lean(),
         Staff.find({ email: { $type: "string", $ne: "" } })
-            .select("_id businessId restaurantId staffId waiterId email role accountStatus")
+            .select("_id businessId businessId staffId staffId email role accountStatus")
             .lean(),
         OnboardingSession.find({ ownerEmail: { $type: "string", $ne: "" } })
             .select("_id sessionId ownerEmail currentStep emailVerified")

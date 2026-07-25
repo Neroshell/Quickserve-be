@@ -113,7 +113,7 @@ router.post("/business-logo", upload.single("image"), async (req, res) => {
     }
 
     const business = await Business.findOne({
-      $or: [{ businessId }, { restaurantId: businessId }],
+      $or: [{ businessId }, { businessId: businessId }],
     })
     if (!business) {
       return res.status(404).json({ error: "Business not found" })

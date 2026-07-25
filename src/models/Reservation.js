@@ -46,31 +46,30 @@ const ReservationSchema = new mongoose.Schema(
     },
     date: {
       type: String, // YYYY-MM-DD
-      required: true,
+      required: function() { return !this.checkInDate; },
       index: true,
     },
     time: {
       type: String, // Legacy, keep for backward compat
-      required: true,
+      required: function() { return !this.checkInDate; },
     },
     startTime: {
       type: String, // HH:MM
-      required: true,
+      required: function() { return !this.checkInDate; },
     },
     endTime: {
       type: String, // HH:MM
-      required: true,
+      required: function() { return !this.checkInDate; },
     },
     durationMinutes: {
       type: Number,
-      required: true,
+      required: function() { return !this.checkInDate; },
       min: MIN_DURATION_MINUTES,
     },
     guestCount: {
       type: Number,
       required: true,
       min: 1,
-      max: 50,
     },
     seatingPreference: {
       type: String,
@@ -91,7 +90,10 @@ const ReservationSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "confirmed", "cancelled", "seated", "completed", "no_show"],
+      enum: [
+        "pending", "confirmed", "cancelled", "seated", "completed", "no_show",
+        "pending_approval", "accepted_awaiting_payment", "declined", "checked_in", "checked_out", "expired"
+      ],
       default: "pending",
       index: true,
     },
@@ -100,6 +102,74 @@ const ReservationSchema = new mongoose.Schema(
       enum: ["public_hub", "dashboard"],
       default: "public_hub",
     },
+    
+    // Hotel-specific fields
+    checkInDate: { type: String }, // YYYY-MM-DD
+    checkOutDate: { type: String }, // YYYY-MM-DD
+    paymentExpiresAt: { type: Date },
+    verificationCode: { type: String },
+    // Price snapshot — written at booking time from ServicePoint; never recalculated from frontend input
+    pricePerNight:  { type: Number, min: 0 },
+    numberOfNights: { type: Number, min: 1 },
+    subtotal:       { type: Number, min: 0 },
+    taxRateApplied: { type: Number, min: 0 },
+    taxLabel:       { type: String, default: "Tax" },
+    taxAmount:      { type: Number, default: 0, min: 0 },
+    taxAmountCents: { type: Number, default: 0, min: 0 },
+    platformFeeLabel: { type: String, default: "Platform Fee" },
+    platformFeeTotal: { type: Number, default: 0, min: 0 },
+    platformFeeCents: { type: Number, default: 0, min: 0 },
+    customerPlatformFeeCents: { type: Number, default: 0, min: 0 },
+    businessAbsorbedPlatformFeeCents: { type: Number, default: 0, min: 0 },
+    platformFeeMode: {
+      type: String,
+      enum: ["business_absorbs", "customer_pays", "split"],
+      default: "business_absorbs",
+    },
+    customerPlatformFeePercent: { type: Number, default: 0, min: 0, max: 100 },
+    planApplied: { type: String },
+    commissionRateApplied: { type: Number, min: 0 },
+    commissionAmountCents: { type: Number, default: 0, min: 0 },
+    planAtOrder: { type: String },
+    commissionRateAtOrder: { type: Number, min: 0 },
+    platformFeeRateAtOrder: { type: Number, min: 0 },
+    grossAmount: { type: Number, min: 0 }, // integer minor units
+    netToBusinessAmount: { type: Number }, // integer minor units
+    pricingSnapshotVersion: { type: Number, min: 1 },
+    // Final amount charged to the guest. Legacy paid reservations retain the
+    // historical accommodation-only value they were originally charged.
+    totalPrice:     { type: Number, min: 0 },
+    currency:       { type: String, lowercase: true, default: "eur" },
+    stripeSessionId: { type: String },
+    stripeCheckoutSessionId: { type: String },
+    stripePaymentIntentId: { type: String },
+    stripeConnectedAccountId: { type: String },
+    amountPaidCents: { type: Number, min: 0 },
+    paymentStatus: { type: String, enum: ["pending", "paid", "failed", "refunded"], default: "pending" },
+    secureToken: { type: String },
+    paidAt: { type: Date },
+    confirmedAt: { type: Date },
+    confirmationEmailSentAt: { type: Date },
+    confirmationEmailMessageId: { type: String },
+    confirmationEmailError: { type: String },
+    checkInCodeHash: { type: String, select: false },
+    checkInCodeCreatedAt: { type: Date },
+    checkInCodeValidFrom: { type: Date },
+    checkInCodeExpiresAt: { type: Date },
+    checkInCodeLockedAt: { type: Date },
+    checkInCodeFailedAttempts: { type: Number, default: 0, min: 0 },
+    checkInCodeUsedAt: { type: Date },
+    checkedInAt: { type: Date },
+    checkedInBy: {
+      userId: { type: String },
+      name: { type: String },
+      email: { type: String },
+      role: { type: String },
+    },
+    checkInCredentialVersion: { type: Number, default: 0 },
+    confirmationEmailResentAt: { type: Date },
+    confirmationEmailSendCount: { type: Number, default: 0 },
+    publicReference: { type: String, unique: true, sparse: true },
   },
   { timestamps: true }
 );
@@ -109,6 +179,8 @@ ReservationSchema.index({ businessId: 1, servicePointId: 1, date: 1, status: 1, 
 // Cross-field validation: the start/end time range is the source of truth and
 // must stay consistent with durationMinutes. Runs on every save (no exemptions).
 ReservationSchema.pre("validate", function () {
+  if (this.checkInDate) return; // Skip time validation for hotel reservations
+
   const start = timeStringToMinutes(this.startTime);
   const end = timeStringToMinutes(this.endTime);
 

@@ -5,13 +5,13 @@ import orderRoute from "./src/routes/order-route.js"
 import { connectDB } from "./src/config/db.js"
 import qrRoute from "./src/routes/qr-route.js"
 import kitchenRoute from "./src/routes/kitchen-route.js"
-import waiterRoute from "./src/routes/waiter-route.js"
+import waiterRoute from "./src/routes/waitstaff-route.js"
 import sseRoute from "./src/routes/sse-route.js"
 import paymentRoute from "./src/routes/payment-route.js"
 import webhookRoute from "./src/routes/webhook-route.js"
 import ownerRoute from "./src/routes/owner-route.js"
-import restaurantRoute from "./src/routes/restaurant-route.js"
-import tableSessionRoute from "./src/routes/table-session-route.js"
+import restaurantRoute from "./src/routes/business-route.js"
+import tableSessionRoute from "./src/routes/guest-session-route.js"
 import barRoute from "./src/routes/bar-route.js"
 import adminRoute from "./src/routes/admin-route.js"
 import authRoute from "./src/routes/auth-route.js"
@@ -86,7 +86,7 @@ app.use(sessionMiddleware)
 app.use(validateOrigin(origins))
 
 import menuRoute from "./src/routes/menu-route.js"
-import restaurantScopedRoute from "./src/routes/restaurant-scoped-route.js"
+import restaurantScopedRoute from "./src/routes/business-scoped-route.js"
 
 // Routes
 app.use("/orders", orderRoute)
@@ -95,7 +95,7 @@ app.use("/payments", paymentRoute)
 app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)
 app.use("/bar", barRoute)
-app.use("/waiter", waiterRoute)
+app.use("/waitstaff", waiterRoute)
 app.use("/owner/guests", requireAuth, requireRole("owner", "co_owner", "manager"), guestProfileRoute)
 app.use("/owner", ownerRoute)
 app.use("/menu-items", menuRoute)

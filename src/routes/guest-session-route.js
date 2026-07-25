@@ -1,7 +1,7 @@
 import express from "express"
 import rateLimit from "express-rate-limit"
 import crypto from "crypto"
-import TableSession from "../models/TableSession.js"
+import GuestSession from "../models/GuestSession.js"
 import Business from "../models/Business.js"
 import ServicePoint from "../models/ServicePoint.js"
 
@@ -39,12 +39,12 @@ function randomToken() {
  *             properties:
  *               businessId:
  *                 type: string
- *               restaurantId:
+ *               businessId:
  *                 type: string
  *                 description: Legacy restaurant ID (backward compatibility)
  *               servicePointId:
  *                 type: string
- *               tableId:
+ *               servicePointId:
  *                 type: string
  *                 description: Legacy table ID (backward compatibility)
  *     responses:
@@ -69,18 +69,15 @@ function randomToken() {
  */
 router.post("/start", tableSessionLimiter, async (req, res) => {
   try {
-    // Accept servicePointId as the preferred field; fall back to tableId or restaurantId patterns
-    const businessId = req.body.businessId || req.body.restaurantId
-    const tableId = req.body.servicePointId || req.body.tableId
+    const businessId = req.body.businessId
+    const servicePointId = req.body.servicePointId
 
-    if (!businessId || !tableId) {
+    if (!businessId || !servicePointId) {
       return res.status(400).json({ error: "Missing businessId or servicePointId" })
     }
 
     // 1. Validate business exists
-    const business = await Business.findOne({
-      $or: [{ businessId }, { restaurantId: businessId }],
-    })
+    const business = await Business.findOne({ businessId })
     if (!business) {
       return res.status(404).json({ error: "Business not found" })
     }
@@ -89,14 +86,14 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
     let code = null
     
     // 2. If this is a managed service point (sp_* prefix), validate it
-    if (tableId.startsWith("sp_")) {
-      const sp = await ServicePoint.findOne({ servicePointId: tableId, businessId })
+    if (servicePointId.startsWith("sp_")) {
+      const sp = await ServicePoint.findOne({ servicePointId: servicePointId, businessId })
       if (!sp) {
         return res.status(404).json({ error: "Service point not found" })
       }
       if (!sp.isActive) {
         return res.status(400).json({
-          error: `This ${sp.servicePointType === "room" ? "room" : "table"} is currently not in service.`,
+          error: "This service point is currently not in service.",
         })
       }
       label = sp.label
@@ -112,9 +109,9 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       fallbackMinutes
     const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000)
 
-    await TableSession.create({
+    await GuestSession.create({
       businessId,
-      tableId,   // stores servicePointId — backward compat field name
+      servicePointId,   // stores servicePointId — backward compat field name
       token,
       expiresAt,
       boundSessionId: null,
@@ -124,8 +121,7 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       token,
       expiresAt,
       businessId,
-      tableId,          // kept for legacy consumers
-      servicePointId: tableId,  // also expose as servicePointId
+      servicePointId,
       label,
       code,
     })

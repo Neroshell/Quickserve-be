@@ -1,12 +1,12 @@
-import WaiterCall from "../models/WaiterCall.js"
+import ServiceRequest from "../models/ServiceRequest.js"
 import ServicePoint from "../models/ServicePoint.js"
-import TableSession from "../models/TableSession.js"
+import GuestSession from "../models/GuestSession.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { DateTime } from "luxon"
 
 async function expireStaleCalls(businessId) {
   const now = new Date()
-  await WaiterCall.updateMany(
+  await ServiceRequest.updateMany(
     {
       businessId,
       status: "pending",
@@ -34,7 +34,7 @@ async function resolveCallBusinessId(req, token) {
   if (!token) {
     return { error: "Missing table session token", status: 401 }
   }
-  const ts = await TableSession.findOne({ token }).lean()
+  const ts = await GuestSession.findOne({ token }).lean()
   if (!ts || !ts.expiresAt || ts.expiresAt < new Date()) {
     return { error: "Invalid or expired table session", status: 403 }
   }
@@ -63,10 +63,10 @@ function getBusinessDayRange() {
 
 /**
  * Expects a stable per-device waiter id in header:
- *   X-WAITER-ID: <uuid>
+ *   X-STAFF-ID: <uuid>
  */
 function getWaiterId(req) {
-  return String(req.header("X-WAITER-ID") || "").trim()
+  return String(req.header("X-STAFF-ID") || "").trim()
 }
 
 function getRelativeTime(date) {
@@ -81,8 +81,8 @@ function getRelativeTime(date) {
 
 export async function createWaiterCall(req, res) {
   try {
-    const waiterId = getWaiterId(req) // can be empty for customer calls (that's fine)
-    const { tableNumber, tableLabel = "", tableCode = "", reason = "", note = "", userDeviceId = "", token } = req.body || {}
+    const staffId = getWaiterId(req) // can be empty for customer calls (that's fine)
+    const { servicePointLabel = "", servicePointQrCode = "", reason = "", note = "", userDeviceId = "", token } = req.body || {}
 
     // businessId comes from the staff session or a valid table token — never the body.
     const resolved = await resolveCallBusinessId(req, token)
@@ -91,8 +91,8 @@ export async function createWaiterCall(req, res) {
     }
     const businessId = resolved.businessId
 
-    if (!tableNumber || !String(tableNumber).trim()) {
-      return res.status(400).json({ error: "tableNumber is required" })
+    if (!servicePointLabel || !String(servicePointLabel).trim()) {
+      return res.status(400).json({ error: "servicePointLabel is required" })
     }
 
     // Lazy expiration
@@ -100,9 +100,9 @@ export async function createWaiterCall(req, res) {
     const now = new Date()
 
     // Table-level anti-spam: only block if acknowledged OR (pending and not yet expired)
-    const existingActiveCall = await WaiterCall.findOne({
+    const existingActiveCall = await ServiceRequest.findOne({
       businessId,
-      tableNumber: String(tableNumber).trim(),
+      servicePointLabel: String(servicePointLabel).trim(),
       $or: [
         { status: "acknowledged" },
         { status: "pending", pendingExpiresAt: { $gt: now } }
@@ -118,13 +118,13 @@ export async function createWaiterCall(req, res) {
     }
 
     // Resolve Service Point dynamically on creation to store labels statically
-    let finalTableLabel = String(tableLabel).trim()
-    let finalTableCode = String(tableCode).trim()
+    let finalTableLabel = String(servicePointLabel).trim()
+    let finalTableCode = String(servicePointQrCode).trim()
     
     if (!finalTableLabel || !finalTableCode) {
-      const spCondition = tableNumber.startsWith('sp_') 
-        ? { servicePointId: tableNumber } 
-        : { _id: tableNumber };
+      const spCondition = servicePointLabel.startsWith('sp_') 
+        ? { servicePointId: servicePointLabel } 
+        : { _id: servicePointLabel };
 
       const sp = await ServicePoint.findOne({ 
         businessId, 
@@ -137,16 +137,15 @@ export async function createWaiterCall(req, res) {
       }
     }
 
-    const call = await WaiterCall.create({
+    const call = await ServiceRequest.create({
       businessId,
-      tableNumber: String(tableNumber).trim(),
-      tableLabel: finalTableLabel,
-      tableCode: finalTableCode,
+      servicePointLabel: finalTableLabel,
+      servicePointQrCode: finalTableCode,
       userDeviceId: userDeviceId ? String(userDeviceId).trim() : null,
       reason: String(reason || "").trim(),
       note: String(note || "").trim(),
       status: "pending",
-      createdBy: waiterId || null, // usually null because customer triggers it
+      createdBy: staffId || null, // usually null because customer triggers it
       pendingExpiresAt: new Date(now.getTime() + 3 * 60 * 1000), // 10 minutes from now
     })
 
@@ -190,7 +189,7 @@ export async function listWaiterCalls(req, res) {
     const { startJS, endJS } = getBusinessDayRange()
     filter.createdAt = { $gte: startJS, $lt: endJS }
 
-    const calls = await WaiterCall.find(filter, {
+    const calls = await ServiceRequest.find(filter, {
       __v: 0,
     })
       .sort({ createdAt: -1 })
@@ -224,7 +223,7 @@ export async function claimWaiterCall(req, res) {
 
     const now = new Date()
 
-    const claimed = await WaiterCall.findOneAndUpdate(
+    const claimed = await ServiceRequest.findOneAndUpdate(
       {
         _id: id,
         businessId,
@@ -246,7 +245,7 @@ export async function claimWaiterCall(req, res) {
 
     if (!claimed) {
       // either not found, or already claimed
-      const current = await WaiterCall.findOne({ _id: id, businessId }).lean()
+      const current = await ServiceRequest.findOne({ _id: id, businessId }).lean()
       if (!current) return res.status(404).json({ error: "Call not found" })
 
       return res.status(409).json({
@@ -299,7 +298,7 @@ export async function resolveWaiterCall(req, res) {
       query.claimedBy = staffId
     }
 
-    const updated = await WaiterCall.findOneAndUpdate(
+    const updated = await ServiceRequest.findOneAndUpdate(
       query,
       {
         $set: {
@@ -317,7 +316,7 @@ export async function resolveWaiterCall(req, res) {
     ).lean()
 
     if (!updated) {
-      const current = await WaiterCall.findOne({ _id: id, businessId }).lean()
+      const current = await ServiceRequest.findOne({ _id: id, businessId }).lean()
       if (!current) return res.status(404).json({ error: "Call not found" })
 
       // someone else owns it

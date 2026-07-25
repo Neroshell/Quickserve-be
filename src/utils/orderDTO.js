@@ -26,8 +26,8 @@ export function toOrderDTO(orderDoc) {
     return {
         orderId: o.orderId,
         sessionId: o.sessionId,
-        tableNumber: o.tableNumber, // kept for internal reference only
-        tableLabel: o.tableLabel || o.tableNumber, // display this — falls back to systemId for legacy orders
+        servicePointLabel: o.servicePointLabel, // kept for internal reference only
+        displayLabel: o.displayLabel || o.tableLabel || o.servicePointLabel, // display this — falls back to systemId for legacy orders
         orderType: o.orderType || "dine-in",
         status: o.status,
         createdAt: o.createdAt,

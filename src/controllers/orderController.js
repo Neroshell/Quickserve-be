@@ -1,5 +1,5 @@
 import Order from "../models/order.js"
-import TableSession from "../models/TableSession.js"
+import GuestSession from "../models/GuestSession.js"
 import PendingCheckout from "../models/PendingCheckout.js"
 import { generateOrderId } from "../utils/orderId.js"
 import MenuItem from "../models/menuItem.js"
@@ -21,21 +21,18 @@ function canUseOfflinePayments(business) {
   return business.billingStatus === "active" && !!business.defaultPaymentMethodId
 }
 
-/** Resolve businessId from request — accepts businessId or legacy restaurantId */
+/** Resolve businessId from request — accepts businessId or legacy businessId */
 function resolveBusinessId(req) {
   return (
     req.query.businessId ||
-    req.query.restaurantId ||
     req.body?.businessId ||
-    req.body?.restaurantId ||
-    req.params?.businessId ||
-    req.params?.restaurantId
+    req.params?.businessId
   )
 }
 
 export async function listOrders(req, res) {
   try {
-    const { sessionId, tableNumber } = req.query
+    const { sessionId, servicePointLabel } = req.query
     const businessId = resolveBusinessId(req)
 
     if (!businessId) {
@@ -49,9 +46,9 @@ export async function listOrders(req, res) {
     const filter = { businessId }
     if (isStaff) {
       if (sessionId) filter.sessionId = sessionId
-      if (tableNumber) filter.tableNumber = tableNumber
-      if (!sessionId && !tableNumber) {
-        return res.status(400).json({ message: "Provide sessionId or tableNumber" })
+      if (servicePointLabel) filter.servicePointLabel = servicePointLabel
+      if (!sessionId && !servicePointLabel) {
+        return res.status(400).json({ message: "Provide sessionId or servicePointLabel" })
       }
     } else {
       if (!sessionId) {
@@ -64,8 +61,8 @@ export async function listOrders(req, res) {
 
     // Hydrate table labels for service points
     for (const order of orders) {
-      if (order.tableNumber && order.tableNumber.startsWith("sp_")) {
-        const sp = await ServicePoint.findOne({ servicePointId: order.tableNumber, businessId }).lean()
+      if (order.servicePointLabel && order.servicePointLabel.startsWith("sp_")) {
+        const sp = await ServicePoint.findOne({ servicePointId: order.servicePointLabel, businessId }).lean()
         if (sp) {
           order.tableLabel = sp.label || sp.code
         }
@@ -83,7 +80,7 @@ export async function listOrders(req, res) {
 export async function createOrder(req, res) {
   try {
     const {
-      tableNumber, items, sessionId, tableSessionToken, orderType, currency,
+      servicePointLabel, items, sessionId, tableSessionToken, orderType, currency,
       receiptEmail, tipAmount, tipType, tipPercentage
     } = req.body
 
@@ -99,8 +96,8 @@ export async function createOrder(req, res) {
     if (!isWaiter && !tableSessionToken) {
       return res.status(400).json({ message: "tableSessionToken is required" })
     }
-    if (!tableNumber || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "tableNumber and items are required" })
+    if (!servicePointLabel || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "servicePointLabel and items are required" })
     }
 
     // ✅ Minimal validation for orderType
@@ -126,7 +123,7 @@ export async function createOrder(req, res) {
       }
 
       // Table must match
-      if (ts.tableId !== tableNumber) {
+      if (ts.tableId !== servicePointLabel) {
         return res.status(403).json({ message: "Table session mismatch. Please rescan the correct table QR." })
       }
 
@@ -156,9 +153,7 @@ export async function createOrder(req, res) {
     }
 
     // ✅ CRITICAL GATE: Business Open/Closed logic
-    const business = await Business.findOne({
-      $or: [{ businessId }, { restaurantId: businessId }],
-    }).lean()
+    const business = await Business.findOne({ businessId }).lean()
 
     const openStatus = isBusinessOpen(business)
     if (!openStatus.isOpen) {
@@ -176,9 +171,9 @@ export async function createOrder(req, res) {
     }
 
     // Resolve human-friendly label for display (stored once, no need to look up later)
-    const sp = await ServicePoint.findOne({ servicePointId: tableNumber, businessId }).lean()
-    const tableLabel = sp?.label || sp?.code || tableNumber
-    const tableCode = sp?.code || sp?.label || tableNumber
+    const sp = await ServicePoint.findOne({ servicePointId: servicePointLabel, businessId }).lean()
+    const displayLabel = sp?.label || sp?.code || servicePointLabel
+    const tableCode = sp?.code || sp?.label || servicePointLabel
 
     const now = new Date()
     const orderId = generateOrderId(tableCode, now)
@@ -265,8 +260,8 @@ export async function createOrder(req, res) {
     const saved = await Order.create({
       orderId,
       businessId,
-      tableNumber,
-      tableLabel,
+      servicePointLabel,
+      displayLabel,
       orderType: finalOrderType,
       sessionId,
       items: enrichedItems,
@@ -359,11 +354,11 @@ export async function getOrderById(req, res) {
       return res.status(403).json({ message: "Forbidden" })
     }
 
-    // Hydrate display name (fallback for legacy orders missing tableLabel)
-    if (order.tableNumber && order.tableNumber.startsWith("sp_")) {
-      const sp = await ServicePoint.findOne({ servicePointId: order.tableNumber, businessId }).lean()
+    // Hydrate display name (fallback for legacy orders missing displayLabel)
+    if (order.servicePointLabel && order.servicePointLabel.startsWith("sp_")) {
+      const sp = await ServicePoint.findOne({ servicePointId: order.servicePointLabel, businessId }).lean()
       if (sp) {
-        order.tableLabel = sp.label || sp.code
+        order.displayLabel = sp.label || sp.code
       }
     }
 
@@ -506,7 +501,7 @@ export async function markPaid(req, res) {
       return res.status(400).json({ message: "Only pending offline orders can be marked paid" })
     }
 
-    const business = await Business.findOne({ $or: [{ businessId }, { restaurantId: businessId }] }).lean()
+    const business = await Business.findOne({ $or: [{ businessId }, { businessId: businessId }] }).lean()
     if (!business || !canUseOfflinePayments(business)) {
       return res.status(403).json({
         code: "OFFLINE_BILLING_NOT_SETUP",

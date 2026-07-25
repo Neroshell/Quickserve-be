@@ -67,10 +67,10 @@ async function callOfflineOrderGuard(businessId) {
     // We need a session cookie to test this properly.
     // This shows the 403 you'd get — check your server logs for the block.
     console.log("\n[Guard Test] Attempting offline order creation while restricted...");
-    const response = await fetch(`${API_BASE}/waiter/orders`, {
+    const response = await fetch(`${API_BASE}/waitstaff/orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ businessId, tableId: "test", items: [] }),
+        body: JSON.stringify({ businessId, servicePointId: "test", items: [] }),
     });
     console.log(`[Guard Test] Response: ${response.status}`);
     const text = await response.text();

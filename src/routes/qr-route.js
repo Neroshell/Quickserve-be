@@ -1,7 +1,7 @@
 import express from "express"
 import rateLimit from "express-rate-limit"
 import crypto from "crypto"
-import TableSession from "../models/TableSession.js"
+import GuestSession from "../models/GuestSession.js"
 import Business from "../models/Business.js"
 import ServicePoint from "../models/ServicePoint.js"
 
@@ -23,7 +23,7 @@ function randomToken() {
 /**
  * GET /q/:businessId/:servicePointId
  *
- * QR scan entry point. Creates a TableSession and redirects to the frontend.
+ * QR scan entry point. Creates a GuestSession and redirects to the frontend.
  *
  * servicePointId may be:
  *   - A stable `sp_XXXXXXXX` ID from the ServicePoint collection (new flow)
@@ -62,9 +62,9 @@ router.get("/:businessId/:servicePointId", tableSessionLimiter, async (req, res)
       return res.status(400).send("Missing businessId or servicePointId")
     }
 
-    // 1. Validate business exists (check both businessId and legacy restaurantId)
+    // 1. Validate business exists (check both businessId and legacy businessId)
     const business = await Business.findOne({
-      $or: [{ businessId }, { restaurantId: businessId }],
+      $or: [{ businessId }, { businessId: businessId }],
     })
     if (!business) {
       return res.status(404).send("Business not found")
@@ -79,17 +79,17 @@ router.get("/:businessId/:servicePointId", tableSessionLimiter, async (req, res)
       if (!sp.isActive) {
         return res
           .status(400)
-          .send(`This ${sp.servicePointType === "room" ? "room" : "table"} is currently not in service.`)
+          .send("This service point is currently not in service.")
       }
     }
 
-    // 3. Create session (tableId = servicePointId for backward compat)
+    // 3. Create session (servicePointId = servicePointId for backward compat)
     const token = randomToken()
     const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000) // 2 hours
 
-    await TableSession.create({
+    await GuestSession.create({
       businessId,
-      tableId: servicePointId,   // tableId field stores servicePointId — backward compat
+      servicePointId: servicePointId,   // servicePointId field stores servicePointId — backward compat
       token,
       expiresAt,
       boundSessionId: null,

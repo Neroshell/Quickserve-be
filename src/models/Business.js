@@ -1,4 +1,9 @@
 import mongoose from "mongoose"
+import {
+    BUSINESS_MODULES,
+    getDefaultBusinessModules,
+    validateBusinessModulesForType,
+} from "../services/businessCapabilityService.js"
 
 const OperatingDaySchema = new mongoose.Schema({
     enabled: { type: Boolean, default: true },
@@ -38,10 +43,21 @@ const TablePreferencesSchema = new mongoose.Schema({
     maxActiveSessionsPerTable: { type: Number, default: 5, min: [1, 'Max active sessions must be positive'] }
 }, { _id: false })
 
+const HotelSettingsSchema = new mongoose.Schema({
+    checkInTime: {
+        type: String,
+        default: "15:00",
+        match: [/^([01]\d|2[0-3]):[0-5]\d$/, "Check-in time must be HH:mm"]
+    },
+    checkOutTime: {
+        type: String,
+        default: "11:00",
+        match: [/^([01]\d|2[0-3]):[0-5]\d$/, "Check-out time must be HH:mm"]
+    }
+}, { _id: false })
+
 const BusinessSchema = new mongoose.Schema({
     businessId: { type: String, required: true, unique: true, index: true },
-    // Legacy field kept for backward compat during migration
-    restaurantId: { type: String, unique: true, sparse: true, index: true },
     name: { type: String, required: true },
     displayName: { type: String, required: true },
     slug: {
@@ -79,8 +95,18 @@ const BusinessSchema = new mongoose.Schema({
     taxRate: { type: Number, default: 0, min: 0 },
     businessType: {
         type: String,
-        enum: ["restaurant", "bar_lounge", "hotel_apartment"],
+        enum: ["restaurant", "bar_lounge", "hotel"],
         default: "restaurant"
+    },
+    modules: {
+        type: [{ type: String, enum: BUSINESS_MODULES }],
+        default: function defaultBusinessModules() {
+            return getDefaultBusinessModules(this.businessType)
+        },
+        validate: {
+            validator: (value) => Array.isArray(value) && value.length > 0,
+            message: "At least one business module is required"
+        }
     },
     menuCategories: {
         type: [String],
@@ -197,6 +223,7 @@ const BusinessSchema = new mongoose.Schema({
     orderingPreferences: { type: OrderingPreferencesSchema, default: () => ({}) },
     paymentPreferences: { type: PaymentPreferencesSchema, default: () => ({}) },
     tablePreferences: { type: TablePreferencesSchema, default: () => ({}) },
+    hotelSettings: { type: HotelSettingsSchema, default: () => ({}) },
     
     // Post-signup Onboarding Tracking
     onboardingCompleted: { type: Boolean, default: false },
@@ -221,6 +248,10 @@ const BusinessSchema = new mongoose.Schema({
         setupGuideDismissedAt: { type: Date, default: null }
     }
 }, { timestamps: true })
+
+BusinessSchema.pre("validate", function normalizeModulesBeforeValidation() {
+    this.modules = validateBusinessModulesForType(this.businessType, this.modules)
+})
 
 // Compound index to ensure slug is unique per country
 BusinessSchema.index({ countryCode: 1, slug: 1 }, { unique: true })

@@ -1,5 +1,6 @@
 import Stripe from "stripe";
 import Business from "../models/Business.js";
+import Reservation from "../models/Reservation.js";
 import { sendEmail } from "../utils/emailService.js";
 
 function toUtcDateString(date) {
@@ -386,6 +387,40 @@ export const processBillingLifecycle = async (req, res) => {
         });
     } catch (error) {
         console.error("[Cron] Unhandled error in billing lifecycle:", error);
+        return res.status(500).json({ error: "Internal Server Error" });
+    }
+};
+
+export const processReservationExpiry = async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        const secret = process.env.CRON_SECRET;
+
+        if (!secret) {
+            return res.status(500).json({ error: "Server misconfiguration" });
+        }
+
+        if (authHeader !== `Bearer ${secret}`) {
+            return res.status(401).json({ error: "Unauthorized" });
+        }
+
+        const now = new Date();
+        const result = await Reservation.updateMany(
+            {
+                status: "accepted_awaiting_payment",
+                paymentExpiresAt: { $lt: now }
+            },
+            {
+                $set: { status: "expired" }
+            }
+        );
+
+        return res.json({
+            message: "Reservation expiry processed",
+            expiredCount: result.modifiedCount
+        });
+    } catch (error) {
+        console.error("[Cron] Unhandled error in reservation expiry:", error);
         return res.status(500).json({ error: "Internal Server Error" });
     }
 };

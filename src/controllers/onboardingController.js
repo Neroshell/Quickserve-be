@@ -7,6 +7,7 @@ import { hashToken } from '../utils/tokenHash.js'
 import { sendOnboardingVerificationCode } from '../utils/emailService.js'
 import { isCountryResolutionError, resolveCountryMetadata, validateCountryMetadataPayload } from '../utils/countryHelper.js'
 import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from '../utils/emailAvailability.js'
+import { getDefaultBusinessModules } from '../services/businessCapabilityService.js'
 
 const VERIFICATION_CODE_TTL_MS = 30 * 60 * 1000
 
@@ -362,13 +363,15 @@ export async function completeOnboarding(req, res) {
 
         const businessId = generateBusinessId()
 
+        const resolvedBusinessType = data.businessType || 'restaurant'
         const business = await Business.create({
             businessId,
-            restaurantId: businessId,
+            businessId: businessId,
             name: businessName,
             displayName: data.displayName || businessName,
             slug: businessSlug,
-            businessType: data.businessType || 'restaurant',
+            businessType: resolvedBusinessType,
+            modules: getDefaultBusinessModules(resolvedBusinessType),
             address: businessAddress,
             phoneNumber: businessPhoneNumber,
             contactEmail: businessContactEmail,

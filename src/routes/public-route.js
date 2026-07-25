@@ -1,6 +1,7 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { getBusinessBySlug, createReservation, getPublicBusinessConfig } from "../controllers/publicController.js";
+import { getBusinessBySlug, createReservation, getPublicBusinessConfig, getReservationByToken, getReservationById } from "../controllers/publicController.js";
+import { getAvailableStayServicePoints } from "../controllers/reservationController.js";
 import { getPlans } from "../controllers/planController.js";
 
 const router = express.Router();
@@ -105,6 +106,36 @@ router.get("/business-config", getPublicBusinessConfig);
  *         description: Reservation requested successfully
  */
 router.post("/reservations", reservationLimiter, createReservation);
+
+/**
+ * @openapi
+ * /public/reservations/available-rooms:
+ *   get:
+ *     summary: Fetch ServicePoints available for a stay
+ *     tags:
+ *       - Public
+ */
+router.get("/reservations/available-rooms", getAvailableStayServicePoints);
+
+/**
+ * @openapi
+ * /public/reservations/by-token/{secureToken}:
+ *   get:
+ *     summary: Fetch a reservation by secure token for payment
+ *     tags:
+ *       - Public
+ */
+router.get("/reservations/by-token/:secureToken", getReservationByToken);
+
+/**
+ * @openapi
+ * /public/reservations/by-id/{reservationId}:
+ *   get:
+ *     summary: Fetch a reservation by ID for the post-payment confirmation page
+ *     tags:
+ *       - Public
+ */
+router.get("/reservations/by-id/:reservationId", getReservationById);
 
 /**
  * @openapi

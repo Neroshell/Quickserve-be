@@ -1,8 +1,8 @@
 import ServicePoint, {
     generateServicePointId,
-    deriveServicePointType,
 } from "../models/ServicePoint.js"
 import Business from "../models/Business.js"
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,7 +73,7 @@ export async function getServicePoint(req, res) {
  * POST /owner/service-points
  * Create a new service point.
  * businessId is derived from session only.
- * servicePointType is auto-derived from the business's businessType.
+ * servicePointType is validated against resolved business capabilities.
  *
  * Body: { label, code?, capacity? }
  */
@@ -84,7 +84,7 @@ export async function createServicePoint(req, res) {
             return res.status(401).json({ error: "Unauthorized" })
         }
 
-        const { label, code, capacity } = req.body
+        const { label, code, capacity, pricePerNight, description, amenities, images, beds, servicePointType: requestedServicePointType } = req.body
 
         if (!label || !label.trim()) {
             return res.status(400).json({ error: "label is required" })
@@ -94,13 +94,17 @@ export async function createServicePoint(req, res) {
             return res.status(400).json({ error: "code is required" })
         }
 
-        // Fetch business to derive servicePointType
+        // Fetch the business to validate the requested ServicePoint capability.
         const business = await Business.findOne({ businessId }).lean()
         if (!business) {
             return res.status(404).json({ error: "Business not found" })
         }
 
-        const servicePointType = deriveServicePointType(business.businessType)
+        const servicePointCapabilities = resolveBusinessCapabilities(business).servicePoints
+        const servicePointType = requestedServicePointType || servicePointCapabilities.defaultType
+        if (!servicePointCapabilities.allowedTypes.includes(servicePointType)) {
+            return res.status(400).json({ error: "servicePointType is not enabled for this business" })
+        }
 
         // Generate a unique stable ID (retry on collision)
         let servicePointId
@@ -124,6 +128,11 @@ export async function createServicePoint(req, res) {
             servicePointType,
             capacity: capacity ? Number(capacity) : null,
             isActive: true,
+            pricePerNight: pricePerNight !== undefined ? Number(pricePerNight) : undefined,
+            fullDescription: description?.trim() || undefined,
+            amenities: Array.isArray(amenities) ? amenities : undefined,
+            images: Array.isArray(images) ? images : undefined,
+            beds: beds !== undefined ? Number(beds) : undefined,
         })
 
         return res.status(201).json(sp)
@@ -148,7 +157,7 @@ export async function updateServicePoint(req, res) {
         }
 
         const { servicePointId } = req.params
-        const { label, code, capacity } = req.body
+        const { label, code, capacity, pricePerNight, description, amenities, images, beds } = req.body
 
         const updates = {}
         if (label !== undefined) {
@@ -161,6 +170,21 @@ export async function updateServicePoint(req, res) {
         }
         if (capacity !== undefined) {
             updates.capacity = capacity === null || capacity === "" ? null : Number(capacity)
+        }
+        if (pricePerNight !== undefined) {
+            updates.pricePerNight = pricePerNight === null || pricePerNight === "" ? null : Number(pricePerNight)
+        }
+        if (description !== undefined) {
+            updates.fullDescription = description.trim()
+        }
+        if (amenities !== undefined && Array.isArray(amenities)) {
+            updates.amenities = amenities
+        }
+        if (images !== undefined && Array.isArray(images)) {
+            updates.images = images
+        }
+        if (beds !== undefined) {
+            updates.beds = beds === null || beds === "" ? null : Number(beds)
         }
 
         if (Object.keys(updates).length === 0) {
