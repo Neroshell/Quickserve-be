@@ -13,6 +13,7 @@ import ReservationCancelledEmail from "../../emails/ReservationCancelledEmail.js
 import EmailChangeEmail from "../../emails/EmailChangeEmail.js";
 import HotelPaymentConfirmationEmail from "../../emails/HotelPaymentConfirmationEmail.js";
 import Business from "../models/Business.js";
+import { getCustomerReservationPricing } from "../services/reservationPricingService.js";
 
 dotenv.config();
 
@@ -331,6 +332,8 @@ export async function sendHotelPaymentConfirmationEmail({ reservation, business,
     
     const formatDate = (date) => date ? new Date(date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
     
+    const pricing = getCustomerReservationPricing(reservation);
+
     const html = await render(React.createElement(HotelPaymentConfirmationEmail, {
       businessName,
       businessLogoUrl: business?.logoUrl,
@@ -342,12 +345,12 @@ export async function sendHotelPaymentConfirmationEmail({ reservation, business,
       checkOutDate: formatDate(reservation.checkOutDate || reservation.date),
       guestCount: reservation.guestCount || 1,
       accommodationLabel: "Accommodation",
-      formattedSubtotal: formatCurrency(reservation.subtotal, reservation.currency),
+      formattedSubtotal: formatCurrency(pricing.subtotal, reservation.currency),
       taxLabel: "Tax",
-      formattedTaxAmount: formatCurrency(reservation.taxAmount, reservation.currency),
-      platformFeeLabel: "Platform Fee",
-      formattedPlatformFeeAmount: formatCurrency(reservation.platformFeeAmount || 0, reservation.currency),
-      formattedAmount: formatCurrency(reservation.totalAmount || reservation.total, reservation.currency),
+      formattedTaxAmount: formatCurrency(pricing.taxAmount, reservation.currency),
+      platformFeeLabel: pricing.platformFeeLabel || "Platform Fee",
+      formattedPlatformFeeAmount: formatCurrency(pricing.customerPlatformFeeAmount, reservation.currency),
+      formattedAmount: formatCurrency(pricing.total, reservation.currency),
       checkInCode: plainCheckInCode,
       validFrom: validFrom ? new Date(validFrom).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "numeric", hour12: true }) : "",
       expiresAt: expiresAt ? new Date(expiresAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "numeric", hour12: true }) : "",
