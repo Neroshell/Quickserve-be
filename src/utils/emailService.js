@@ -248,11 +248,25 @@ export async function sendReservationConfirmedEmail({ to, businessName, business
  */
 export async function sendReservationPaymentEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
   try {
-    const html = await render(React.createElement(ReservationPaymentEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
+    if (!reservation.secureToken) {
+      console.error("[sendReservationPaymentEmail] reservation.secureToken is missing — cannot build payment URL", {
+        reservationId: reservation._id,
+      });
+      return false;
+    }
+    const frontendBaseUrl = process.env.FRONTEND_BASE_URL || "https://quickservehq.com";
+    // Points to the QuickServe payment page, NOT the post-payment confirmation page.
+    const paymentUrl = `${frontendBaseUrl}/reservation/pay/${reservation.secureToken}`;
+    const html = await render(React.createElement(ReservationPaymentEmail, { businessName, businessLogoUrl, primaryColor, reservation, paymentUrl }));
     const subject = `Action Required: Payment for your Reservation - ${businessName}`;
     return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
   } catch (error) {
-    console.error("[EmailService]  Error in sendReservationPaymentEmail:", error);
+    console.error("[sendReservationPaymentEmail] Error", {
+      name: error.name,
+      message: error.message,
+      reservationId: reservation?._id,
+      stack: error.stack,
+    });
     return false;
   }
 }

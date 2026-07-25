@@ -2,6 +2,7 @@ import Stripe from "stripe";
 import PendingCheckout from "../models/PendingCheckout.js";
 import Business from "../models/Business.js";
 import Order from "../models/order.js";
+import Reservation from "../models/Reservation.js";
 import ServicePoint from "../models/ServicePoint.js";
 import Plan from "../models/Plan.js";
 import MenuItem from "../models/menuItem.js";
@@ -12,6 +13,7 @@ import { sendReceiptEmail, sendEmail } from "../utils/emailService.js";
 import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js";
 import { deductTrackedStock } from "../services/inventoryService.js";
 import { buildOrderEstimate } from "../utils/orderEstimate.js";
+import { generateHotelCheckInCredentials } from "../services/hotelCheckInService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -286,10 +288,87 @@ export async function handleStripeWebhook(req, res) {
         }
 
         const session = event.data.object;
-        const { pendingCheckoutId } = session.metadata || {};
+        const { pendingCheckoutId, type: paymentType, reservationId } = session.metadata || {};
 
+        // ── Reservation payment branch ──────────────────────────────────────────
+        if (paymentType === "reservation_payment") {
+            if (!reservationId) {
+                console.error("[webhook] reservation_payment event missing reservationId in metadata", { sessionId: session.id });
+                return res.status(200).send();
+            }
+
+            const reservation = await Reservation.findById(reservationId);
+            if (!reservation) {
+                console.error(`[webhook] Reservation not found: ${reservationId}`);
+                return res.status(200).send();
+            }
+
+            // Idempotency guard
+            if (reservation.paymentStatus === "paid") {
+                console.log(`[webhook] Reservation ${reservationId} already marked paid — skipping duplicate event`);
+                return res.status(200).send();
+            }
+
+            // Validate payment_status from Stripe (do not trust metadata amounts)
+            if (session.payment_status !== "paid") {
+                console.error(`[webhook] Reservation ${reservationId} checkout.session.completed but payment_status=${session.payment_status}`);
+                return res.status(200).send();
+            }
+
+            // Validate amount: Stripe amount_total (cents) must match stored grossAmount
+            const storedAmountCents = Number(reservation.grossAmount);
+            const stripeAmountCents = Number(session.amount_total);
+            if (!Number.isSafeInteger(storedAmountCents) || storedAmountCents <= 0) {
+                console.error(`[webhook] Reservation ${reservationId} has invalid stored grossAmount: ${storedAmountCents}`);
+                return res.status(200).send();
+            }
+            if (stripeAmountCents !== storedAmountCents) {
+                console.error(`[webhook] Reservation ${reservationId} amount mismatch — stripe=${stripeAmountCents} stored=${storedAmountCents}`);
+                return res.status(200).send();
+            }
+
+            // Validate currency
+            const storedCurrency = (reservation.currency || "").toLowerCase();
+            const stripeCurrency = (session.currency || "").toLowerCase();
+            if (stripeCurrency !== storedCurrency) {
+                console.error(`[webhook] Reservation ${reservationId} currency mismatch — stripe=${stripeCurrency} stored=${storedCurrency}`);
+                return res.status(200).send();
+            }
+
+            // Mark reservation paid
+            reservation.paymentStatus = "paid";
+            reservation.status = "confirmed";
+            reservation.stripeCheckoutSessionId = session.id;
+            reservation.stripePaymentIntentId = session.payment_intent || null;
+            reservation.paidAt = new Date();
+            reservation.amountPaidCents = stripeAmountCents;
+            await reservation.save();
+            console.log(`[webhook] Reservation ${reservationId} marked paid — session=${session.id}`);
+
+            // Fetch business for email / check-in credential generation
+            const resBusiness = await Business.findOne({ businessId: reservation.businessId }).lean();
+            if (resBusiness) {
+                try {
+                    // generateHotelCheckInCredentials sends the post-payment confirmation
+                    // email (with check-in code) via sendHotelPaymentConfirmationEmail.
+                    await generateHotelCheckInCredentials(reservation, resBusiness);
+                } catch (emailErr) {
+                    // Credentials are stored — email failure is non-fatal here.
+                    console.error(`[webhook] Check-in credential/email error for reservation ${reservationId}:`, {
+                        name: emailErr.name,
+                        message: emailErr.message,
+                    });
+                }
+            } else {
+                console.error(`[webhook] Business not found for reservation ${reservationId} — skipping post-payment email`);
+            }
+
+            return res.status(200).send();
+        }
+
+        // ── Order payment branch (pendingCheckoutId) ────────────────────────────
         if (!pendingCheckoutId) {
-            console.error("[webhook] checkout.session.completed missing pendingCheckoutId in metadata");
+            console.error("[webhook] checkout.session.completed missing pendingCheckoutId in metadata", { sessionId: session.id });
             return res.status(200).send();
         }
 

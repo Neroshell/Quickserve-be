@@ -293,15 +293,9 @@ export async function createReservation(req, res) {
       return res.status(201).json({
         message: "Hotel booking request received.",
         reservationId: hotelReservation._id,
-        pricing: {
-          pricePerNight,
-          numberOfNights,
-          subtotal: hotelReservation.subtotal,
-          taxAmount: hotelReservation.taxAmount,
-          platformFeeTotal: hotelReservation.platformFeeTotal,
-          totalPrice: hotelReservation.totalPrice,
-          currency: hotelReservation.currency,
-        },
+        // Canonical CustomerPricingBreakdown DTO consumed by HotelPricingBreakdown on the
+        // Booking Request Sent screen. Field names must match the TypeScript interface.
+        pricing: getCustomerReservationPricing(hotelReservation),
       });
     }
 

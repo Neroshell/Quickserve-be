@@ -4,9 +4,36 @@ import ReservationEmailBase, { formatReservationDate } from "./ReservationEmailB
 /**
  * Customer-facing email sent when a reservation is accepted but requires payment.
  */
-export default function ReservationPaymentEmail({ businessName, businessLogoUrl, primaryColor, reservation = {} }) {
-  // A link for them to complete payment should be provided if they need to pay, 
-  // but if we don't have the exact checkout URL here, we will instruct them to check their status page.
+export default function ReservationPaymentEmail({ businessName, businessLogoUrl, primaryColor, reservation = {}, paymentUrl }) {
+  const isHotel = Boolean(reservation.checkInDate && reservation.checkOutDate);
+
+  const formatCurrency = (amount, currency = "USD") => {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency,
+    }).format(amount || 0);
+  };
+
+  const totalStr = reservation.totalPrice != null 
+    ? formatCurrency(reservation.totalPrice, reservation.currency) 
+    : (reservation.totalAmount != null ? formatCurrency(reservation.totalAmount, reservation.currency) : null);
+
+  const details = isHotel ? [
+    { label: "Dates", value: `${formatReservationDate(reservation.checkInDate)} to ${formatReservationDate(reservation.checkOutDate)}` },
+    { label: "Guests", value: reservation.guestCount },
+    { label: "Room", value: reservation.servicePointLabel },
+  ] : [
+    { label: "Date", value: formatReservationDate(reservation.date) },
+    { label: "Time", value: reservation.startTime && reservation.endTime ? `${reservation.startTime} - ${reservation.endTime}` : "" },
+    { label: "Guests", value: reservation.guestCount },
+    { label: "Service Point", value: reservation.servicePointLabel },
+  ];
+
+  if (totalStr) {
+    details.push({ label: "Total Due", value: totalStr });
+  }
+  details.push({ label: "Status", value: "Awaiting Payment" });
+
   return React.createElement(ReservationEmailBase, {
     businessName,
     businessLogoUrl,
@@ -20,13 +47,8 @@ export default function ReservationPaymentEmail({ businessName, businessLogoUrl,
       "Please complete your payment to secure your reservation.",
     ],
     detailsTitle: "Reservation Details",
-    details: [
-      { label: "Date", value: formatReservationDate(reservation.date) },
-      { label: "Time", value: reservation.startTime && reservation.endTime ? `${reservation.startTime} - ${reservation.endTime}` : "" },
-      { label: "Guests", value: reservation.guestCount },
-      { label: "Service Point", value: reservation.servicePointLabel },
-      { label: "Status", value: "Awaiting Payment" },
-    ],
+    details,
+    callToAction: paymentUrl ? { text: "Pay Now", url: paymentUrl } : null,
     closing: [
       "We look forward to welcoming you. Thank you,",
     ],

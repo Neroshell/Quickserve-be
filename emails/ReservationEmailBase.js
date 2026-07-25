@@ -12,6 +12,7 @@ import {
   Heading,
   Img,
   Hr,
+  Button,
 } from "@react-email/components";
 
 /**
@@ -44,6 +45,8 @@ export default function ReservationEmailBase({
   detailsTitle = "Reservation Details",
   details = [],
   closing = [],
+  /** Optional CTA button: { text: string, url: string } */
+  callToAction = null,
 }) {
   const e = React.createElement;
   const brand = primaryColor || "#ea580c";
@@ -102,6 +105,13 @@ export default function ReservationEmailBase({
                   )
                 )
               )
+            )
+          : null,
+
+        // Call To Action
+        callToAction
+          ? e(Section, { style: { textAlign: "center", margin: "32px 0" } },
+              e(Button, { href: callToAction.url, style: { ...buttonStyle, backgroundColor: brand } }, callToAction.text)
             )
           : null,
 
@@ -294,4 +304,16 @@ const footerText = {
   fontSize: "13px",
   color: "#94a3b8",
   margin: "0",
+};
+
+const buttonStyle = {
+  backgroundColor: "#ea580c",
+  borderRadius: "8px",
+  color: "#ffffff",
+  fontSize: "16px",
+  fontWeight: "600",
+  textDecoration: "none",
+  textAlign: "center",
+  display: "inline-block",
+  padding: "12px 24px",
 };
