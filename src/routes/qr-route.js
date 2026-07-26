@@ -4,6 +4,7 @@ import crypto from "crypto"
 import GuestSession from "../models/GuestSession.js"
 import Business from "../models/Business.js"
 import ServicePoint from "../models/ServicePoint.js"
+import { isBusinessServable } from "../utils/restaurantOrderValidation.js"
 
 const router = express.Router()
 
@@ -66,7 +67,7 @@ router.get("/:businessId/:servicePointId", tableSessionLimiter, async (req, res)
     const business = await Business.findOne({
       $or: [{ businessId }, { businessId: businessId }],
     })
-    if (!business) {
+    if (!isBusinessServable(business)) {
       return res.status(404).send("Business not found")
     }
 

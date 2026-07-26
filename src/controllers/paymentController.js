@@ -15,6 +15,17 @@ import {
 import { validateTrackedStock } from "../services/inventoryService.js";
 import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
 import { normalizeTip } from "../utils/tips.js";
+// Restaurant-flow defect safeguards for online checkout:
+// validate and normalize the cart, reject disabled business/order/payment modes,
+// and derive Stripe currency from the business instead of the client request.
+import {
+    getBusinessCurrency,
+    getOrderItemsValidationError,
+    isBusinessServable,
+    isOrderTypeEnabled,
+    isPaymentChannelEnabled,
+    normalizeOrderItems,
+} from "../utils/restaurantOrderValidation.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
@@ -36,7 +47,6 @@ export async function createCheckoutSession(req, res) {
             sessionId,
             tableSessionToken,
             orderType,
-            currency,
             receiptEmail,
             tipAmount,
             tipType,
@@ -52,6 +62,10 @@ export async function createCheckoutSession(req, res) {
             return res.status(400).json({ message: "tableSessionToken is required" });
         if (!servicePointLabel || !Array.isArray(items) || items.length === 0)
             return res.status(400).json({ message: "servicePointLabel and items are required" });
+        const itemValidationError = getOrderItemsValidationError(items);
+        if (itemValidationError)
+            return res.status(400).json({ message: itemValidationError });
+        const normalizedItems = normalizeOrderItems(items);
 
         const allowedTypes = ["dine-in", "takeout"];
         const finalOrderType = orderType || "dine-in";
@@ -92,14 +106,51 @@ export async function createCheckoutSession(req, res) {
             }
         }
 
+        const business = await Business.findOne({
+            $or: [{ businessId: businessIdToUse }, { businessId: businessIdToUse }],
+        }).lean();
+
+        if (!isBusinessServable(business)) {
+            return res.status(404).json({ message: "Business not found or inactive" });
+        }
+        if (!isOrderTypeEnabled(business, finalOrderType)) {
+            return res.status(403).json({
+                message: `${finalOrderType === "takeout" ? "Takeout" : "Dine-in"} ordering is disabled for this business.`,
+            });
+        }
+        if (!isPaymentChannelEnabled(business, "online")) {
+            return res.status(403).json({
+                message: "Online payments are disabled for this business.",
+            });
+        }
+        if (
+            !business.stripeAccountId ||
+            business.stripeChargesEnabled !== true ||
+            business.stripePayoutsEnabled !== true
+        ) {
+            return res.status(400).json({
+                message: "Online payments are not available for this business yet. Please ask staff for assistance.",
+            });
+        }
+
+        const sp = await ServicePoint.findOne({
+            servicePointId: servicePointLabel,
+            businessId: businessIdToUse,
+        }).lean();
+        if (!sp || sp.isActive === false) {
+            return res.status(400).json({
+                message: "This ServicePoint is not active for the selected business.",
+            });
+        }
+
         // --- Build Stripe line items and enrich cart items ---
         const lineItems = [];
         const enrichedItems = [];
         let serverTotal = 0;
-        const finalCurrency = (currency || "eur").toLowerCase();
+        const finalCurrency = getBusinessCurrency(business).toLowerCase();
 
-        for (const item of items) {
-            const qty = Math.max(1, Math.floor(Number(item.quantity) || 1));
+        for (const item of normalizedItems) {
+            const qty = item.quantity;
 
             // Price is ALWAYS taken from the database, never from the client.
             // This prevents checkout manipulation (e.g. sending price: 0.01).
@@ -108,7 +159,7 @@ export async function createCheckoutSession(req, res) {
                 businessId: businessIdToUse,
             }).lean();
 
-            if (!menuItem) {
+            if (!menuItem || menuItem.isAvailable === false) {
                 return res.status(400).json({ message: `Menu item '${item.itemName}' is no longer available.` });
             }
 
@@ -148,29 +199,9 @@ export async function createCheckoutSession(req, res) {
             });
         }
 
-        // --- Resolve business and check Stripe Connect readiness ---
-        const business = await Business.findOne({
-            $or: [{ businessId: businessIdToUse }, { businessId: businessIdToUse }],
-        }).lean();
-
-        if (!business) {
-            return res.status(404).json({ message: "Business not found" });
-        }
-
-        if (
-            !business.stripeAccountId ||
-            business.stripeChargesEnabled !== true ||
-            business.stripePayoutsEnabled !== true
-        ) {
-            return res.status(400).json({
-                message: "Online payments are not available for this business yet. Please ask staff for assistance.",
-            });
-        }
-
         // --- Resolve service point label for display ---
         // servicePointLabel is the internal servicePointId (e.g. sp_xxxx); we resolve the
         // human-friendly label once here so the webhook can copy it without a second lookup.
-        const sp = await ServicePoint.findOne({ servicePointId: servicePointLabel, businessId: businessIdToUse }).lean();
         const displayLabel = sp?.label || sp?.code || servicePointLabel;
         const servicePointQrCode  = sp?.code  || sp?.label || displayLabel;
 
@@ -286,7 +317,8 @@ export async function createCheckoutSession(req, res) {
             stripeSessionConfig.customer_email = receiptEmail;
         }
 
-        const stripeSession = await stripe.checkout.sessions.create(stripeSessionConfig);
+        const stripeClient = req.app?.locals?.stripe || stripe;
+        const stripeSession = await stripeClient.checkout.sessions.create(stripeSessionConfig);
 
         console.log(`[checkout] Stripe session created — sessionId=${stripeSession.id}`);
 

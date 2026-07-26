@@ -13,6 +13,17 @@ import { calculateOfflinePricing } from "../services/pricingService.js"
 import { validateTrackedStock, deductTrackedStock, restoreTrackedStock } from "../services/inventoryService.js"
 import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
 import { normalizeTip } from "../utils/tips.js"
+// Restaurant-flow defect safeguards for waiter-created orders:
+// keep cart validation, business feature checks, payment rules, and currency
+// consistent with the guest and online-checkout order paths.
+import {
+  getBusinessCurrency,
+  getOrderItemsValidationError,
+  isBusinessServable,
+  isOrderTypeEnabled,
+  isPaymentChannelEnabled,
+  normalizeOrderItems,
+} from "../utils/restaurantOrderValidation.js"
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
@@ -493,11 +504,16 @@ export async function createWaiterOrder(req, res) {
       return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
     }
 
-    const { servicePointLabel, items, orderType, currency, tipAmount, tipType, tipPercentage } = req.body
+    const { servicePointLabel, items, orderType, tipAmount, tipType, tipPercentage } = req.body
 
     if (!servicePointLabel || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: "servicePointLabel and items are required" })
     }
+    const itemValidationError = getOrderItemsValidationError(items)
+    if (itemValidationError) {
+      return res.status(400).json({ message: itemValidationError })
+    }
+    const normalizedItems = normalizeOrderItems(items)
 
     const allowedTypes = ["dine-in", "takeout"]
     const finalOrderType = orderType || "dine-in"
@@ -508,7 +524,7 @@ export async function createWaiterOrder(req, res) {
 
     // Verify service point belongs to this business
     const sp = await ServicePoint.findOne({ servicePointId: servicePointLabel, businessId }).lean()
-    if (!sp) {
+    if (!sp || sp.isActive === false) {
       return res.status(403).json({ message: "Invalid service point for this business." })
     }
 
@@ -516,7 +532,7 @@ export async function createWaiterOrder(req, res) {
       $or: [{ businessId }, { businessId: businessId }],
     }).lean()
 
-    if (!business) {
+    if (!isBusinessServable(business)) {
       return res.status(404).json({ success: false, message: "Business not found." })
     }
 
@@ -526,6 +542,18 @@ export async function createWaiterOrder(req, res) {
       return res.status(403).json({
         success: false,
         message: "Waiter-assisted ordering is disabled for this business.",
+      })
+    }
+    if (!isOrderTypeEnabled(business, finalOrderType)) {
+      return res.status(403).json({
+        success: false,
+        message: `${finalOrderType === "takeout" ? "Takeout" : "Dine-in"} ordering is disabled for this business.`,
+      })
+    }
+    if (!isPaymentChannelEnabled(business, "offline")) {
+      return res.status(403).json({
+        success: false,
+        message: "Offline ordering is disabled for this business.",
       })
     }
 
@@ -542,44 +570,45 @@ export async function createWaiterOrder(req, res) {
     const now = new Date()
     const orderId = generateOrderId(servicePointQrCode, now)
 
-    // Pre-validate stock before calculating prices
-    const stockFailures = await validateTrackedStock(items, businessId)
+    let calculatedTotal = 0
+    const enrichedItems = []
+    for (const item of normalizedItems) {
+      const menuItem = await MenuItem.findOne({ name: item.itemName, businessId }).lean()
+      if (!menuItem || menuItem.isAvailable === false) {
+        return res.status(400).json({
+          message: `Menu item '${item.itemName}' is no longer available.`,
+        })
+      }
+
+      const unitPrice = menuItem.price || 0
+      const itemType = menuItem.type || (item.orderCategory === "drinks" ? "drinks" : "food")
+      const displayCategory = menuItem.category || "mains"
+      const itemImage = menuItem.imageUrl || item.image || ""
+
+      const itemLineTotal = Number((unitPrice * item.quantity).toFixed(2))
+      calculatedTotal += itemLineTotal
+
+      enrichedItems.push({
+        menuItemId: menuItem._id,
+        itemName: item.itemName,
+        quantity: item.quantity,
+        lineTotal: itemLineTotal,
+        prepTimeMinutes: getItemPrepTimeMinutes(menuItem),
+        type: itemType,
+        category: displayCategory,
+        notes: item.notes || "",
+        allergies: item.allergies || [],
+        image: itemImage
+      })
+    }
+
+    const stockFailures = await validateTrackedStock(enrichedItems, businessId)
     if (stockFailures.length > 0) {
       return res.status(400).json({
         message: "Some items are no longer available in the requested quantity.",
         items: stockFailures,
       })
     }
-
-    let calculatedTotal = 0
-    const enrichedItems = await Promise.all(
-      items.map(async (item) => {
-        const menuItem = await MenuItem.findOne({ name: item.itemName, businessId }).lean()
-        if (!menuItem) {
-          throw new Error(`Menu item '${item.itemName}' is no longer available.`)
-        }
-        
-        const unitPrice = menuItem.price || 0
-        const itemType = menuItem.type || (item.orderCategory === "drinks" ? "drinks" : "food")
-        const displayCategory = menuItem.category || "mains"
-        const itemImage = menuItem.imageUrl || item.image || ""
-
-        const itemLineTotal = Number((unitPrice * item.quantity).toFixed(2))
-        calculatedTotal += itemLineTotal
-
-        return {
-          itemName: item.itemName,
-          quantity: item.quantity,
-          lineTotal: itemLineTotal,
-          prepTimeMinutes: getItemPrepTimeMinutes(menuItem),
-          type: itemType,
-          category: displayCategory,
-          notes: item.notes || "",
-          allergies: item.allergies || [],
-          image: itemImage
-        }
-      })
-    )
 
     const hasFood = enrichedItems.some(i => i.type === "food")
     const initialStatus = hasFood ? "placed" : "ready"
@@ -638,7 +667,7 @@ export async function createWaiterOrder(req, res) {
       platformFeeMode: mode,
       customerPlatformFeePercent: percent,
       total: finalTotal,
-      currency: currency || business.currency || "EUR",
+      currency: getBusinessCurrency(business),
       paymentChannel: "offline",
       paymentStatus: "unpaid",
       paidVia: null,
@@ -655,9 +684,11 @@ export async function createWaiterOrder(req, res) {
 
     // --- Offline Inventory Deduction ---
     try {
-      await deductTrackedStock(saved)
-      saved.inventoryDeducted = true
-      await saved.save()
+      const inventoryDeducted = await deductTrackedStock(saved)
+      if (inventoryDeducted) {
+        saved.inventoryDeducted = true
+        await saved.save()
+      }
     } catch (err) {
       console.error("[createWaiterOrder] Failed to deduct stock:", err)
       // We don't fail the order if deduction fails, we just don't mark it deducted.

@@ -108,7 +108,7 @@ export async function updateOrderStatus(req, res) {
       completed: [],
     }
 
-    if (!allowedNext[order.status].includes(nextStatus)) {
+    if (!(allowedNext[order.status] || []).includes(nextStatus)) {
       return res.status(400).json({
         error: `Invalid transition ${order.status} -> ${nextStatus}`,
       })

@@ -27,7 +27,12 @@ export async function getMenuItems(req, res) {
             return res.status(400).json({ error: "Missing businessId parameter" })
         }
 
-        const items = await MenuItem.find({ businessId }).sort({ createdAt: -1 })
+        const isOwningStaff =
+            req.session?.user?.businessId === businessId
+        const filter = { businessId }
+        if (!isOwningStaff) filter.isAvailable = true
+
+        const items = await MenuItem.find(filter).sort({ createdAt: -1 })
 
         return res.json(items)
     } catch (err) {

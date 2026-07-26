@@ -9,7 +9,11 @@ import MenuItem from "../models/menuItem.js";
 import { generateOrderId } from "../utils/orderId.js";
 import { toOrderDTO } from "../utils/orderDTO.js";
 import { publishEvent } from "../utils/sseManager.js";
-import { sendReceiptEmail, sendEmail } from "../utils/emailService.js";
+import {
+    getOrderReceiptIdempotencyKey,
+    sendReceiptEmail,
+    sendEmail,
+} from "../utils/emailService.js";
 import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js";
 import { deductTrackedStock } from "../services/inventoryService.js";
 import { buildOrderEstimate } from "../utils/orderEstimate.js";
@@ -17,6 +21,69 @@ import { generateHotelCheckInCredentials } from "../services/hotelCheckInService
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+function getStoredCheckoutAmountCents(checkoutRecord) {
+    const grossAmountCents = Number(checkoutRecord?.grossAmount);
+    if (Number.isSafeInteger(grossAmountCents) && grossAmountCents > 0) {
+        return grossAmountCents;
+    }
+
+    const total = Number(checkoutRecord?.total);
+    const totalCents = Math.round(total * 100);
+    return Number.isSafeInteger(totalCents) && totalCents > 0 ? totalCents : null;
+}
+
+export function validateOrderCheckoutPayment(session, checkoutRecord) {
+    if (session?.payment_status !== "paid") {
+        return {
+            valid: false,
+            code: "PAYMENT_NOT_PAID",
+            reason: `checkout.session.completed has payment_status=${session?.payment_status || "missing"}`,
+        };
+    }
+
+    const expectedAmountCents = getStoredCheckoutAmountCents(checkoutRecord);
+    const stripeAmountCents = Number(session?.amount_total);
+    if (expectedAmountCents === null) {
+        return {
+            valid: false,
+            code: "INVALID_STORED_AMOUNT",
+            reason: "stored checkout total is not a positive integer amount in cents",
+            expectedAmountCents,
+            stripeAmountCents,
+        };
+    }
+    if (!Number.isSafeInteger(stripeAmountCents) || stripeAmountCents !== expectedAmountCents) {
+        return {
+            valid: false,
+            code: "AMOUNT_MISMATCH",
+            reason: `Stripe amount ${stripeAmountCents} does not match stored amount ${expectedAmountCents}`,
+            expectedAmountCents,
+            stripeAmountCents,
+        };
+    }
+
+    const expectedCurrency = String(checkoutRecord?.currency || "").toLowerCase();
+    const stripeCurrency = String(session?.currency || "").toLowerCase();
+    if (!expectedCurrency || stripeCurrency !== expectedCurrency) {
+        return {
+            valid: false,
+            code: "CURRENCY_MISMATCH",
+            reason: `Stripe currency ${stripeCurrency || "missing"} does not match stored currency ${expectedCurrency || "missing"}`,
+            expectedCurrency,
+            stripeCurrency,
+        };
+    }
+
+    return {
+        valid: true,
+        expectedAmountCents,
+        stripeAmountCents,
+        expectedCurrency,
+        stripeCurrency,
+    };
+}
+
 function getSubscriptionPeriodFromStripe(subscription) {
     if (!subscription?.current_period_start || !subscription?.current_period_end) return null;
 
@@ -90,7 +157,10 @@ export async function handleStripeWebhook(req, res) {
 
     try {
         event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-        console.log("[stripeWebhook] Signature verified:", event.type);
+        console.log("[stripeWebhook] Signature verified", {
+            eventId: event.id,
+            eventType: event.type,
+        });
     } catch (err) {
         console.error("[stripeWebhook] Signature verification failed:", err.message);
         return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -288,7 +358,24 @@ export async function handleStripeWebhook(req, res) {
         }
 
         const session = event.data.object;
-        const { pendingCheckoutId, type: paymentType, reservationId } = session.metadata || {};
+        const metadata = session.metadata || {};
+        const {
+            pendingCheckoutId,
+            type: paymentType,
+            reservationId,
+            orderId: metadataOrderId,
+            businessId: metadataBusinessId,
+        } = metadata;
+
+        console.log("[webhook] Checkout session received", {
+            eventId: event.id,
+            eventType: event.type,
+            checkoutSessionId: session.id,
+            pendingCheckoutId: pendingCheckoutId || null,
+            orderId: metadataOrderId || null,
+            businessId: metadataBusinessId || null,
+            paymentStatus: session.payment_status || null,
+        });
 
         // ── Reservation payment branch ──────────────────────────────────────────
         if (paymentType === "reservation_payment") {
@@ -375,7 +462,106 @@ export async function handleStripeWebhook(req, res) {
         const pending = await PendingCheckout.findById(pendingCheckoutId);
 
         if (!pending) {
-            console.error(`[webhook] PendingCheckout not found: ${pendingCheckoutId}`);
+            const existingOrder = metadataBusinessId && metadataOrderId
+                ? await Order.findOne({ businessId: metadataBusinessId, orderId: metadataOrderId })
+                : null;
+
+            if (!existingOrder) {
+                console.error("[webhook] PendingCheckout not found and no paid order could be resolved", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    pendingCheckoutId,
+                    orderId: metadataOrderId || null,
+                    businessId: metadataBusinessId || null,
+                });
+                return res.status(200).send();
+            }
+
+            if (existingOrder.stripeSessionId && existingOrder.stripeSessionId !== session.id) {
+                console.error("[webhook] Existing order Stripe session mismatch", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    orderId: existingOrder.orderId,
+                    businessId: existingOrder.businessId,
+                });
+                return res.status(400).send("Checkout session mismatch");
+            }
+
+            const validation = validateOrderCheckoutPayment(session, existingOrder);
+            if (!validation.valid) {
+                console.error("[webhook] Existing paid order validation failed", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    orderId: existingOrder.orderId,
+                    businessId: existingOrder.businessId,
+                    code: validation.code,
+                    reason: validation.reason,
+                });
+                return res.status(400).send(validation.code);
+            }
+
+            if (existingOrder.paymentStatus !== "paid") {
+                console.error("[webhook] PendingCheckout is missing and resolved order is not paid", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    orderId: existingOrder.orderId,
+                    businessId: existingOrder.businessId,
+                    paymentStatus: existingOrder.paymentStatus,
+                });
+                return res.status(500).send("Paid order state is incomplete");
+            }
+
+            const retryEmail = existingOrder.receiptEmail || session.customer_details?.email || null;
+            if (existingOrder.receiptSentAt || existingOrder.receiptSent) {
+                console.log("[webhook] Duplicate order payment already has a recorded receipt", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    orderId: existingOrder.orderId,
+                    businessId: existingOrder.businessId,
+                });
+                return res.status(200).send();
+            }
+
+            if (!retryEmail) {
+                console.warn("[webhook] Paid order has no customer email for receipt retry", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    orderId: existingOrder.orderId,
+                    businessId: existingOrder.businessId,
+                });
+                return res.status(200).send();
+            }
+
+            console.log("[webhook] Calling receipt sender for previously processed payment", {
+                eventId: event.id,
+                checkoutSessionId: session.id,
+                orderId: existingOrder.orderId,
+                businessId: existingOrder.businessId,
+            });
+            const receiptSent = await sendReceiptEmail(existingOrder, retryEmail, {
+                idempotencyKey: getOrderReceiptIdempotencyKey(existingOrder),
+            });
+            if (!receiptSent) {
+                console.error("[webhook] Receipt retry failed for previously processed payment", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    orderId: existingOrder.orderId,
+                    businessId: existingOrder.businessId,
+                });
+                return res.status(500).send("Receipt delivery failed");
+            }
+
+            existingOrder.receiptEmail = retryEmail;
+            existingOrder.receiptSent = true;
+            existingOrder.receiptSentAt = new Date();
+            await existingOrder.save();
+
+            console.log("[webhook] Receipt retry accepted by provider", {
+                eventId: event.id,
+                checkoutSessionId: session.id,
+                orderId: existingOrder.orderId,
+                businessId: existingOrder.businessId,
+            });
             return res.status(200).send();
         }
 
@@ -387,8 +573,64 @@ export async function handleStripeWebhook(req, res) {
         const businessId = pending.businessId;
         const orderId = pending.orderId || generateOrderId(pending.tableNumber);
 
+        if (
+            (metadataBusinessId && metadataBusinessId !== businessId) ||
+            (metadataOrderId && metadataOrderId !== orderId)
+        ) {
+            console.error("[webhook] Stripe metadata does not match PendingCheckout", {
+                eventId: event.id,
+                checkoutSessionId: session.id,
+                pendingCheckoutId,
+                orderId,
+                businessId,
+            });
+            return res.status(400).send("Checkout metadata mismatch");
+        }
+
+        if (pending.stripeSessionId && pending.stripeSessionId !== session.id) {
+            console.error("[webhook] Stripe session does not match PendingCheckout", {
+                eventId: event.id,
+                checkoutSessionId: session.id,
+                pendingCheckoutId,
+                orderId,
+                businessId,
+            });
+            return res.status(400).send("Checkout session mismatch");
+        }
+
+        const paymentValidation = validateOrderCheckoutPayment(session, pending);
+        if (!paymentValidation.valid) {
+            console.error("[webhook] Food-order payment validation failed", {
+                eventId: event.id,
+                checkoutSessionId: session.id,
+                pendingCheckoutId,
+                orderId,
+                businessId,
+                paymentStatus: session.payment_status || null,
+                code: paymentValidation.code,
+                reason: paymentValidation.reason,
+                expectedAmountCents: paymentValidation.expectedAmountCents,
+                stripeAmountCents: paymentValidation.stripeAmountCents,
+                expectedCurrency: paymentValidation.expectedCurrency,
+                stripeCurrency: paymentValidation.stripeCurrency,
+            });
+            return res.status(400).send(paymentValidation.code);
+        }
+
+        console.log("[webhook] Food-order payment validated", {
+            eventId: event.id,
+            checkoutSessionId: session.id,
+            pendingCheckoutId,
+            orderId,
+            businessId,
+            paymentStatus: session.payment_status,
+            amountTotalCents: paymentValidation.stripeAmountCents,
+            currency: paymentValidation.stripeCurrency,
+        });
+
         // Idempotency guard — do not create duplicate orders on Stripe retry
         let order = await Order.findOne({ businessId, orderId });
+        let receiptDeliveryFailed = false;
 
         if (order) {
             let updated = false;
@@ -446,23 +688,80 @@ export async function handleStripeWebhook(req, res) {
                 updated = true;
             }
 
-            // Re-attempt receipt email if not yet sent
             const customerEmail = pending.receiptEmail || session.customer_details?.email || order.receiptEmail || null;
-            if (customerEmail && !order.receiptSent) {
+
+            if (customerEmail && order.receiptEmail !== customerEmail) {
+                order.receiptEmail = customerEmail;
+                updated = true;
+            }
+
+            // Persist the final paid order state before rendering or sending its receipt.
+            if (updated) {
+                await order.save();
+            }
+
+            if (customerEmail && !order.receiptSentAt && !order.receiptSent) {
+                console.log("[webhook] Calling receipt sender", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    pendingCheckoutId,
+                    orderId,
+                    businessId,
+                    paymentStatus: order.paymentStatus,
+                });
                 try {
-                    const emailSent = await sendReceiptEmail(order, customerEmail);
+                    const emailSent = await sendReceiptEmail(order, customerEmail, {
+                        idempotencyKey: getOrderReceiptIdempotencyKey(order),
+                    });
                     if (emailSent) {
                         order.receiptSent = true;
                         order.receiptSentAt = new Date();
+                        await order.save();
                         updated = true;
+                        console.log("[webhook] Receipt accepted by provider", {
+                            eventId: event.id,
+                            checkoutSessionId: session.id,
+                            orderId,
+                            businessId,
+                        });
+                    } else {
+                        receiptDeliveryFailed = true;
+                        console.error("[webhook] Receipt provider rejected or failed the send", {
+                            eventId: event.id,
+                            checkoutSessionId: session.id,
+                            orderId,
+                            businessId,
+                        });
                     }
                 } catch (err) {
-                    console.error("[webhook] Receipt retry error:", err.message);
+                    receiptDeliveryFailed = true;
+                    console.error("[webhook] Receipt send error", {
+                        eventId: event.id,
+                        checkoutSessionId: session.id,
+                        orderId,
+                        businessId,
+                        name: err.name,
+                        message: err.message,
+                        stack: err.stack,
+                    });
                 }
+            } else if (!customerEmail) {
+                console.warn("[webhook] Paid order has no customer email; receipt sender not called", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    orderId,
+                    businessId,
+                });
+            } else {
+                console.log("[webhook] Receipt already recorded; sender not called", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    orderId,
+                    businessId,
+                });
             }
-            
+
             if (updated) {
-                await order.save();
                 // Notify waiter/table that the order was paid online
                 const orderDTO = toOrderDTO(order);
                 await publishEvent("order_updated", businessId, ["waiter", "table"], { order: orderDTO });
@@ -486,7 +785,7 @@ export async function handleStripeWebhook(req, res) {
 
             // Prefer the label already cached on PendingCheckout (stored at checkout creation).
             // Fall back to a live ServicePoint lookup for older pending docs missing it.
-            let displayLabel = pending.servicePointLabel || "";
+            let displayLabel = pending.displayLabel || "";
             if (!displayLabel) {
                 const sp = await ServicePoint.findOne({ servicePointId: pending.servicePointLabel, businessId }).lean();
                 displayLabel = sp?.label || sp?.code || pending.servicePointLabel;
@@ -548,16 +847,56 @@ export async function handleStripeWebhook(req, res) {
             console.log(`[webhook] Order created: orderId=${orderId}, businessId=${businessId}`);
 
             if (customerEmail) {
+                console.log("[webhook] Calling receipt sender", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    pendingCheckoutId,
+                    orderId,
+                    businessId,
+                    paymentStatus: order.paymentStatus,
+                });
                 try {
-                    const emailSent = await sendReceiptEmail(order, customerEmail);
+                    const emailSent = await sendReceiptEmail(order, customerEmail, {
+                        idempotencyKey: getOrderReceiptIdempotencyKey(order),
+                    });
                     if (emailSent) {
-                        await Order.findOneAndUpdate({ businessId, orderId }, { receiptSent: true, receiptSentAt: new Date() });
+                        order.receiptSent = true;
+                        order.receiptSentAt = new Date();
+                        await order.save();
+                        console.log("[webhook] Receipt accepted by provider", {
+                            eventId: event.id,
+                            checkoutSessionId: session.id,
+                            orderId,
+                            businessId,
+                        });
                     } else {
-                        console.error(`[webhook] Receipt email failed for orderId=${orderId}`);
+                        receiptDeliveryFailed = true;
+                        console.error("[webhook] Receipt provider rejected or failed the send", {
+                            eventId: event.id,
+                            checkoutSessionId: session.id,
+                            orderId,
+                            businessId,
+                        });
                     }
                 } catch (err) {
-                    console.error("[webhook] Receipt email error:", err.message);
+                    receiptDeliveryFailed = true;
+                    console.error("[webhook] Receipt send error", {
+                        eventId: event.id,
+                        checkoutSessionId: session.id,
+                        orderId,
+                        businessId,
+                        name: err.name,
+                        message: err.message,
+                        stack: err.stack,
+                    });
                 }
+            } else {
+                console.warn("[webhook] Paid order has no customer email; receipt sender not called", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    orderId,
+                    businessId,
+                });
             }
 
             if (customerEmail) {
@@ -593,7 +932,29 @@ export async function handleStripeWebhook(req, res) {
             }
         }
 
+        if (receiptDeliveryFailed) {
+            console.error("[webhook] Food-order payment completed but receipt delivery failed; preserving PendingCheckout for retry", {
+                eventId: event.id,
+                checkoutSessionId: session.id,
+                pendingCheckoutId,
+                orderId,
+                businessId,
+                paymentStatus: order.paymentStatus,
+            });
+            return res.status(500).send("Receipt delivery failed");
+        }
+
         await PendingCheckout.findByIdAndDelete(pendingCheckoutId);
+
+        console.log("[webhook] Food-order payment processing completed", {
+            eventId: event.id,
+            checkoutSessionId: session.id,
+            pendingCheckoutId,
+            orderId,
+            businessId,
+            paymentStatus: order.paymentStatus,
+            receiptSent: Boolean(order.receiptSentAt || order.receiptSent),
+        });
 
         return res.status(200).send();
     } catch (error) {

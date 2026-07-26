@@ -6,7 +6,10 @@ import MenuItem from "../models/menuItem.js"
 import { validateTrackedStock, deductTrackedStock } from "../services/inventoryService.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
-import { sendReceiptEmail } from "../utils/emailService.js"
+import {
+  getOrderReceiptIdempotencyKey,
+  sendReceiptEmail,
+} from "../utils/emailService.js"
 import ServicePoint from "../models/ServicePoint.js"
 import Business from "../models/Business.js"
 import Plan from "../models/Plan.js"
@@ -16,9 +19,29 @@ import { normalizeTip } from "../utils/tips.js"
 import CustomerConsent from "../models/CustomerConsent.js"
 import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js"
 import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
+import {
+  calculateOfflinePricing,
+  getCustomerPricingBreakdown,
+} from "../services/pricingService.js"
+// Restaurant-flow defect safeguards for direct/offline orders:
+// validate and normalize the cart, enforce business ordering/payment settings,
+// and derive currency from the business instead of accepting client values.
+import {
+  getBusinessCurrency,
+  getOrderItemsValidationError,
+  isBusinessServable,
+  isOfflinePaymentMethodEnabled,
+  isOrderTypeEnabled,
+  isPaymentChannelEnabled,
+  normalizeOrderItems,
+} from "../utils/restaurantOrderValidation.js"
 
 function canUseOfflinePayments(business) {
-  return business.billingStatus === "active" && !!business.defaultPaymentMethodId
+  return (
+    business.billingStatus === "active" &&
+    !!business.defaultPaymentMethodId &&
+    isPaymentChannelEnabled(business, "offline")
+  )
 }
 
 /** Resolve businessId from request — accepts businessId or legacy businessId */
@@ -80,7 +103,7 @@ export async function listOrders(req, res) {
 export async function createOrder(req, res) {
   try {
     const {
-      servicePointLabel, items, sessionId, tableSessionToken, orderType, currency,
+      servicePointLabel, items, sessionId, tableSessionToken, orderType,
       receiptEmail, tipAmount, tipType, tipPercentage
     } = req.body
 
@@ -99,6 +122,11 @@ export async function createOrder(req, res) {
     if (!servicePointLabel || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: "servicePointLabel and items are required" })
     }
+    const itemValidationError = getOrderItemsValidationError(items)
+    if (itemValidationError) {
+      return res.status(400).json({ message: itemValidationError })
+    }
+    const normalizedItems = normalizeOrderItems(items)
 
     // ✅ Minimal validation for orderType
     const allowedTypes = ["dine-in", "takeout"]
@@ -112,7 +140,7 @@ export async function createOrder(req, res) {
 
     if (!isWaiter) {
       // Validate token
-      const ts = await TableSession.findOne({ token: tableSessionToken })
+      const ts = await GuestSession.findOne({ token: tableSessionToken })
       if (!ts) {
         return res.status(403).json({ message: "Invalid or expired table session. Please rescan the QR code." })
       }
@@ -123,13 +151,13 @@ export async function createOrder(req, res) {
       }
 
       // Table must match
-      if (ts.tableId !== servicePointLabel) {
+      if (ts.servicePointId !== servicePointLabel) {
         return res.status(403).json({ message: "Table session mismatch. Please rescan the correct table QR." })
       }
 
       // Bind token to first device sessionId ATOMICALLY
       if (!ts.boundSessionId) {
-        const updatedTs = await TableSession.findOneAndUpdate(
+        const updatedTs = await GuestSession.findOneAndUpdate(
           { _id: ts._id, boundSessionId: null },
           { $set: { boundSessionId: sessionId } },
           { new: true }
@@ -142,7 +170,7 @@ export async function createOrder(req, res) {
         return res.status(403).json({ message: "This table session is already in use on another device." })
       }
 
-      //  STRICT SECURITY: Override businessId explicitly from the validated TableSession
+      // STRICT SECURITY: derive businessId from the validated GuestSession.
       // This prevents an attacker with a valid session at Restaurant A from injecting orders into Restaurant B.
       businessId = ts.businessId
     } else {
@@ -154,6 +182,9 @@ export async function createOrder(req, res) {
 
     // ✅ CRITICAL GATE: Business Open/Closed logic
     const business = await Business.findOne({ businessId }).lean()
+    if (!isBusinessServable(business)) {
+      return res.status(404).json({ message: "Business not found or inactive" })
+    }
 
     const openStatus = isBusinessOpen(business)
     if (!openStatus.isOpen) {
@@ -169,17 +200,60 @@ export async function createOrder(req, res) {
         message: "Offline payments are not available. This business has not completed billing setup."
       })
     }
+    if (!isOrderTypeEnabled(business, finalOrderType)) {
+      return res.status(403).json({
+        message: `${finalOrderType === "takeout" ? "Takeout" : "Dine-in"} ordering is disabled for this business.`,
+      })
+    }
 
     // Resolve human-friendly label for display (stored once, no need to look up later)
     const sp = await ServicePoint.findOne({ servicePointId: servicePointLabel, businessId }).lean()
+    if (!sp || sp.isActive === false) {
+      return res.status(400).json({
+        message: "This ServicePoint is not active for the selected business.",
+      })
+    }
     const displayLabel = sp?.label || sp?.code || servicePointLabel
     const tableCode = sp?.code || sp?.label || servicePointLabel
 
     const now = new Date()
     const orderId = generateOrderId(tableCode, now)
 
-    // Pre-validate stock before calculating prices
-    const stockFailures = await validateTrackedStock(items, businessId)
+    // Enrich items with category and unitPrice from DB (authoritative)
+    let calculatedTotal = 0
+    const enrichedItems = []
+    for (const item of normalizedItems) {
+      const menuItem = await MenuItem.findOne({ name: item.itemName, businessId }).lean()
+      if (!menuItem || menuItem.isAvailable === false) {
+        return res.status(400).json({
+          message: `Menu item '${item.itemName}' is no longer available.`,
+        })
+      }
+
+      // Authoritative from DB, strictly ignoring client price
+      const unitPrice = menuItem.price || 0
+      const itemType = menuItem.type || (item.orderCategory === "drinks" ? "drinks" : "food")
+      const displayCategory = menuItem.category || "mains"
+      const itemImage = menuItem.imageUrl || item.image || ""
+
+      const itemLineTotal = Number((unitPrice * item.quantity).toFixed(2))
+      calculatedTotal += itemLineTotal
+
+      enrichedItems.push({
+        menuItemId: menuItem._id,
+        itemName: item.itemName,
+        quantity: item.quantity,
+        lineTotal: itemLineTotal,
+        prepTimeMinutes: getItemPrepTimeMinutes(menuItem),
+        type: itemType,
+        category: displayCategory,
+        notes: item.notes || "",
+        allergies: item.allergies || [],
+        image: itemImage
+      })
+    }
+
+    const stockFailures = await validateTrackedStock(enrichedItems, businessId)
     if (stockFailures.length > 0) {
       return res.status(400).json({
         message: "Some items are no longer available in the requested quantity.",
@@ -187,64 +261,13 @@ export async function createOrder(req, res) {
       })
     }
 
-    // Enrich items with category and unitPrice from DB (authoritative)
-    let calculatedTotal = 0
-    const enrichedItems = await Promise.all(
-      items.map(async (item) => {
-        const menuItem = await MenuItem.findOne({ name: item.itemName, businessId }).lean()
-        if (!menuItem) {
-          throw new Error(`Menu item '${item.itemName}' is no longer available.`)
-        }
-
-        // Authoritative from DB, strictly ignoring client price
-        const unitPrice = menuItem.price || 0
-        const itemType = menuItem.type || (item.orderCategory === "drinks" ? "drinks" : "food")
-        const displayCategory = menuItem.category || "mains"
-        const itemImage = menuItem.imageUrl || item.image || ""
-
-        const itemLineTotal = Number((unitPrice * item.quantity).toFixed(2))
-        calculatedTotal += itemLineTotal
-
-        return {
-          itemName: item.itemName,
-          quantity: item.quantity,
-          lineTotal: itemLineTotal,
-          prepTimeMinutes: getItemPrepTimeMinutes(menuItem),
-          type: itemType,
-          category: displayCategory,
-          notes: item.notes || "",
-          allergies: item.allergies || [],
-          image: itemImage
-        }
-      })
-    )
-
     // Detect drinks-only order
     const hasFood = enrichedItems.some(i => i.type === "food")
     const initialStatus = hasFood ? "placed" : "ready"
 
     // ✅ Backend-authoritative total calculation
     const subtotal = Number(calculatedTotal.toFixed(2))
-    const taxRate = business.taxRate || 0
-    const taxAmount = Number((subtotal * (taxRate / 100)).toFixed(2))
-
-    // Platform fee calculation with split logic
     const totalInCentsForFee = Math.round(subtotal * 100)
-    const { commissionAmountCents, commissionRateApplied, planApplied } = await calculateOfflineCommission(totalInCentsForFee, business.currentPlan || "basic")
-    
-    let mode = business.platformFeeMode || (business.passPlatformFeeToCustomer ? "customer_pays" : "business_absorbs");
-    let percent = mode === "split" ? (business.customerPlatformFeePercent || 0) : (mode === "customer_pays" ? 100 : 0);
-
-    const fullPlatformFeeFloat = Number((subtotal * (commissionRateApplied / 100)).toFixed(2));
-    const fullPlatformFeeCents = Math.round(fullPlatformFeeFloat * 100);
-
-    const customerPlatformFeeCents = Math.round(fullPlatformFeeCents * percent / 100);
-    const customerPlatformFeeFloat = Number((customerPlatformFeeCents / 100).toFixed(2));
-    const businessAbsorbedPlatformFeeCents = fullPlatformFeeCents - customerPlatformFeeCents;
-
-    // We store the full fee as the commission amount
-    const finalCommissionAmountCents = fullPlatformFeeCents;
-
     const tip = normalizeTip({
       tipsEnabled: business.settings?.tipsEnabled === true || business.tipsEnabled === true,
       subtotal,
@@ -252,8 +275,25 @@ export async function createOrder(req, res) {
       tipType,
       tipPercentage,
     })
+    const pricing = await calculateOfflinePricing({
+      subtotalCents: totalInCentsForFee,
+      business,
+      tipAmountCents: Math.round(tip.tipAmount * 100),
+    })
+    const {
+      taxAmount,
+      platformFeeMode: mode,
+      customerPlatformFeePercent: percent,
+      platformFeeCents: fullPlatformFeeCents,
+      customerPlatformFeeCents,
+      customerPlatformFeeAmount: customerPlatformFeeFloat,
+      businessAbsorbedPlatformFeeCents,
+      commissionRateApplied,
+      planApplied,
+      commissionAmountCents: finalCommissionAmountCents,
+    } = pricing
 
-    const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat + tip.tipAmount).toFixed(2))
+    const finalTotal = pricing.total
 
     const estimate = buildOrderEstimate(enrichedItems, now)
 
@@ -280,7 +320,7 @@ export async function createOrder(req, res) {
       platformFeeMode: mode,
       customerPlatformFeePercent: percent,
       total: finalTotal,
-      currency: currency || "EUR",
+      currency: getBusinessCurrency(business),
       paymentChannel: "offline",
       paymentStatus: "unpaid",
       paidVia: null,
@@ -296,9 +336,11 @@ export async function createOrder(req, res) {
 
     // --- Offline Inventory Deduction ---
     try {
-      await deductTrackedStock(saved)
-      saved.inventoryDeducted = true
-      await saved.save()
+      const inventoryDeducted = await deductTrackedStock(saved)
+      if (inventoryDeducted) {
+        saved.inventoryDeducted = true
+        await saved.save()
+      }
     } catch (err) {
       console.error("[createOrder] Failed to deduct stock:", err)
       // We don't fail the order if deduction fails, we just don't mark it deducted.
@@ -325,7 +367,17 @@ export async function createOrder(req, res) {
     // 3. Waiter + table: full order
     await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
 
-    return res.status(201).json({ orderId: saved.orderId, businessId: saved.businessId, status: saved.status })
+    return res.status(201).json({
+      orderId: saved.orderId,
+      businessId: saved.businessId,
+      status: saved.status,
+      pricing: {
+        ...getCustomerPricingBreakdown(pricing),
+        tipAmount: tip.tipAmount,
+        tipAmountCents: Math.round(tip.tipAmount * 100),
+        currency: getBusinessCurrency(business),
+      },
+    })
   } catch (err) {
     console.error("Create order error:", err)
     return res.status(500).json({ message: "Server error" })
@@ -421,7 +473,7 @@ export async function updateOrderStatus(req, res) {
       completed: [],
     }
 
-    if (!allowedNext[order.status].includes(nextStatus)) {
+    if (!(allowedNext[order.status] || []).includes(nextStatus)) {
       return res.status(400).json({
         error: `Invalid transition ${order.status} -> ${nextStatus}`,
       })
@@ -486,7 +538,13 @@ export async function markPaid(req, res) {
     if (!order) return res.status(404).json({ message: "Order not found" })
 
     if (order.paymentStatus === "paid") {
-      return res.status(400).json({ message: "Order is already paid" })
+      return res.json({
+        success: true,
+        alreadyPaid: true,
+        orderId: order.orderId,
+        paymentStatus: order.paymentStatus,
+        paidVia: order.paidVia,
+      })
     }
 
     if (order.paymentChannel !== "offline") {
@@ -506,6 +564,11 @@ export async function markPaid(req, res) {
       return res.status(403).json({
         code: "OFFLINE_BILLING_NOT_SETUP",
         message: "Offline payment confirmation is unavailable until billing setup is complete."
+      })
+    }
+    if (!isOfflinePaymentMethodEnabled(business, paidVia)) {
+      return res.status(403).json({
+        message: `${paidVia === "cash" ? "Cash" : "POS card"} payments are disabled for this business.`,
       })
     }
 
@@ -575,8 +638,19 @@ export async function markPaid(req, res) {
     if (updatedOrder.receiptEmail && !updatedOrder.receiptSent) {
       ; (async () => {
         try {
-          await sendReceiptEmail(updatedOrder, updatedOrder.receiptEmail)
-          await Order.findOneAndUpdate({ _id: updatedOrder._id }, { $set: { receiptSent: true, receiptSentAt: new Date() } })
+          const emailSent = await sendReceiptEmail(
+            updatedOrder,
+            updatedOrder.receiptEmail,
+            { idempotencyKey: getOrderReceiptIdempotencyKey(updatedOrder) },
+          )
+          if (emailSent) {
+            await Order.findOneAndUpdate(
+              { _id: updatedOrder._id },
+              { $set: { receiptSent: true, receiptSentAt: new Date() } },
+            )
+          } else {
+            console.error(`[markPaid] Receipt provider did not accept order ${orderId}`)
+          }
         } catch (emailErr) {
           console.error(`[markPaid] ❌ Background receipt email failed for order ${orderId}:`, emailErr)
         }
@@ -704,6 +778,24 @@ export async function saveReceiptEmail(req, res) {
     order.receiptEmail = email;
     await order.save();
 
+    let receiptAttempted = false;
+    let receiptDelivered = Boolean(order.receiptSentAt || order.receiptSent);
+    if (
+      order.paymentChannel === "online" &&
+      order.paymentStatus === "paid" &&
+      !receiptDelivered
+    ) {
+      receiptAttempted = true;
+      receiptDelivered = await sendReceiptEmail(order, email, {
+        idempotencyKey: getOrderReceiptIdempotencyKey(order),
+      });
+      if (receiptDelivered) {
+        order.receiptSent = true;
+        order.receiptSentAt = new Date();
+        await order.save();
+      }
+    }
+
     if (marketingConsent !== undefined) {
       await CustomerConsent.findOneAndUpdate(
         { businessId: order.businessId, email },
@@ -720,7 +812,20 @@ export async function saveReceiptEmail(req, res) {
       trackVisit: order.paymentStatus === "paid"
     });
 
-    return res.status(200).json({ success: true, message: "Receipt email saved successfully" });
+    if (receiptAttempted && !receiptDelivered) {
+      return res.status(502).json({
+        success: false,
+        message: "Receipt email was saved, but the provider did not accept the message. Please try again.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      receiptSent: receiptDelivered,
+      message: receiptDelivered
+        ? "Receipt email saved and receipt sent successfully"
+        : "Receipt email saved successfully",
+    });
   } catch (err) {
     console.error("Save receipt email error:", err);
     return res.status(500).json({ message: "Server error" });

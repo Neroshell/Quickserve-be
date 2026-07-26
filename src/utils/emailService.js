@@ -13,6 +13,7 @@ import ReservationCancelledEmail from "../../emails/ReservationCancelledEmail.js
 import EmailChangeEmail from "../../emails/EmailChangeEmail.js";
 import HotelPaymentConfirmationEmail from "../../emails/HotelPaymentConfirmationEmail.js";
 import Business from "../models/Business.js";
+import ServicePoint from "../models/ServicePoint.js";
 import { getCustomerReservationPricing } from "../services/reservationPricingService.js";
 
 dotenv.config();
@@ -22,6 +23,19 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 function toCurrencyAmount(value) {
   const amount = Number(value);
   return Number.isFinite(amount) ? Number(amount.toFixed(2)) : 0;
+}
+
+function maskEmailAddress(value) {
+  const email = String(value || "").trim();
+  const atIndex = email.indexOf("@");
+  if (atIndex <= 1) return email ? "***" : "";
+  return `${email.slice(0, 2)}***${email.slice(atIndex)}`;
+}
+
+export function getOrderReceiptIdempotencyKey(order) {
+  const businessId = String(order?.businessId || "unknown-business");
+  const orderId = String(order?.orderId || order?._id || "unknown-order");
+  return `order-receipt/${businessId}/${orderId}`.slice(0, 256);
 }
 
 export function getReceiptServiceFeeAmount(order) {
@@ -49,31 +63,74 @@ export function getReceiptServiceFeeAmount(order) {
   return 0;
 }
 
-export async function sendEmail({ to, subject, html, from }) {
+function isInternalServicePointId(value) {
+  return /^sp_[a-z0-9]+$/i.test(String(value || "").trim());
+}
+
+export async function getReceiptServicePointLabel(order) {
+  const cachedDisplayLabel = String(order?.displayLabel || "").trim();
+  if (cachedDisplayLabel && !isInternalServicePointId(cachedDisplayLabel)) {
+    return cachedDisplayLabel;
+  }
+
+  const storedServicePointValue = String(order?.servicePointLabel || "").trim();
+  if (!isInternalServicePointId(storedServicePointValue)) {
+    return storedServicePointValue || "Service Point";
+  }
+
+  const servicePoint = await ServicePoint.findOne({
+    businessId: order?.businessId,
+    servicePointId: storedServicePointValue,
+  }).lean();
+
+  return String(servicePoint?.label || servicePoint?.code || "Service Point").trim();
+}
+
+export async function sendEmail({ to, subject, html, from, idempotencyKey, emailClient = resend }) {
   try {
-    const { data, error } = await resend.emails.send({
-      from,
-      to,
-      subject,
-      html,
-    });
+    const message = { from, to, subject, html };
+    const requestOptions = idempotencyKey ? { idempotencyKey } : undefined;
+    const { data, error } = await emailClient.emails.send(message, requestOptions);
 
     if (error) {
-      console.error("[EmailService]  Error sending email:", error);
+      console.error("[EmailService] Provider rejected email", {
+        provider: "resend",
+        providerStatus: "rejected",
+        recipient: maskEmailAddress(to),
+        name: error.name || "ResendError",
+        message: error.message || String(error),
+        responseCode: error.statusCode || error.status || null,
+      });
       return false;
     }
 
-    console.log(`[EmailService]  Email sent to ${to} (Message ID: ${data?.id})`);
+    console.log("[EmailService] Provider accepted email", {
+      provider: "resend",
+      providerStatus: "accepted",
+      recipient: maskEmailAddress(to),
+      providerMessageId: data?.id || null,
+    });
     return true;
   } catch (error) {
-    console.error("[EmailService]  Transport/Execution Error sending email:", error);
+    console.error("[EmailService] Transport/execution error sending email", {
+      provider: "resend",
+      recipient: maskEmailAddress(to),
+      name: error.name,
+      message: error.message,
+      responseCode: error.statusCode || error.status || null,
+      stack: error.stack,
+    });
     return false;
   }
 }
 
-export async function sendReceiptEmail(order, toEmail) {
+export async function sendReceiptEmail(order, toEmail, { idempotencyKey } = {}) {
   try {
-    console.log(`[EmailService] Initiating sendReceiptEmail for order: ${order.orderId}, email: ${toEmail}`);
+    console.log("[EmailService] Initiating order receipt", {
+      orderId: order.orderId,
+      businessId: order.businessId,
+      recipient: maskEmailAddress(toEmail),
+    });
     
     if (!order.items || !Array.isArray(order.items)) {
        console.error(`[EmailService]  order.items is invalid:`, order.items);
@@ -88,14 +145,15 @@ export async function sendReceiptEmail(order, toEmail) {
     const businessName = business?.displayName || business?.name || "QuickServe";
     const businessLogoUrl = business?.logoUrl;
     const servicePointTerm = business?.businessType === "hotel_apartment" ? "Room" : "Table";
+    const servicePointLabel = await getReceiptServicePointLabel(order);
 
     const props = {
       businessName,
       businessLogoUrl,
       orderId: order.orderId,
       orderDate: new Date(order.createdAt).toLocaleString(),
-      servicePointLabel: order.displayLabel || order.servicePointLabel,
-      servicePointCode: order.displayLabel || order.servicePointLabel,
+      servicePointLabel,
+      servicePointCode: servicePointLabel,
       servicePointTerm,
       orderType: order.orderType,
       paymentMethod: order.paidVia || order.paymentChannel,
@@ -120,9 +178,15 @@ export async function sendReceiptEmail(order, toEmail) {
     const subject = `Your receipt from ${businessName} — ${order.orderId}`;
     const from = process.env.EMAIL_FROM_RECEIPTS || "QuickServe Receipts <receipts@quickservehq.com>";
     
-    return await sendEmail({ to: toEmail, subject, html, from });
+    return await sendEmail({ to: toEmail, subject, html, from, idempotencyKey });
   } catch (error) {
-    console.error("[EmailService]  Error in sendReceiptEmail:", error);
+    console.error("[EmailService] Error in sendReceiptEmail", {
+      orderId: order?.orderId,
+      businessId: order?.businessId,
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    });
     return false;
   }
 }
