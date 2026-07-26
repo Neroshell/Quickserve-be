@@ -244,6 +244,7 @@ export default function ReceiptEmail({
   orderDate,
   servicePointLabel,
   servicePointCode,
+  servicePointTerm = "Service Point",
   orderType = "dine-in",
   paymentMethod = "offline",
   paymentStatus = "unpaid",
@@ -313,8 +314,8 @@ export default function ReceiptEmail({
           ),
           e(Row, { style: { marginTop: "12px" } },
             e(Column, null,
-              e(Text, { style: detailLabel }, servicePointTerm),
-              e(Text, { style: detailValue }, servicePointDisplay)
+              e(Text, { style: detailLabel }, 'Service Point'),
+              e(Text, { style: detailValue }, servicePointDisplay )
             ),
             e(Column, null,
               e(Text, { style: detailLabel }, "Type"),
