@@ -111,7 +111,9 @@ export async function ownerOrders(req, res) {
             {
                 _id: 0,
                 orderId: 1,
+                servicePointId: 1,
                 servicePointLabel: 1,
+                displayLabel: 1,
                 orderType: 1,
                 status: 1,
                 createdAt: 1,
@@ -177,7 +179,8 @@ export async function ownerOrders(req, res) {
 
             return {
                 orderId: o.orderId,
-                servicePointLabel: o.servicePointLabel || "",
+                servicePointId: o.servicePointId || o.servicePointLabel || "",
+                servicePointLabel: o.displayLabel || o.servicePointLabel || "",
                 orderType: o.orderType,
                 status: o.status,
                 createdAt: o.createdAt,
@@ -1343,7 +1346,20 @@ export async function ownerTransactions(req, res) {
             search,
         })
 
-        return res.json({ range, transactions })
+        const displayTransactions = transactions.map((transaction) => {
+            if (transaction.sourceType === "reservation") return transaction
+
+            return {
+                ...transaction,
+                
+                servicePointLabel:
+                    transaction.displayLabel ||
+                    transaction.servicePointLabel ||
+                    "",
+            }
+        })
+
+        return res.json({ range, transactions: displayTransactions })
     } catch (err) {
         console.error("[ownerTransactions]", err)
         return res.status(500).json({ error: "Failed to fetch owner transactions" })
