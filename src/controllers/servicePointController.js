@@ -1,5 +1,6 @@
 import ServicePoint, {
     generateServicePointId,
+    normalizeRoomType,
 } from "../models/ServicePoint.js"
 import Business from "../models/Business.js"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
@@ -13,6 +14,20 @@ import { resolveBusinessCapabilities } from "../services/businessCapabilityServi
  */
 function resolveOwnerBusinessId(req) {
     return req.session?.user?.businessId
+}
+
+export function resolveAllowedServicePointType(
+    business,
+    requestedServicePointType
+) {
+    const capabilities =
+        resolveBusinessCapabilities(business).servicePoints
+    const servicePointType =
+        requestedServicePointType || capabilities.defaultType
+
+    return capabilities.allowedTypes.includes(servicePointType)
+        ? servicePointType
+        : null
 }
 
 // ─── Controllers ──────────────────────────────────────────────────────────────
@@ -84,7 +99,18 @@ export async function createServicePoint(req, res) {
             return res.status(401).json({ error: "Unauthorized" })
         }
 
-        const { label, code, capacity, pricePerNight, description, amenities, images, beds, servicePointType: requestedServicePointType } = req.body
+        const {
+            label,
+            code,
+            capacity,
+            pricePerNight,
+            description,
+            amenities,
+            images,
+            beds,
+            roomType,
+            servicePointType: requestedServicePointType,
+        } = req.body
 
         if (!label || !label.trim()) {
             return res.status(400).json({ error: "label is required" })
@@ -100,10 +126,21 @@ export async function createServicePoint(req, res) {
             return res.status(404).json({ error: "Business not found" })
         }
 
-        const servicePointCapabilities = resolveBusinessCapabilities(business).servicePoints
-        const servicePointType = requestedServicePointType || servicePointCapabilities.defaultType
-        if (!servicePointCapabilities.allowedTypes.includes(servicePointType)) {
+        const servicePointType = resolveAllowedServicePointType(
+            business,
+            requestedServicePointType
+        )
+        if (!servicePointType) {
             return res.status(400).json({ error: "servicePointType is not enabled for this business" })
+        }
+        const normalizedRoomType = normalizeRoomType(roomType)
+        if (
+            servicePointType !== "room" &&
+            normalizedRoomType !== null
+        ) {
+            return res.status(400).json({
+                error: "roomType is only available for room ServicePoints",
+            })
         }
 
         // Generate a unique stable ID (retry on collision)
@@ -126,6 +163,10 @@ export async function createServicePoint(req, res) {
             label: label.trim(),
             code: code?.trim() || "",
             servicePointType,
+            roomType:
+                servicePointType === "room"
+                    ? normalizedRoomType
+                    : null,
             capacity: capacity ? Number(capacity) : null,
             isActive: true,
             pricePerNight: pricePerNight !== undefined ? Number(pricePerNight) : undefined,
@@ -157,7 +198,18 @@ export async function updateServicePoint(req, res) {
         }
 
         const { servicePointId } = req.params
-        const { label, code, capacity, pricePerNight, description, amenities, images, beds } = req.body
+        const {
+            label,
+            code,
+            capacity,
+            pricePerNight,
+            description,
+            amenities,
+            images,
+            beds,
+            roomType,
+            servicePointType: requestedServicePointType,
+        } = req.body
 
         const updates = {}
         if (label !== undefined) {
@@ -185,6 +237,67 @@ export async function updateServicePoint(req, res) {
         }
         if (beds !== undefined) {
             updates.beds = beds === null || beds === "" ? null : Number(beds)
+        }
+        if (
+            requestedServicePointType !== undefined ||
+            roomType !== undefined
+        ) {
+            const current = await ServicePoint.findOne({
+                servicePointId,
+                businessId,
+            }).lean()
+            if (!current) {
+                return res.status(404).json({
+                    error: "Service point not found",
+                })
+            }
+
+            let finalServicePointType =
+                current.servicePointType
+            if (requestedServicePointType !== undefined) {
+                const business = await Business.findOne({
+                    businessId,
+                }).lean()
+                if (!business) {
+                    return res.status(404).json({
+                        error: "Business not found",
+                    })
+                }
+                finalServicePointType =
+                    resolveAllowedServicePointType(
+                        business,
+                        requestedServicePointType
+                    )
+                if (!finalServicePointType) {
+                    return res.status(400).json({
+                        error: "servicePointType is not enabled for this business",
+                    })
+                }
+                updates.servicePointType =
+                    finalServicePointType
+            }
+
+            if (roomType !== undefined) {
+                const normalizedRoomType =
+                    normalizeRoomType(roomType)
+                if (
+                    finalServicePointType !== "room" &&
+                    normalizedRoomType !== null
+                ) {
+                    return res.status(400).json({
+                        error: "roomType is only available for room ServicePoints",
+                    })
+                }
+                updates.roomType =
+                    finalServicePointType === "room"
+                        ? normalizedRoomType
+                        : null
+            } else if (
+                requestedServicePointType !== undefined &&
+                finalServicePointType !== "room"
+            ) {
+                updates.roomType = null
+            }
         }
 
         if (Object.keys(updates).length === 0) {

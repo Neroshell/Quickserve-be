@@ -1,218 +1,215 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { getFoodServiceAnalytics } from "../src/services/analytics/foodServiceAnalyticsService.js"
+import {
+    FOOD_SERVICE_ACTIVE_STATUSES,
+    FOOD_SERVICE_COMPLETED_STATUSES,
+    getFoodServiceAnalytics,
+} from "../src/services/analytics/foodServiceAnalyticsService.js"
 
 const businessId = "biz_food"
-const startDate = new Date("2026-07-28T00:00:00.000Z")
-const endDate = new Date("2026-07-29T00:00:00.000Z")
+const analyticsRange = {
+    preset: "today",
+    timezone: "UTC",
+    from: "2026-07-28",
+    to: "2026-07-28",
+    startUtc: new Date("2026-07-28T02:00:00.000Z"),
+    endUtcExclusive: new Date("2026-07-29T02:00:00.000Z"),
+    comparison: {
+        from: "2026-07-27",
+        to: "2026-07-27",
+        startUtc: new Date("2026-07-27T02:00:00.000Z"),
+        endUtcExclusive: new Date(
+            "2026-07-28T02:00:00.000Z"
+        ),
+    },
+}
 
-const orders = [
-    {
-        businessId,
-        orderId: "paid-self",
-        createdAt: new Date("2026-07-28T08:00:00.000Z"),
-        readyAt: new Date("2026-07-28T08:20:00.000Z"),
-        status: "completed",
-        paymentStatus: "paid",
-        orderType: "dine-in",
-        orderSource: "self",
-        total: 33,
-        tipAmount: 3,
-        items: [
-            {
-                itemName: "Burger",
-                category: "mains",
-                quantity: 2,
-                lineTotal: 20,
-            },
-            {
-                itemName: "Soda",
-                category: "beverages",
-                quantity: 1,
-                lineTotal: 10,
-            },
-        ],
+const financials = {
+    current: {
+        grossCents: 5500,
+        netToBusinessCents: null,
+        transactionCount: 2,
+        averageTransactionValueCents: 2750,
+        totalTipsCents: 500,
+        averageTipCents: 250,
+        highestTipCents: 300,
+        ordersWithTips: 2,
+        tipRatePercent: 100,
     },
-    {
-        businessId,
-        orderId: "paid-staff",
-        createdAt: new Date("2026-07-28T09:00:00.000Z"),
-        completedAt: new Date("2026-07-28T09:30:00.000Z"),
-        status: "ready",
-        paymentStatus: "paid",
-        orderType: "takeout",
-        orderSource: "waitstaff",
-        total: 22,
-        tipAmount: 2,
-        items: [
-            {
-                itemName: "Salad",
-                category: "mains",
-                quantity: 1,
-                lineTotal: 20,
-            },
-        ],
+    comparison: {
+        grossCents: 4400,
+        netToBusinessCents: null,
+        transactionCount: 2,
+        averageTransactionValueCents: 2200,
+        totalTipsCents: 200,
+        averageTipCents: 200,
+        highestTipCents: 200,
+        ordersWithTips: 1,
+        tipRatePercent: 50,
     },
-    {
-        businessId,
-        orderId: "unpaid",
-        createdAt: new Date("2026-07-28T10:00:00.000Z"),
-        status: "placed",
-        paymentStatus: "unpaid",
-        orderType: "dine-in",
-        orderSource: "self",
-        total: 15,
-        tipAmount: 0,
-        items: [
-            {
-                itemName: "Fries",
-                category: "sides",
-                quantity: 1,
-                lineTotal: 15,
-            },
-        ],
-    },
-    {
-        businessId,
-        orderId: "cancelled",
-        createdAt: new Date("2026-07-28T11:00:00.000Z"),
-        status: "cancelled",
-        paymentStatus: "unpaid",
-        orderType: "takeout",
-        orderSource: "self",
-        total: 12,
-        tipAmount: 0,
-        items: [],
-    },
-    {
-        businessId: "biz_other",
-        orderId: "cross-tenant",
-        createdAt: new Date("2026-07-28T08:00:00.000Z"),
-        status: "completed",
-        paymentStatus: "paid",
-        orderType: "dine-in",
-        orderSource: "self",
-        total: 999,
-        tipAmount: 99,
-        items: [
-            {
-                itemName: "Other Tenant Item",
-                category: "mains",
-                quantity: 100,
-                lineTotal: 900,
-            },
-        ],
-    },
-]
+    averageOrderValueComparisonPercent: 25,
+    revenueByDay: [
+        {
+            date: "2026-07-28",
+            grossCents: 5500,
+            transactionCount: 2,
+        },
+    ],
+}
 
-function createModels({ includeData = true } = {}) {
-    const matches = []
+function createModels({ empty = false } = {}) {
+    const orderPipelines = []
+    const serviceRequestPipelines = []
     const servicePointQueries = []
 
     const orderModel = {
-        find(filter) {
-            matches.push(filter)
-            const matchingOrders = includeData
-                ? orders.filter(
-                      (order) =>
-                          order.businessId === filter.businessId &&
-                          order.createdAt >= filter.createdAt.$gte &&
-                          order.createdAt < filter.createdAt.$lt
-                  )
-                : []
-            return {
-                lean: async () => matchingOrders,
-            }
-        },
         async aggregate(pipeline) {
-            matches.push(pipeline[0].$match)
-            const groupId = pipeline.find((stage) => stage.$group)?.$group
-                ?._id
-            if (!includeData) return []
-            if (groupId === "$servicePointLabel") {
-                return [
-                    {
-                        _id: "sp_table1",
-                        label: "sp_table1",
-                        orderCount: 3,
-                        totalRevenue: 70,
-                        paidOrders: 2,
-                        unpaidOrders: 1,
-                    },
-                ]
-            }
-            if (groupId === "$paidByStaffId") {
-                return [
-                    {
-                        _id: "staff-1",
-                        name: "Alex",
-                        paymentsConfirmed: 2,
-                        totalOfflinePaymentsConfirmed: 50,
-                    },
-                ]
-            }
-            if (groupId === "$servedByStaffId") {
-                return [
-                    {
-                        _id: "staff-1",
-                        name: "Alex",
-                        ordersServed: 3,
-                    },
-                ]
-            }
-            throw new Error(`Unexpected Order aggregation: ${groupId}`)
+            orderPipelines.push(pipeline)
+            if (empty) return [{ }]
+            return [
+                {
+                    overview: [
+                        {
+                            activeOrders: 3,
+                            completedOrders: 2,
+                            totalPrepMinutes: 50,
+                            prepTimeCount: 2,
+                        },
+                    ],
+                    peakOrderHour: [
+                        { _id: 10, orderCount: 3 },
+                    ],
+                    hourlyOrders: [
+                        {
+                            _id: 10,
+                            orderCount: 3,
+                            paidRevenueCents: 5000,
+                        },
+                    ],
+                    totalItemsSold: [{ quantity: 4 }],
+                    topItems: [
+                        {
+                            _id: "Burger",
+                            quantity: 2,
+                            paidItemRevenueCents: 2000,
+                            category: "mains",
+                        },
+                        {
+                            _id: "Soda",
+                            quantity: 1,
+                            paidItemRevenueCents: 1000,
+                            category: "beverages",
+                        },
+                    ],
+                    categoryPerformance: [
+                        {
+                            _id: "mains",
+                            quantity: 3,
+                            paidItemRevenueCents: 4000,
+                        },
+                        {
+                            _id: "beverages",
+                            quantity: 1,
+                            paidItemRevenueCents: 1000,
+                        },
+                    ],
+                    orderTypeCounts: [
+                        { _id: "dine-in", orderCount: 3 },
+                        { _id: "takeout", orderCount: 1 },
+                    ],
+                    orderTypeRevenue: [
+                        {
+                            _id: "dine-in",
+                            paidRevenueCents: 3000,
+                        },
+                        {
+                            _id: "takeout",
+                            paidRevenueCents: 2000,
+                        },
+                    ],
+                    channelCounts: [
+                        { _id: "self", orderCount: 3 },
+                        { _id: "waitstaff", orderCount: 1 },
+                    ],
+                    channelRevenue: [
+                        {
+                            _id: "self",
+                            paidRevenueCents: 3000,
+                        },
+                        {
+                            _id: "waitstaff",
+                            paidRevenueCents: 2000,
+                        },
+                    ],
+                    servicePointPerformance: [
+                        {
+                            _id: "sp_table1",
+                            displayLabel: "Persisted Table",
+                            orderCount: 3,
+                            paidOrders: 2,
+                            unpaidOrders: 1,
+                            paidRevenueCents: 5000,
+                        },
+                    ],
+                    paymentStaff: [
+                        {
+                            _id: "staff-1",
+                            name: "Alex",
+                            paymentsConfirmed: 2,
+                            totalOfflinePaymentsConfirmedCents: 5000,
+                        },
+                    ],
+                    servedStaff: [
+                        {
+                            _id: "staff-1",
+                            name: "Alex",
+                            ordersServed: 3,
+                        },
+                    ],
+                },
+            ]
         },
     }
 
     const serviceRequestModel = {
         async aggregate(pipeline) {
-            matches.push(pipeline[0].$match)
-            if (!includeData) return []
-            const facet = pipeline[1].$facet
-            if (facet.byStatus) {
-                return [
-                    {
-                        byStatus: [
-                            { _id: "pending", count: 1 },
-                            { _id: "acknowledged", count: 1 },
-                            { _id: "resolved", count: 2 },
-                            { _id: "missed", count: 1 },
-                        ],
-                        byReason: [
-                            { _id: "request_bill", count: 2 },
-                            { _id: "assistance", count: 1 },
-                            { _id: "custom reason", count: 1 },
-                        ],
-                        responseTimes: [{ avg: 45.4 }],
-                        resolutionTimes: [{ avg: 100.6 }],
-                    },
-                ]
-            }
-            if (facet.acknowledged) {
-                return [
-                    {
-                        acknowledged: [
-                            {
-                                _id: "staff-1",
-                                name: "Alex",
-                                count: 2,
-                                totalRespMs: 60000,
-                                respCount: 2,
-                            },
-                        ],
-                        resolved: [
-                            {
-                                _id: "staff-1",
-                                name: "Alex",
-                                count: 1,
-                                totalResolMs: 120000,
-                                resolCount: 1,
-                            },
-                        ],
-                    },
-                ]
-            }
-            throw new Error("Unexpected ServiceRequest aggregation")
+            serviceRequestPipelines.push(pipeline)
+            if (empty) return [{ }]
+            return [
+                {
+                    byStatus: [
+                        { _id: "pending", count: 1 },
+                        { _id: "acknowledged", count: 1 },
+                        { _id: "resolved", count: 2 },
+                        { _id: "missed", count: 1 },
+                    ],
+                    byReason: [
+                        { _id: "request_bill", count: 2 },
+                        { _id: "assistance", count: 1 },
+                        { _id: "custom reason", count: 1 },
+                    ],
+                    responseTimes: [{ average: 45.4 }],
+                    resolutionTimes: [{ average: 100.6 }],
+                    acknowledgedStaff: [
+                        {
+                            _id: "staff-1",
+                            name: "Alex",
+                            count: 2,
+                            totalResponseMilliseconds: 60000,
+                            responseCount: 2,
+                        },
+                    ],
+                    resolvedStaff: [
+                        {
+                            _id: "staff-1",
+                            name: "Alex",
+                            count: 1,
+                            totalResolutionMilliseconds: 120000,
+                            resolutionCount: 1,
+                        },
+                    ],
+                },
+            ]
         },
     }
 
@@ -220,16 +217,14 @@ function createModels({ includeData = true } = {}) {
         find(filter) {
             servicePointQueries.push(filter)
             return {
-                lean: async () =>
-                    includeData
-                        ? [
-                              {
-                                  servicePointId: "sp_table1",
-                                  label: "Table 1",
-                                  code: "T1",
-                              },
-                          ]
-                        : [],
+                lean: async () => [
+                    {
+                        servicePointId: "sp_table1",
+                        label: "Table 1",
+                        code: "T1",
+                        servicePointType: "table",
+                    },
+                ],
             }
         },
     }
@@ -238,108 +233,195 @@ function createModels({ includeData = true } = {}) {
         orderModel,
         serviceRequestModel,
         servicePointModel,
-        matches,
+        orderPipelines,
+        serviceRequestPipelines,
         servicePointQueries,
     }
 }
 
-function getRange() {
-    return {
-        preset: "today",
-        startDate,
-        endDate,
-        timezone: "UTC",
-    }
-}
+test("food-service status sets explicitly count ready as active and never count cancelled as active", () => {
+    assert.deepEqual(FOOD_SERVICE_ACTIVE_STATUSES, [
+        "placed",
+        "in_progress",
+        "ready",
+    ])
+    assert.deepEqual(FOOD_SERVICE_COMPLETED_STATUSES, [
+        "completed",
+    ])
+    assert.equal(
+        FOOD_SERVICE_ACTIVE_STATUSES.includes("cancelled"),
+        false
+    )
+    assert.equal(
+        FOOD_SERVICE_ACTIVE_STATUSES.includes("unknown"),
+        false
+    )
+})
 
-test("food-service analytics preserves current paid, unpaid, cancelled, tip, item, and preparation behavior", async () => {
+test("food-service analytics returns the v2 overview, real comparison, tip cents, ISO revenue days, and hourly buckets", async () => {
     const models = createModels()
     const result = await getFoodServiceAnalytics({
         businessId,
-        analyticsRange: getRange(),
+        analyticsRange,
+        financials,
         ...models,
     })
 
-    assert.equal(result.stats.todayRevenue, 50)
-    assert.equal(result.stats.yesterdayRevenue, 0)
-    assert.equal(result.stats.weekRevenue, 50)
-    assert.equal(result.stats.activeOrders, 2)
-    assert.equal(result.stats.completedToday, 1)
-    assert.equal(result.stats.averageOrderValue, 25)
-    assert.equal(result.stats.averagePrepTime, 25)
-    assert.equal(result.stats.dineInCount, 2)
-    assert.equal(result.stats.takeoutCount, 2)
-    assert.equal(result.stats.totalItemsSold, 4)
+    assert.deepEqual(result.overview, {
+        paidRevenueCents: 5500,
+        activeOrders: 3,
+        completedOrders: 2,
+        averageOrderValueCents: 2750,
+        comparisonAverageOrderValueCents: 2200,
+        averageOrderValueComparisonPercent: 25,
+        averagePrepTimeMinutes: 25,
+        peakOrderHour: "10AM",
+        totalItemsSold: 4,
+    })
+    assert.deepEqual(result.tips, {
+        totalTipsCents: 500,
+        averageTipCents: 250,
+        highestTipCents: 300,
+        ordersWithTips: 2,
+        tipRatePercent: 100,
+    })
+    assert.deepEqual(result.revenueByDay, [
+        {
+            date: "2026-07-28",
+            grossCents: 5500,
+            orderCount: 2,
+        },
+    ])
+    assert.equal(result.hourlyOrders.length, 24)
+    assert.deepEqual(result.hourlyOrders[10], {
+        hour: "10AM",
+        orderCount: 3,
+        paidRevenueCents: 5000,
+    })
+})
 
-    assert.equal(result.stats.totalTipsCollected, 5)
-    assert.equal(result.stats.averageTip, 2.5)
-    assert.equal(result.stats.highestTip, 3)
-    assert.equal(result.stats.ordersWithTips, 2)
-    assert.equal(result.stats.tipRate, 100)
+test("food-service item/category, type, and channel breakdowns use integer cents and actual item revenue only", async () => {
+    const result = await getFoodServiceAnalytics({
+        businessId,
+        analyticsRange,
+        financials,
+        ...createModels(),
+    })
 
     assert.deepEqual(result.topItems[0], {
         itemName: "Burger",
         quantity: 2,
-        revenue: 20,
+        paidItemRevenueCents: 2000,
         category: "mains",
     })
     assert.deepEqual(result.categoryPerformance, [
         {
             category: "Mains",
-            revenue: 40,
             quantity: 3,
-            percentage: 80,
+            paidItemRevenueCents: 4000,
+            percentageOfItemRevenue: 80,
         },
         {
             category: "Beverages",
-            revenue: 10,
             quantity: 1,
-            percentage: 20,
+            paidItemRevenueCents: 1000,
+            percentageOfItemRevenue: 20,
         },
     ])
+    assert.equal(result.categoryRevenueBasis, "paidItemRevenue")
+    assert.equal(
+        result.categoryPerformance.some(
+            (row) => row.category === "Remaining"
+        ),
+        false
+    )
     assert.deepEqual(result.orderTypeBreakdown, [
         {
             type: "dine-in",
-            count: 2,
-            revenue: 30,
-            percentage: 50,
+            orderCount: 3,
+            paidRevenueCents: 3000,
+            orderPercentage: 75,
+            revenuePercentage: 60,
         },
         {
             type: "takeout",
-            count: 2,
-            revenue: 20,
-            percentage: 50,
+            orderCount: 1,
+            paidRevenueCents: 2000,
+            orderPercentage: 25,
+            revenuePercentage: 40,
         },
     ])
     assert.deepEqual(result.channelBreakdown, [
         {
             channel: "self",
             label: "Self Ordering",
-            count: 3,
-            revenue: 30,
+            orderCount: 3,
+            paidRevenueCents: 3000,
             orderPercentage: 75,
             revenuePercentage: 60,
         },
         {
             channel: "waitstaff",
             label: "Staff-Assisted Ordering",
-            count: 1,
-            revenue: 20,
+            orderCount: 1,
+            paidRevenueCents: 2000,
             orderPercentage: 25,
             revenuePercentage: 40,
         },
     ])
 })
 
-test("food-service analytics preserves service request, ServicePoint, and waitstaff response shapes", async () => {
+test("ServicePoint performance excludes unpaid value from paid revenue while retaining paid and unpaid counts", async () => {
     const models = createModels()
     const result = await getFoodServiceAnalytics({
         businessId,
-        analyticsRange: getRange(),
+        analyticsRange,
+        financials,
         ...models,
     })
 
-    assert.deepEqual(result.serviceCalls, {
+    assert.deepEqual(result.servicePointPerformance, [
+        {
+            servicePointId: "sp_table1",
+            label: "Table 1",
+            code: "T1",
+            servicePointType: "table",
+            orderCount: 3,
+            paidOrders: 2,
+            unpaidOrders: 1,
+            paidRevenueCents: 5000,
+            averagePaidOrderValueCents: 2500,
+        },
+    ])
+    assert.deepEqual(models.servicePointQueries, [
+        {
+            businessId,
+            servicePointId: {
+                $in: ["sp_table1"],
+            },
+        },
+    ])
+
+    const pipelineText = JSON.stringify(
+        models.orderPipelines[0]
+    )
+    assert.equal(
+        pipelineText.includes(
+            '"paidRevenueCents":{"$sum":{"$cond":[{"$eq":["$paymentStatus","paid"]}'
+        ),
+        true
+    )
+})
+
+test("service requests and staff performance retain focused service metrics with cents for offline payments", async () => {
+    const result = await getFoodServiceAnalytics({
+        businessId,
+        analyticsRange,
+        financials,
+        ...createModels(),
+    })
+
+    assert.deepEqual(result.serviceRequests, {
         total: 5,
         pending: 1,
         acknowledged: 1,
@@ -351,98 +433,126 @@ test("food-service analytics preserves service request, ServicePoint, and waitst
             emergency: 0,
             other: 1,
         },
-        avgResponseTimeSeconds: 45,
-        avgResolutionTimeSeconds: 101,
+        averageResponseTimeSeconds: 45,
+        averageResolutionTimeSeconds: 101,
     })
-    assert.deepEqual(result.tablePerformance, [
-        {
-            servicePointId: "sp_table1",
-            label: "Table 1",
-            code: "T1",
-            servicePointType: "table",
-            orderCount: 3,
-            totalRevenue: 70,
-            averageOrderValue: 23.33,
-            paidOrders: 2,
-            unpaidOrders: 1,
-        },
-    ])
-    assert.deepEqual(result.waitstaffPerformance, [
+    assert.deepEqual(result.staffPerformance, [
         {
             staffId: "staff-1",
             name: "Alex",
             callsAcknowledged: 2,
             callsResolved: 1,
-            avgResponseTimeSeconds: 30,
-            avgResolutionTimeSeconds: 120,
+            averageResponseTimeSeconds: 30,
+            averageResolutionTimeSeconds: 120,
             ordersServed: 3,
             paymentsConfirmed: 2,
-            totalOfflinePaymentsConfirmed: 50,
+            totalOfflinePaymentsConfirmedCents: 5000,
         },
     ])
 })
 
-test("all food-service analytics queries remain tenant scoped and exclude another tenant", async () => {
+test("all food-service pipelines and ServicePoint enrichment remain tenant scoped", async () => {
     const models = createModels()
-    const result = await getFoodServiceAnalytics({
+    await getFoodServiceAnalytics({
         businessId,
-        analyticsRange: getRange(),
+        analyticsRange,
+        financials,
         ...models,
     })
 
-    assert.equal(result.stats.todayRevenue, 50)
     assert.equal(
-        result.topItems.some(
-            (item) => item.itemName === "Other Tenant Item"
-        ),
-        false
+        models.orderPipelines[0][0].$match.businessId,
+        businessId
     )
-    assert.ok(models.matches.length >= 6)
-    for (const match of models.matches) {
-        assert.equal(match.businessId, businessId)
-        assert.deepEqual(match.createdAt, {
-            $gte: startDate,
-            $lt: endDate,
-        })
-    }
-    assert.deepEqual(models.servicePointQueries, [
+    assert.deepEqual(
+        models.orderPipelines[0][0].$match.$or[0],
         {
-            servicePointId: { $in: ["sp_table1"] },
+            createdAt: {
+                $gte: analyticsRange.startUtc,
+                $lt: analyticsRange.endUtcExclusive,
+            },
+        }
+    )
+    assert.deepEqual(models.serviceRequestPipelines[0][0], {
+        $match: {
             businessId,
+            module: "foodService",
+            createdAt: {
+                $gte: analyticsRange.startUtc,
+                $lt: analyticsRange.endUtcExclusive,
+            },
         },
-    ])
+    })
+    assert.equal(models.servicePointQueries[0].businessId, businessId)
 })
 
-test("empty food-service range returns the legacy zero-valued flat DTO", async () => {
-    const models = createModels({ includeData: false })
+test("empty enabled food-service module returns zero values and empty domain arrays", async () => {
+    const emptyFinancials = {
+        ...financials,
+        current: {
+            ...financials.current,
+            grossCents: 0,
+            transactionCount: 0,
+            averageTransactionValueCents: 0,
+            totalTipsCents: 0,
+            averageTipCents: 0,
+            highestTipCents: 0,
+            ordersWithTips: 0,
+            tipRatePercent: 0,
+        },
+        comparison: {
+            ...financials.comparison,
+            averageTransactionValueCents: 0,
+        },
+        averageOrderValueComparisonPercent: 0,
+        revenueByDay: [
+            {
+                date: "2026-07-28",
+                grossCents: 0,
+                transactionCount: 0,
+            },
+        ],
+    }
+    const models = createModels({ empty: true })
     const result = await getFoodServiceAnalytics({
         businessId,
-        analyticsRange: getRange(),
+        analyticsRange,
+        financials: emptyFinancials,
         ...models,
     })
 
-    assert.equal(result.stats.todayRevenue, 0)
-    assert.equal(result.stats.activeOrders, 0)
-    assert.equal(result.stats.peakHour, "N/A")
+    assert.deepEqual(result.overview, {
+        paidRevenueCents: 0,
+        activeOrders: 0,
+        completedOrders: 0,
+        averageOrderValueCents: 0,
+        comparisonAverageOrderValueCents: 0,
+        averageOrderValueComparisonPercent: 0,
+        averagePrepTimeMinutes: 0,
+        peakOrderHour: null,
+        totalItemsSold: 0,
+    })
     assert.equal(result.hourlyOrders.length, 24)
-    assert.equal(result.revenueByDay.length, 24)
     assert.deepEqual(result.topItems, [])
     assert.deepEqual(result.categoryPerformance, [])
-    assert.deepEqual(result.tablePerformance, [])
-    assert.deepEqual(result.waitstaffPerformance, [])
-    assert.deepEqual(result.serviceCalls, {
-        total: 0,
-        pending: 0,
-        acknowledged: 0,
-        resolved: 0,
-        missed: 0,
-        byReason: {
-            request_bill: 0,
-            assistance: 0,
-            emergency: 0,
-            other: 0,
+    assert.deepEqual(result.servicePointPerformance, [])
+    assert.deepEqual(result.staffPerformance, [])
+    assert.equal(models.servicePointQueries.length, 0)
+})
+
+test("null average-order comparison is preserved for growth from a zero prior period", async () => {
+    const result = await getFoodServiceAnalytics({
+        businessId,
+        analyticsRange,
+        financials: {
+            ...financials,
+            averageOrderValueComparisonPercent: null,
         },
-        avgResponseTimeSeconds: 0,
-        avgResolutionTimeSeconds: 0,
+        ...createModels(),
     })
+
+    assert.equal(
+        result.overview.averageOrderValueComparisonPercent,
+        null
+    )
 })

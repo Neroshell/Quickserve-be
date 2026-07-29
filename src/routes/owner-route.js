@@ -561,7 +561,10 @@ router.get("/reservations", getReservations)
  *             properties:
  *               status:
  *                 type: string
- *                 enum: [pending, confirmed, seated, cancelled, no_show]
+ *                 enum: [pending, confirmed, seated, completed, cancelled, no_show, accepted_awaiting_payment, expired, checked_out]
+ *               cancellationReason:
+ *                 type: string
+ *                 nullable: true
  *     responses:
  *       200:
  *         description: Reservation status updated successfully
@@ -610,7 +613,7 @@ router.post("/reservations/:id/check-in", checkInHotelReservation)
  * @openapi
  * /owner/reservations/{id}:
  *   delete:
- *     summary: Delete a reservation record
+ *     summary: Remove a terminal reservation from operational views
  *     tags:
  *       - Owner Reservations
  *     parameters:
@@ -621,7 +624,7 @@ router.post("/reservations/:id/check-in", checkInHotelReservation)
  *           type: string
  *     responses:
  *       200:
- *         description: Reservation deleted successfully
+ *         description: Reservation archived successfully
  */
 router.delete("/reservations/:id", deleteReservation)
 

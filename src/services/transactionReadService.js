@@ -62,7 +62,7 @@ export function toOrderTransaction(order) {
 export function toReservationTransaction(reservation) {
     const transactionId =
         reservation.publicReference ||
-        `HOTEL-${String(reservation._id).slice(-8).toUpperCase()}`
+        `Qsht-${String(reservation._id).slice(-9).toUpperCase()}`
     const legacySubtotal = Number(reservation.totalPrice || 0)
     const subtotal = Number.isFinite(Number(reservation.subtotal))
         ? Number(reservation.subtotal)

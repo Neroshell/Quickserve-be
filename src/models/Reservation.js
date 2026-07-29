@@ -4,6 +4,31 @@ import mongoose from "mongoose";
 // customers may reserve any length their selected time range allows.
 export const MIN_DURATION_MINUTES = 30;
 
+const ReservationStaffSnapshotSchema = new mongoose.Schema(
+  {
+    userId: { type: String, default: null },
+    name: { type: String, default: null },
+    email: { type: String, default: null },
+    role: { type: String, default: null },
+  },
+  { _id: false }
+);
+
+const ReservationCancellationActorSchema = new mongoose.Schema(
+  {
+    actorType: {
+      type: String,
+      enum: ["staff", "admin", "system"],
+      default: "staff",
+    },
+    userId: { type: String, default: null },
+    name: { type: String, default: null },
+    email: { type: String, default: null },
+    role: { type: String, default: null },
+  },
+  { _id: false }
+);
+
 /** Convert an "HH:MM" string to minutes-since-midnight. Returns NaN if invalid. */
 export function timeStringToMinutes(value) {
   if (typeof value !== "string") return NaN;
@@ -83,6 +108,12 @@ const ReservationSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    roomTypeSnapshot: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 80,
+    },
     specialRequest: {
       type: String,
       maxlength: 500,
@@ -148,7 +179,22 @@ const ReservationSchema = new mongoose.Schema(
     paymentStatus: { type: String, enum: ["pending", "paid", "failed", "refunded"], default: "pending" },
     secureToken: { type: String },
     paidAt: { type: Date },
-    confirmedAt: { type: Date },
+    confirmedAt: { type: Date, default: null },
+    confirmedBy: {
+      type: ReservationStaffSnapshotSchema,
+      default: null,
+    },
+    cancelledAt: { type: Date, default: null },
+    cancelledBy: {
+      type: ReservationCancellationActorSchema,
+      default: null,
+    },
+    cancellationReason: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 300,
+    },
     confirmationEmailSentAt: { type: Date },
     confirmationEmailMessageId: { type: String },
     confirmationEmailError: { type: String },
@@ -166,6 +212,16 @@ const ReservationSchema = new mongoose.Schema(
       email: { type: String },
       role: { type: String },
     },
+    checkedOutAt: { type: Date, default: null },
+    checkedOutBy: {
+      type: ReservationStaffSnapshotSchema,
+      default: null,
+    },
+    archivedAt: { type: Date, default: null },
+    archivedBy: {
+      type: ReservationStaffSnapshotSchema,
+      default: null,
+    },
     checkInCredentialVersion: { type: Number, default: 0 },
     confirmationEmailResentAt: { type: Date },
     confirmationEmailSendCount: { type: Number, default: 0 },
@@ -175,6 +231,29 @@ const ReservationSchema = new mongoose.Schema(
 );
 
 ReservationSchema.index({ businessId: 1, servicePointId: 1, date: 1, status: 1, startTime: 1, endTime: 1 });
+// Supports authoritative lodging revenue recognition by payment time.
+ReservationSchema.index({ businessId: 1, paymentStatus: 1, paidAt: 1 });
+// Event analytics use the persisted lifecycle instant as the leading range.
+ReservationSchema.index({ businessId: 1, confirmedAt: 1 });
+ReservationSchema.index({ businessId: 1, cancelledAt: 1 });
+ReservationSchema.index({ businessId: 1, checkedInAt: 1 });
+ReservationSchema.index({ businessId: 1, checkedOutAt: 1 });
+// Supports the explicitly named created-booking cancellation cohort.
+ReservationSchema.index({ businessId: 1, createdAt: 1, status: 1 });
+// Supports the current active/expired payment-link snapshot.
+ReservationSchema.index({
+  businessId: 1,
+  paymentStatus: 1,
+  status: 1,
+  paymentExpiresAt: 1,
+});
+// Supports stay-overlap availability and current-inventory occupancy queries.
+ReservationSchema.index({
+  businessId: 1,
+  checkInDate: 1,
+  checkOutDate: 1,
+  status: 1,
+});
 
 // Cross-field validation: the start/end time range is the source of truth and
 // must stay consistent with durationMinutes. Runs on every save (no exemptions).

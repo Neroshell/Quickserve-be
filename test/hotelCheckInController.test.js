@@ -63,7 +63,7 @@ test("generic status updates cannot bypass check-in code verification", async ()
 });
 
 test("a matching active code checks in the guest and records the staff member", async () => {
-  const originalFindById = Reservation.findById;
+  const originalFindOne = Reservation.findOne;
   const originalFindOneAndUpdate = Reservation.findOneAndUpdate;
   const now = Date.now();
   let capturedUpdate;
@@ -82,10 +82,17 @@ test("a matching active code checks in the guest and records the staff member", 
     checkInCodeFailedAttempts: 0,
   };
 
-  Reservation.findById = () => ({
+  Reservation.findOne = (filter) => {
+    assert.deepEqual(filter, {
+      _id: "reservation-1",
+      businessId: "hotel-1",
+    });
+    return {
     select: async () => reservation,
-  });
-  Reservation.findOneAndUpdate = async (_query, update) => {
+    };
+  };
+  Reservation.findOneAndUpdate = async (query, update) => {
+    assert.equal(query.businessId, "hotel-1");
     capturedUpdate = update;
     return { ...reservation, ...update.$set };
   };
@@ -119,7 +126,7 @@ test("a matching active code checks in the guest and records the staff member", 
       role: "owner",
     });
   } finally {
-    Reservation.findById = originalFindById;
+    Reservation.findOne = originalFindOne;
     Reservation.findOneAndUpdate = originalFindOneAndUpdate;
   }
 });

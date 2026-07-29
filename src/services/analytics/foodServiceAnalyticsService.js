@@ -1,66 +1,572 @@
-import { DateTime } from "luxon"
 import Order from "../../models/order.js"
 import ServicePoint from "../../models/ServicePoint.js"
 import ServiceRequest from "../../models/ServiceRequest.js"
+import { buildOrderAnalyticsFinancialFields } from "./sharedAnalyticsService.js"
 
-function createStats() {
+export const FOOD_SERVICE_ACTIVE_STATUSES = Object.freeze([
+    "placed",
+    "in_progress",
+    "ready",
+])
+export const FOOD_SERVICE_COMPLETED_STATUSES = Object.freeze([
+    "completed",
+])
+export const FOOD_SERVICE_PERFORMANCE_STATUSES = Object.freeze([
+    ...FOOD_SERVICE_ACTIVE_STATUSES,
+    ...FOOD_SERVICE_COMPLETED_STATUSES,
+])
+
+function currentCreatedAtMatch(analyticsRange) {
     return {
-        todayRevenue: 0,
-        yesterdayRevenue: 0,
-        weekRevenue: 0,
-        monthRevenue: 0,
-        activeOrders: 0,
-        completedToday: 0,
-        averageOrderValue: 0,
-        previousAverageOrderValue: 0,
-        totalItemsSold: 0,
-        peakHour: "N/A",
-        averagePrepTime: 0,
-        dineInCount: 0,
-        takeoutCount: 0,
-        customerOrderCount: 0,
-        staffOrderCount: 0,
-        customerRevenue: 0,
-        staffRevenue: 0,
-        totalTipsCollected: 0,
-        averageTip: 0,
-        highestTip: 0,
-        ordersWithTips: 0,
-        tipRate: 0,
+        createdAt: {
+            $gte: analyticsRange.startUtc,
+            $lt: analyticsRange.endUtcExclusive,
+        },
     }
 }
 
-function createHourlyOrdersMap() {
-    const hourlyOrdersMap = new Map()
-    for (let i = 0; i < 24; i++) {
-        const hour = i > 12 ? i - 12 : i === 0 ? 12 : i
-        const suffix = i >= 12 ? "PM" : "AM"
-        hourlyOrdersMap.set(`${hour}${suffix}`, { orders: 0, revenue: 0 })
+function currentPaidAtMatch(analyticsRange) {
+    return {
+        analyticsPaidAt: {
+            $gte: analyticsRange.startUtc,
+            $lt: analyticsRange.endUtcExclusive,
+        },
+        paymentStatus: "paid",
+        status: { $ne: "cancelled" },
     }
-    return hourlyOrdersMap
 }
 
-function getServiceCallAggregation({ businessId, startDate, endDate }) {
+function prepMinutesExpression() {
+    return {
+        $let: {
+            vars: {
+                prepEnd: {
+                    $ifNull: ["$readyAt", "$completedAt"],
+                },
+            },
+            in: {
+                $cond: [
+                    {
+                        $and: [
+                            { $ne: ["$$prepEnd", null] },
+                            { $ne: ["$createdAt", null] },
+                        ],
+                    },
+                    {
+                        $divide: [
+                            {
+                                $subtract: [
+                                    "$$prepEnd",
+                                    "$createdAt",
+                                ],
+                            },
+                            60000,
+                        ],
+                    },
+                    null,
+                ],
+            },
+        },
+    }
+}
+
+function buildFoodServiceOrderPipeline({
+    businessId,
+    analyticsRange,
+}) {
+    const createdAtMatch = currentCreatedAtMatch(analyticsRange)
+    const paidAtMatch = currentPaidAtMatch(analyticsRange)
+
     return [
         {
             $match: {
                 businessId,
-                createdAt: { $gte: startDate, $lt: endDate },
+                $or: [
+                    createdAtMatch,
+                    {
+                        paymentStatus: "paid",
+                        paidAt: {
+                            $gte: analyticsRange.startUtc,
+                            $lt: analyticsRange.endUtcExclusive,
+                        },
+                    },
+                ],
+            },
+        },
+        {
+            $addFields: {
+                ...buildOrderAnalyticsFinancialFields(),
+                analyticsPrepMinutes: prepMinutesExpression(),
+            },
+        },
+        {
+            $facet: {
+                overview: [
+                    { $match: createdAtMatch },
+                    {
+                        $group: {
+                            _id: null,
+                            activeOrders: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $in: [
+                                                "$status",
+                                                FOOD_SERVICE_ACTIVE_STATUSES,
+                                            ],
+                                        },
+                                        1,
+                                        0,
+                                    ],
+                                },
+                            },
+                            completedOrders: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $in: [
+                                                "$status",
+                                                FOOD_SERVICE_COMPLETED_STATUSES,
+                                            ],
+                                        },
+                                        1,
+                                        0,
+                                    ],
+                                },
+                            },
+                            totalPrepMinutes: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $and: [
+                                                {
+                                                    $gt: [
+                                                        "$analyticsPrepMinutes",
+                                                        0,
+                                                    ],
+                                                },
+                                                {
+                                                    $lt: [
+                                                        "$analyticsPrepMinutes",
+                                                        300,
+                                                    ],
+                                                },
+                                            ],
+                                        },
+                                        "$analyticsPrepMinutes",
+                                        0,
+                                    ],
+                                },
+                            },
+                            prepTimeCount: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $and: [
+                                                {
+                                                    $gt: [
+                                                        "$analyticsPrepMinutes",
+                                                        0,
+                                                    ],
+                                                },
+                                                {
+                                                    $lt: [
+                                                        "$analyticsPrepMinutes",
+                                                        300,
+                                                    ],
+                                                },
+                                            ],
+                                        },
+                                        1,
+                                        0,
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                ],
+                peakOrderHour: [
+                    {
+                        $match: {
+                            ...createdAtMatch,
+                            status: {
+                                $in: FOOD_SERVICE_PERFORMANCE_STATUSES,
+                            },
+                        },
+                    },
+                    {
+                        $group: {
+                            _id: {
+                                $hour: {
+                                    date: "$createdAt",
+                                    timezone:
+                                        analyticsRange.timezone,
+                                },
+                            },
+                            orderCount: { $sum: 1 },
+                        },
+                    },
+                    { $sort: { orderCount: -1, _id: 1 } },
+                    { $limit: 1 },
+                ],
+                hourlyOrders: [
+                    {
+                        $match: {
+                            ...createdAtMatch,
+                            status: {
+                                $in: FOOD_SERVICE_PERFORMANCE_STATUSES,
+                            },
+                        },
+                    },
+                    {
+                        $group: {
+                            _id: {
+                                $hour: {
+                                    date: "$createdAt",
+                                    timezone:
+                                        analyticsRange.timezone,
+                                },
+                            },
+                            orderCount: { $sum: 1 },
+                            paidRevenueCents: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $eq: [
+                                                "$paymentStatus",
+                                                "paid",
+                                            ],
+                                        },
+                                        "$analyticsGrossCents",
+                                        0,
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                    { $sort: { _id: 1 } },
+                ],
+                totalItemsSold: [
+                    { $match: paidAtMatch },
+                    { $unwind: "$items" },
+                    {
+                        $group: {
+                            _id: null,
+                            quantity: {
+                                $sum: {
+                                    $ifNull: [
+                                        "$items.quantity",
+                                        0,
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                ],
+                topItems: [
+                    { $match: paidAtMatch },
+                    { $unwind: "$items" },
+                    {
+                        $group: {
+                            _id: "$items.itemName",
+                            quantity: {
+                                $sum: {
+                                    $ifNull: [
+                                        "$items.quantity",
+                                        0,
+                                    ],
+                                },
+                            },
+                            paidItemRevenueCents: {
+                                $sum: {
+                                    $round: [
+                                        {
+                                            $multiply: [
+                                                {
+                                                    $ifNull: [
+                                                        "$items.lineTotal",
+                                                        0,
+                                                    ],
+                                                },
+                                                100,
+                                            ],
+                                        },
+                                        0,
+                                    ],
+                                },
+                            },
+                            category: {
+                                $first: {
+                                    $ifNull: [
+                                        "$items.category",
+                                        "uncategorized",
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                    { $sort: { quantity: -1, _id: 1 } },
+                    { $limit: 5 },
+                ],
+                categoryPerformance: [
+                    { $match: paidAtMatch },
+                    { $unwind: "$items" },
+                    {
+                        $group: {
+                            _id: {
+                                $ifNull: [
+                                    "$items.category",
+                                    "uncategorized",
+                                ],
+                            },
+                            quantity: {
+                                $sum: {
+                                    $ifNull: [
+                                        "$items.quantity",
+                                        0,
+                                    ],
+                                },
+                            },
+                            paidItemRevenueCents: {
+                                $sum: {
+                                    $round: [
+                                        {
+                                            $multiply: [
+                                                {
+                                                    $ifNull: [
+                                                        "$items.lineTotal",
+                                                        0,
+                                                    ],
+                                                },
+                                                100,
+                                            ],
+                                        },
+                                        0,
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        $sort: {
+                            paidItemRevenueCents: -1,
+                            _id: 1,
+                        },
+                    },
+                ],
+                orderTypeCounts: [
+                    {
+                        $match: {
+                            ...createdAtMatch,
+                            status: {
+                                $in: FOOD_SERVICE_PERFORMANCE_STATUSES,
+                            },
+                        },
+                    },
+                    {
+                        $group: {
+                            _id: "$orderType",
+                            orderCount: { $sum: 1 },
+                        },
+                    },
+                ],
+                orderTypeRevenue: [
+                    { $match: paidAtMatch },
+                    {
+                        $group: {
+                            _id: "$orderType",
+                            paidRevenueCents: {
+                                $sum: "$analyticsGrossCents",
+                            },
+                        },
+                    },
+                ],
+                channelCounts: [
+                    {
+                        $match: {
+                            ...createdAtMatch,
+                            status: {
+                                $in: FOOD_SERVICE_PERFORMANCE_STATUSES,
+                            },
+                        },
+                    },
+                    {
+                        $group: {
+                            _id: "$orderSource",
+                            orderCount: { $sum: 1 },
+                        },
+                    },
+                ],
+                channelRevenue: [
+                    { $match: paidAtMatch },
+                    {
+                        $group: {
+                            _id: "$orderSource",
+                            paidRevenueCents: {
+                                $sum: "$analyticsGrossCents",
+                            },
+                        },
+                    },
+                ],
+                servicePointPerformance: [
+                    {
+                        $match: {
+                            ...createdAtMatch,
+                            status: {
+                                $in: FOOD_SERVICE_PERFORMANCE_STATUSES,
+                            },
+                        },
+                    },
+                    {
+                        $group: {
+                            _id: "$servicePointLabel",
+                            displayLabel: {
+                                $first: "$displayLabel",
+                            },
+                            orderCount: { $sum: 1 },
+                            paidOrders: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $eq: [
+                                                "$paymentStatus",
+                                                "paid",
+                                            ],
+                                        },
+                                        1,
+                                        0,
+                                    ],
+                                },
+                            },
+                            unpaidOrders: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $ne: [
+                                                "$paymentStatus",
+                                                "paid",
+                                            ],
+                                        },
+                                        1,
+                                        0,
+                                    ],
+                                },
+                            },
+                            paidRevenueCents: {
+                                $sum: {
+                                    $cond: [
+                                        {
+                                            $eq: [
+                                                "$paymentStatus",
+                                                "paid",
+                                            ],
+                                        },
+                                        "$analyticsGrossCents",
+                                        0,
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        $sort: {
+                            orderCount: -1,
+                            paidRevenueCents: -1,
+                        },
+                    },
+                ],
+                paymentStaff: [
+                    {
+                        $match: {
+                            ...paidAtMatch,
+                            paidByStaffId: { $ne: null },
+                            paymentChannel: "offline",
+                        },
+                    },
+                    {
+                        $group: {
+                            _id: "$paidByStaffId",
+                            name: { $first: "$paidByName" },
+                            paymentsConfirmed: { $sum: 1 },
+                            totalOfflinePaymentsConfirmedCents: {
+                                $sum: "$analyticsGrossCents",
+                            },
+                        },
+                    },
+                ],
+                servedStaff: [
+                    {
+                        $match: {
+                            ...createdAtMatch,
+                            servedByStaffId: { $ne: null },
+                            status: "completed",
+                        },
+                    },
+                    {
+                        $group: {
+                            _id: "$servedByStaffId",
+                            name: { $first: "$servedByName" },
+                            ordersServed: { $sum: 1 },
+                        },
+                    },
+                ],
+            },
+        },
+    ]
+}
+
+function buildServiceRequestPipeline({
+    businessId,
+    analyticsRange,
+}) {
+    const createdAt = {
+        $gte: analyticsRange.startUtc,
+        $lt: analyticsRange.endUtcExclusive,
+    }
+
+    return [
+        {
+            $match: {
+                businessId,
+                module: "foodService",
+                createdAt,
             },
         },
         {
             $facet: {
                 byStatus: [
-                    { $group: { _id: "$status", count: { $sum: 1 } } },
+                    { $match: { createdAt } },
+                    {
+                        $group: {
+                            _id: "$status",
+                            count: { $sum: 1 },
+                        },
+                    },
                 ],
                 byReason: [
-                    { $group: { _id: "$reason", count: { $sum: 1 } } },
+                    { $match: { createdAt } },
+                    {
+                        $group: {
+                            _id: {
+                                $ifNull: [
+                                    "$requestCategory",
+                                    "$reason",
+                                ],
+                            },
+                            count: { $sum: 1 },
+                        },
+                    },
                 ],
                 responseTimes: [
-                    { $match: { acknowledgedAt: { $ne: null } } },
+                    {
+                        $match: {
+                            createdAt,
+                            acknowledgedAt: { $ne: null },
+                        },
+                    },
                     {
                         $project: {
-                            responseTimeSeconds: {
+                            seconds: {
                                 $divide: [
                                     {
                                         $subtract: [
@@ -76,20 +582,21 @@ function getServiceCallAggregation({ businessId, startDate, endDate }) {
                     {
                         $group: {
                             _id: null,
-                            avg: { $avg: "$responseTimeSeconds" },
+                            average: { $avg: "$seconds" },
                         },
                     },
                 ],
                 resolutionTimes: [
                     {
                         $match: {
+                            createdAt,
                             resolvedAt: { $ne: null },
                             status: "resolved",
                         },
                     },
                     {
                         $project: {
-                            resolutionTimeSeconds: {
+                            seconds: {
                                 $divide: [
                                     {
                                         $subtract: [
@@ -105,102 +612,31 @@ function getServiceCallAggregation({ businessId, startDate, endDate }) {
                     {
                         $group: {
                             _id: null,
-                            avg: { $avg: "$resolutionTimeSeconds" },
+                            average: { $avg: "$seconds" },
                         },
                     },
                 ],
-            },
-        },
-    ]
-}
-
-function getServicePointPerformanceAggregation({
-    businessId,
-    startDate,
-    endDate,
-}) {
-    return [
-        {
-            $match: {
-                businessId,
-                createdAt: { $gte: startDate, $lt: endDate },
-                status: {
-                    $in: ["placed", "in_progress", "ready", "completed"],
-                },
-            },
-        },
-        {
-            $group: {
-                _id: "$servicePointLabel",
-                label: { $first: "$servicePointLabel" },
-                orderCount: { $sum: 1 },
-                totalRevenue: {
-                    $sum: {
-                        $subtract: [
-                            { $ifNull: ["$total", 0] },
-                            { $ifNull: ["$tipAmount", 0] },
-                        ],
-                    },
-                },
-                paidOrders: {
-                    $sum: {
-                        $cond: [
-                            { $eq: ["$paymentStatus", "paid"] },
-                            1,
-                            0,
-                        ],
-                    },
-                },
-                unpaidOrders: {
-                    $sum: {
-                        $cond: [
-                            { $ne: ["$paymentStatus", "paid"] },
-                            1,
-                            0,
-                        ],
-                    },
-                },
-            },
-        },
-        { $sort: { orderCount: -1, totalRevenue: -1 } },
-    ]
-}
-
-function getWaitstaffCallAggregation({ businessId, startDate, endDate }) {
-    return [
-        {
-            $match: {
-                businessId,
-                createdAt: { $gte: startDate, $lt: endDate },
-            },
-        },
-        {
-            $facet: {
-                acknowledged: [
+                acknowledgedStaff: [
                     {
                         $match: {
+                            createdAt,
                             acknowledgedByStaffId: { $ne: null },
                         },
                     },
                     {
                         $group: {
                             _id: "$acknowledgedByStaffId",
-                            name: { $first: "$acknowledgedByName" },
+                            name: {
+                                $first: "$acknowledgedByName",
+                            },
                             count: { $sum: 1 },
-                            totalRespMs: {
+                            totalResponseMilliseconds: {
                                 $sum: {
                                     $cond: [
                                         {
-                                            $and: [
-                                                {
-                                                    $ne: [
-                                                        "$acknowledgedAt",
-                                                        null,
-                                                    ],
-                                                },
-                                                {
-                                                    $ne: ["$createdAt", null],
-                                                },
+                                            $ne: [
+                                                "$acknowledgedAt",
+                                                null,
                                             ],
                                         },
                                         {
@@ -213,7 +649,7 @@ function getWaitstaffCallAggregation({ businessId, startDate, endDate }) {
                                     ],
                                 },
                             },
-                            respCount: {
+                            responseCount: {
                                 $sum: {
                                     $cond: [
                                         {
@@ -230,9 +666,10 @@ function getWaitstaffCallAggregation({ businessId, startDate, endDate }) {
                         },
                     },
                 ],
-                resolved: [
+                resolvedStaff: [
                     {
                         $match: {
+                            createdAt,
                             resolvedByStaffId: { $ne: null },
                         },
                     },
@@ -241,20 +678,13 @@ function getWaitstaffCallAggregation({ businessId, startDate, endDate }) {
                             _id: "$resolvedByStaffId",
                             name: { $first: "$resolvedByName" },
                             count: { $sum: 1 },
-                            totalResolMs: {
+                            totalResolutionMilliseconds: {
                                 $sum: {
                                     $cond: [
                                         {
-                                            $and: [
-                                                {
-                                                    $ne: [
-                                                        "$resolvedAt",
-                                                        null,
-                                                    ],
-                                                },
-                                                {
-                                                    $ne: ["$createdAt", null],
-                                                },
+                                            $ne: [
+                                                "$resolvedAt",
+                                                null,
                                             ],
                                         },
                                         {
@@ -267,7 +697,7 @@ function getWaitstaffCallAggregation({ businessId, startDate, endDate }) {
                                     ],
                                 },
                             },
-                            resolCount: {
+                            resolutionCount: {
                                 $sum: {
                                     $cond: [
                                         {
@@ -286,104 +716,114 @@ function getWaitstaffCallAggregation({ businessId, startDate, endDate }) {
     ]
 }
 
-function getPaymentStaffAggregation({ businessId, startDate, endDate }) {
-    return [
-        {
-            $match: {
-                businessId,
-                createdAt: { $gte: startDate, $lt: endDate },
-                paidByStaffId: { $ne: null },
-                paymentStatus: "paid",
-            },
-        },
-        {
-            $group: {
-                _id: "$paidByStaffId",
-                name: { $first: "$paidByName" },
-                paymentsConfirmed: { $sum: 1 },
-                totalOfflinePaymentsConfirmed: {
-                    $sum: {
-                        $cond: [
-                            { $eq: ["$paymentChannel", "offline"] },
-                            {
-                                $subtract: [
-                                    { $ifNull: ["$total", 0] },
-                                    { $ifNull: ["$tipAmount", 0] },
-                                ],
-                            },
-                            0,
-                        ],
-                    },
-                },
-            },
-        },
-    ]
+function integer(value) {
+    const number = Number(value || 0)
+    return Number.isFinite(number) ? Math.round(number) : 0
 }
 
-function getServedStaffAggregation({ businessId, startDate, endDate }) {
-    return [
-        {
-            $match: {
-                businessId,
-                createdAt: { $gte: startDate, $lt: endDate },
-                servedByStaffId: { $ne: null },
-                status: "completed",
-            },
-        },
-        {
-            $group: {
-                _id: "$servedByStaffId",
-                name: { $first: "$servedByName" },
-                ordersServed: { $sum: 1 },
-            },
-        },
-    ]
+function hourLabel(hourIndex) {
+    const hour = hourIndex > 12
+        ? hourIndex - 12
+        : hourIndex === 0
+          ? 12
+          : hourIndex
+    return `${hour}${hourIndex >= 12 ? "PM" : "AM"}`
 }
 
-function shapeServiceCalls(serviceCallsAggregation) {
-    const facet = serviceCallsAggregation?.[0] || {}
-    const byStatus = {}
-    for (const row of facet.byStatus || []) {
-        if (row._id) byStatus[row._id] = row.count
-    }
+function shapeHourlyOrders(rows) {
+    const byHour = new Map(
+        (rows || []).map((row) => [
+            Number(row._id),
+            {
+                orderCount: integer(row.orderCount),
+                paidRevenueCents: integer(
+                    row.paidRevenueCents
+                ),
+            },
+        ])
+    )
 
-    const knownReasons = ["request_bill", "assistance", "emergency"]
-    const byReason = {
-        request_bill: 0,
-        assistance: 0,
-        emergency: 0,
-        other: 0,
-    }
-    for (const row of facet.byReason || []) {
-        const key = (row._id || "")
-            .toLowerCase()
-            .trim()
-            .replace(/\s+/g, "_")
-        if (knownReasons.includes(key)) {
-            byReason[key] += row.count
-        } else {
-            byReason.other += row.count
+    return Array.from({ length: 24 }, (_, hourIndex) => ({
+        hour: hourLabel(hourIndex),
+        orderCount: byHour.get(hourIndex)?.orderCount || 0,
+        paidRevenueCents:
+            byHour.get(hourIndex)?.paidRevenueCents || 0,
+    }))
+}
+
+function percentage(part, total) {
+    return total > 0
+        ? Math.round((part / total) * 1000) / 10
+        : 0
+}
+
+function shapeBreakdown({
+    ids,
+    labels,
+    countRows,
+    revenueRows,
+    idField,
+}) {
+    const counts = new Map(
+        (countRows || []).map((row) => [
+            row._id,
+            integer(row.orderCount),
+        ])
+    )
+    const revenues = new Map(
+        (revenueRows || []).map((row) => [
+            row._id,
+            integer(row.paidRevenueCents),
+        ])
+    )
+    const totalOrders = ids.reduce(
+        (sum, id) => sum + (counts.get(id) || 0),
+        0
+    )
+    const totalRevenue = ids.reduce(
+        (sum, id) => sum + (revenues.get(id) || 0),
+        0
+    )
+
+    return ids.map((id) => ({
+        [idField]: id,
+        ...(labels ? { label: labels[id] } : {}),
+        orderCount: counts.get(id) || 0,
+        paidRevenueCents: revenues.get(id) || 0,
+        orderPercentage: percentage(
+            counts.get(id) || 0,
+            totalOrders
+        ),
+        revenuePercentage: percentage(
+            revenues.get(id) || 0,
+            totalRevenue
+        ),
+    }))
+}
+
+function shapeCategoryPerformance(rows) {
+    const totalItemRevenueCents = (rows || []).reduce(
+        (sum, row) => sum + integer(row.paidItemRevenueCents),
+        0
+    )
+
+    return (rows || []).map((row) => {
+        const paidItemRevenueCents = integer(
+            row.paidItemRevenueCents
+        )
+        const rawCategory = row._id || "uncategorized"
+        return {
+            category:
+                rawCategory.charAt(0).toUpperCase() +
+                rawCategory.slice(1),
+            quantity: integer(row.quantity),
+            paidItemRevenueCents,
+            percentageOfItemRevenue: percentage(
+                paidItemRevenueCents,
+                totalItemRevenueCents
+            ),
         }
-    }
-
-    return {
-        total:
-            (byStatus.pending || 0) +
-            (byStatus.acknowledged || 0) +
-            (byStatus.resolved || 0) +
-            (byStatus.missed || 0),
-        pending: byStatus.pending || 0,
-        acknowledged: byStatus.acknowledged || 0,
-        resolved: byStatus.resolved || 0,
-        missed: byStatus.missed || 0,
-        byReason,
-        avgResponseTimeSeconds: Math.round(
-            facet.responseTimes?.[0]?.avg || 0
-        ),
-        avgResolutionTimeSeconds: Math.round(
-            facet.resolutionTimes?.[0]?.avg || 0
-        ),
-    }
+    })
 }
 
 async function shapeServicePointPerformance({
@@ -391,527 +831,330 @@ async function shapeServicePointPerformance({
     businessId,
     servicePointModel,
 }) {
-    const servicePointIds = rows
+    const servicePointIds = (rows || [])
         .map((row) => row._id)
         .filter(
             (id) => typeof id === "string" && id.startsWith("sp_")
         )
-
     const servicePoints =
         servicePointIds.length > 0
             ? await servicePointModel
                   .find(
                       {
-                          servicePointId: { $in: servicePointIds },
                           businessId,
+                          servicePointId: {
+                              $in: servicePointIds,
+                          },
                       },
                       "servicePointId label code servicePointType"
                   )
                   .lean()
             : []
+    const metadata = new Map(
+        servicePoints.map((servicePoint) => [
+            servicePoint.servicePointId,
+            servicePoint,
+        ])
+    )
 
-    const servicePointMap = {}
-    for (const servicePoint of servicePoints) {
-        servicePointMap[servicePoint.servicePointId] = servicePoint
-    }
-
-    return rows.map((row) => {
-        const servicePoint = servicePointMap[row._id]
-        const revenue = row.totalRevenue || 0
-        const count = row.orderCount || 0
+    return (rows || []).map((row) => {
+        const servicePoint = metadata.get(row._id)
+        const paidOrders = integer(row.paidOrders)
+        const paidRevenueCents = integer(row.paidRevenueCents)
         return {
             servicePointId: row._id || "",
             label:
                 servicePoint?.label ||
-                row.label ||
+                row.displayLabel ||
                 row._id ||
                 "Unknown",
             code: servicePoint?.code || "",
             servicePointType:
                 servicePoint?.servicePointType || "table",
-            orderCount: count,
-            totalRevenue: +revenue.toFixed(2),
-            averageOrderValue:
-                count > 0 ? +(revenue / count).toFixed(2) : 0,
-            paidOrders: row.paidOrders || 0,
-            unpaidOrders: row.unpaidOrders || 0,
+            orderCount: integer(row.orderCount),
+            paidOrders,
+            unpaidOrders: integer(row.unpaidOrders),
+            paidRevenueCents,
+            averagePaidOrderValueCents:
+                paidOrders > 0
+                    ? Math.round(
+                          paidRevenueCents / paidOrders
+                      )
+                    : 0,
         }
     })
 }
 
-function shapeWaitstaffPerformance({
-    waiterCallStaffAggregation,
-    paymentStaffAggregation,
-    servedStaffAggregation,
-}) {
-    const staffMap = {}
+function shapeServiceRequests(facet) {
+    const statuses = new Map(
+        (facet.byStatus || []).map((row) => [
+            row._id,
+            integer(row.count),
+        ])
+    )
+    const byReason = {
+        request_bill: 0,
+        assistance: 0,
+        emergency: 0,
+        other: 0,
+    }
+    for (const row of facet.byReason || []) {
+        const reason = String(row._id || "")
+            .toLowerCase()
+            .trim()
+            .replace(/\s+/g, "_")
+        const target = Object.hasOwn(byReason, reason)
+            ? reason
+            : "other"
+        byReason[target] += integer(row.count)
+    }
 
-    function ensureStaff(id, name) {
-        if (!id) return
-        if (!staffMap[id]) {
-            staffMap[id] = {
+    return {
+        total:
+            (statuses.get("pending") || 0) +
+            (statuses.get("acknowledged") || 0) +
+            (statuses.get("resolved") || 0) +
+            (statuses.get("missed") || 0),
+        pending: statuses.get("pending") || 0,
+        acknowledged: statuses.get("acknowledged") || 0,
+        resolved: statuses.get("resolved") || 0,
+        missed: statuses.get("missed") || 0,
+        byReason,
+        averageResponseTimeSeconds: integer(
+            facet.responseTimes?.[0]?.average
+        ),
+        averageResolutionTimeSeconds: integer(
+            facet.resolutionTimes?.[0]?.average
+        ),
+    }
+}
+
+function shapeStaffPerformance({
+    serviceRequestFacet,
+    orderFacet,
+}) {
+    const staff = new Map()
+
+    function ensure(id, name) {
+        if (!id) return null
+        if (!staff.has(id)) {
+            staff.set(id, {
                 staffId: id,
                 name: name || "Unknown Staff",
                 callsAcknowledged: 0,
                 callsResolved: 0,
-                totalRespMs: 0,
-                respCount: 0,
-                totalResolMs: 0,
-                resolCount: 0,
+                totalResponseMilliseconds: 0,
+                responseCount: 0,
+                totalResolutionMilliseconds: 0,
+                resolutionCount: 0,
                 ordersServed: 0,
                 paymentsConfirmed: 0,
-                totalOfflinePaymentsConfirmed: 0,
-            }
+                totalOfflinePaymentsConfirmedCents: 0,
+            })
         }
-        if (name && staffMap[id].name === "Unknown Staff") {
-            staffMap[id].name = name
+        const current = staff.get(id)
+        if (name && current.name === "Unknown Staff") {
+            current.name = name
         }
+        return current
     }
 
-    const waiterFacet = waiterCallStaffAggregation?.[0] || {}
-    for (const row of waiterFacet.acknowledged || []) {
-        ensureStaff(row._id, row.name)
-        const staff = staffMap[row._id]
-        staff.callsAcknowledged += row.count || 0
-        staff.totalRespMs += row.totalRespMs || 0
-        staff.respCount += row.respCount || 0
+    for (const row of serviceRequestFacet.acknowledgedStaff || []) {
+        const current = ensure(row._id, row.name)
+        current.callsAcknowledged += integer(row.count)
+        current.totalResponseMilliseconds += integer(
+            row.totalResponseMilliseconds
+        )
+        current.responseCount += integer(row.responseCount)
     }
-    for (const row of waiterFacet.resolved || []) {
-        ensureStaff(row._id, row.name)
-        const staff = staffMap[row._id]
-        staff.callsResolved += row.count || 0
-        staff.totalResolMs += row.totalResolMs || 0
-        staff.resolCount += row.resolCount || 0
+    for (const row of serviceRequestFacet.resolvedStaff || []) {
+        const current = ensure(row._id, row.name)
+        current.callsResolved += integer(row.count)
+        current.totalResolutionMilliseconds += integer(
+            row.totalResolutionMilliseconds
+        )
+        current.resolutionCount += integer(row.resolutionCount)
     }
-    for (const row of paymentStaffAggregation || []) {
-        ensureStaff(row._id, row.name)
-        const staff = staffMap[row._id]
-        staff.paymentsConfirmed += row.paymentsConfirmed || 0
-        staff.totalOfflinePaymentsConfirmed +=
-            row.totalOfflinePaymentsConfirmed || 0
+    for (const row of orderFacet.paymentStaff || []) {
+        const current = ensure(row._id, row.name)
+        current.paymentsConfirmed += integer(
+            row.paymentsConfirmed
+        )
+        current.totalOfflinePaymentsConfirmedCents += integer(
+            row.totalOfflinePaymentsConfirmedCents
+        )
     }
-    for (const row of servedStaffAggregation || []) {
-        ensureStaff(row._id, row.name)
-        staffMap[row._id].ordersServed += row.ordersServed || 0
+    for (const row of orderFacet.servedStaff || []) {
+        const current = ensure(row._id, row.name)
+        current.ordersServed += integer(row.ordersServed)
     }
 
-    return Object.values(staffMap)
-        .map((staff) => ({
-            staffId: staff.staffId,
-            name: staff.name,
-            callsAcknowledged: staff.callsAcknowledged,
-            callsResolved: staff.callsResolved,
-            avgResponseTimeSeconds:
-                staff.respCount > 0
+    return Array.from(staff.values())
+        .map((row) => ({
+            staffId: row.staffId,
+            name: row.name,
+            callsAcknowledged: row.callsAcknowledged,
+            callsResolved: row.callsResolved,
+            averageResponseTimeSeconds:
+                row.responseCount > 0
                     ? Math.round(
-                          staff.totalRespMs / staff.respCount / 1000
-                      )
-                    : 0,
-            avgResolutionTimeSeconds:
-                staff.resolCount > 0
-                    ? Math.round(
-                          staff.totalResolMs /
-                              staff.resolCount /
+                          row.totalResponseMilliseconds /
+                              row.responseCount /
                               1000
                       )
                     : 0,
-            ordersServed: staff.ordersServed,
-            paymentsConfirmed: staff.paymentsConfirmed,
-            totalOfflinePaymentsConfirmed:
-                +staff.totalOfflinePaymentsConfirmed.toFixed(2),
+            averageResolutionTimeSeconds:
+                row.resolutionCount > 0
+                    ? Math.round(
+                          row.totalResolutionMilliseconds /
+                              row.resolutionCount /
+                              1000
+                      )
+                    : 0,
+            ordersServed: row.ordersServed,
+            paymentsConfirmed: row.paymentsConfirmed,
+            totalOfflinePaymentsConfirmedCents:
+                row.totalOfflinePaymentsConfirmedCents,
         }))
         .sort(
             (first, second) =>
                 second.callsResolved - first.callsResolved ||
-                second.paymentsConfirmed - first.paymentsConfirmed
+                second.paymentsConfirmed -
+                    first.paymentsConfirmed
         )
 }
 
-/**
- * Build the legacy flat food-service analytics DTO.
- *
- * Phase 1 intentionally preserves the calculations and response field names
- * previously owned by ownerController.ownerAnalytics.
- */
 export async function getFoodServiceAnalytics({
     businessId,
     analyticsRange,
+    financials,
     orderModel = Order,
     serviceRequestModel = ServiceRequest,
     servicePointModel = ServicePoint,
 }) {
-    const {
-        preset,
-        startDate,
-        endDate,
-        from,
-        to,
-        timezone,
-    } = analyticsRange
-
-    const queryContext = {
-        businessId,
-        startDate,
-        endDate,
+    if (!financials) {
+        throw new TypeError(
+            "food-service financial facts are required"
+        )
     }
 
-    const [
-        orders,
-        serviceCallsAggregation,
-        servicePointAggregation,
-        waiterCallStaffAggregation,
-        paymentStaffAggregation,
-        servedStaffAggregation,
-    ] = await Promise.all([
-        orderModel
-            .find({
-                businessId,
-                createdAt: { $gte: startDate, $lt: endDate },
-            })
-            .lean(),
-        serviceRequestModel.aggregate(
-            getServiceCallAggregation(queryContext)
-        ),
-        orderModel.aggregate(
-            getServicePointPerformanceAggregation(queryContext)
-        ),
-        serviceRequestModel.aggregate(
-            getWaitstaffCallAggregation(queryContext)
-        ),
-        orderModel.aggregate(
-            getPaymentStaffAggregation(queryContext)
-        ),
-        orderModel.aggregate(getServedStaffAggregation(queryContext)),
-    ])
-
-    const stats = createStats()
-    const hourlyOrdersMap = createHourlyOrdersMap()
-    const revenueByDayMap = new Map()
-    const itemsMap = new Map()
-    const categoryMap = new Map()
-    let totalPrepTimeMinutes = 0
-    let prepTimeCount = 0
-    let totalPaidOrders = 0
-
-    const isSingleDay =
-        preset === "today" ||
-        preset === "yesterday" ||
-        (preset === "custom" && from === to)
-
-    if (!isSingleDay) {
-        let current = DateTime.fromJSDate(startDate).setZone(timezone)
-        const end = DateTime.fromJSDate(endDate).setZone(timezone)
-        while (current < end) {
-            const label =
-                preset === "7days"
-                    ? current.toFormat("ccc")
-                    : current.toFormat("MMM dd")
-            revenueByDayMap.set(label, {
-                revenue: 0,
-                orders: 0,
-                dateRaw: current.toISODate(),
-            })
-            current = current.plus({ days: 1 })
-        }
-    }
-
-    let totalRevenue = 0
-    let totalTipsCollected = 0
-    let highestTip = 0
-    let ordersWithTips = 0
-
-    for (const order of orders) {
-        const orderDate = DateTime.fromJSDate(order.createdAt).setZone(
-            timezone
-        )
-        const hourLabel = `${orderDate.toFormat("h")}${orderDate.toFormat(
-            "a"
-        )}`
-
-        if (hourlyOrdersMap.has(hourLabel)) {
-            hourlyOrdersMap.get(hourLabel).orders += 1
-        }
-
-        // Preserve the current Phase 1 status behavior, including cancelled
-        // orders being treated by this historical rule as active.
-        if (order.status !== "completed" && order.status !== "ready") {
-            stats.activeOrders++
-        }
-        if (order.status === "completed") {
-            stats.completedToday++
-        }
-
-        if (order.orderType === "dine-in") stats.dineInCount++
-        if (order.orderType === "takeout") stats.takeoutCount++
-
-        if (order.orderSource === "waitstaff") {
-            stats.staffOrderCount++
-        } else {
-            stats.customerOrderCount++
-        }
-
-        const prepEndTime = order.readyAt || order.completedAt
-        if (order.createdAt && prepEndTime) {
-            const prepMinutes = DateTime.fromJSDate(prepEndTime).diff(
-                DateTime.fromJSDate(order.createdAt),
-                "minutes"
-            ).minutes
-            if (prepMinutes > 0 && prepMinutes < 300) {
-                totalPrepTimeMinutes += prepMinutes
-                prepTimeCount++
-            }
-        }
-
-        if (order.paymentStatus !== "paid") continue
-
-        const tipValue = Number(order.tipAmount || 0)
-        const revenueValue = Number(
-            ((order.total || 0) - tipValue).toFixed(2)
-        )
-        totalRevenue += revenueValue
-        totalTipsCollected += tipValue
-        if (tipValue > 0) {
-            ordersWithTips++
-            highestTip = Math.max(highestTip, tipValue)
-        }
-        totalPaidOrders++
-
-        if (hourlyOrdersMap.has(hourLabel)) {
-            hourlyOrdersMap.get(hourLabel).revenue += revenueValue
-        }
-
-        if (order.orderSource === "waitstaff") {
-            stats.staffRevenue += revenueValue
-        } else {
-            stats.customerRevenue += revenueValue
-        }
-
-        if (!isSingleDay) {
-            const label =
-                preset === "7days"
-                    ? orderDate.toFormat("ccc")
-                    : orderDate.toFormat("MMM dd")
-            if (revenueByDayMap.has(label)) {
-                const dayStats = revenueByDayMap.get(label)
-                dayStats.revenue += revenueValue
-                dayStats.orders += 1
-            }
-        }
-
-        for (const item of order.items || []) {
-            stats.totalItemsSold += item.quantity
-
-            if (!itemsMap.has(item.itemName)) {
-                itemsMap.set(item.itemName, {
-                    quantity: 0,
-                    revenue: 0,
-                    category: item.category || "food",
+    const [orderAggregation, serviceRequestAggregation] =
+        await Promise.all([
+            orderModel.aggregate(
+                buildFoodServiceOrderPipeline({
+                    businessId,
+                    analyticsRange,
                 })
-            }
-            const trackedItem = itemsMap.get(item.itemName)
-            trackedItem.quantity += item.quantity
-            trackedItem.revenue += item.lineTotal || 0
+            ),
+            serviceRequestModel.aggregate(
+                buildServiceRequestPipeline({
+                    businessId,
+                    analyticsRange,
+                })
+            ),
+        ])
 
-            const category = item.category || "food"
-            if (!categoryMap.has(category)) {
-                categoryMap.set(category, { revenue: 0, quantity: 0 })
-            }
-            categoryMap.get(category).revenue += item.lineTotal || 0
-            categoryMap.get(category).quantity += item.quantity
-        }
-    }
-
-    stats.todayRevenue = totalRevenue
-    stats.yesterdayRevenue = 0
-    stats.weekRevenue = totalRevenue
-    stats.monthRevenue = totalRevenue
-    stats.averageOrderValue =
-        totalPaidOrders > 0 ? totalRevenue / totalPaidOrders : 0
-    stats.totalTipsCollected = +totalTipsCollected.toFixed(2)
-    stats.averageTip =
-        ordersWithTips > 0
-            ? +(totalTipsCollected / ordersWithTips).toFixed(2)
-            : 0
-    stats.highestTip = +highestTip.toFixed(2)
-    stats.ordersWithTips = ordersWithTips
-    stats.tipRate =
-        totalPaidOrders > 0
-            ? Math.round((ordersWithTips / totalPaidOrders) * 100)
-            : 0
-    stats.averagePrepTime =
-        prepTimeCount > 0
-            ? Math.round(totalPrepTimeMinutes / prepTimeCount)
-            : 0
-
-    let maxOrders = 0
-    for (const [hour, data] of hourlyOrdersMap.entries()) {
-        if (data.orders > maxOrders) {
-            maxOrders = data.orders
-            stats.peakHour = hour
-        }
-    }
-
-    const hourlyOrders = Array.from(hourlyOrdersMap.entries()).map(
-        ([hour, data]) => ({
-            hour,
-            orders: data.orders,
-            revenue: data.revenue,
+    const orderFacet = orderAggregation?.[0] || {}
+    const serviceRequestFacet =
+        serviceRequestAggregation?.[0] || {}
+    const overviewRow = orderFacet.overview?.[0] || {}
+    const prepTimeCount = integer(overviewRow.prepTimeCount)
+    const peakHourIndex = orderFacet.peakOrderHour?.[0]?._id
+    const servicePointPerformance =
+        await shapeServicePointPerformance({
+            rows: orderFacet.servicePointPerformance,
+            businessId,
+            servicePointModel,
         })
+    const serviceRequests =
+        shapeServiceRequests(serviceRequestFacet)
+    const staffPerformance = shapeStaffPerformance({
+        serviceRequestFacet,
+        orderFacet,
+    })
+    const categoryPerformance = shapeCategoryPerformance(
+        orderFacet.categoryPerformance
     )
 
-    const revenueByDay = isSingleDay
-        ? hourlyOrders.map((hour) => ({
-              date: hour.hour,
-              revenue: hour.revenue,
-              orders: hour.orders,
-          }))
-        : Array.from(revenueByDayMap.entries()).map(([date, data]) => ({
-              date,
-              revenue: data.revenue,
-              orders: data.orders,
-          }))
-
-    const topItems = Array.from(itemsMap.entries())
-        .map(([itemName, data]) => ({
-            itemName,
-            quantity: data.quantity,
-            revenue: data.revenue,
-            category: data.category,
-        }))
-        .sort((first, second) => second.quantity - first.quantity)
-        .slice(0, 5)
-
-    const categoryPerformance = Array.from(categoryMap.entries())
-        .map(([category, data]) => ({
-            category:
-                category.charAt(0).toUpperCase() + category.slice(1),
-            revenue: data.revenue,
-            quantity: data.quantity,
-            percentage:
-                totalRevenue > 0
-                    ? Math.round((data.revenue / totalRevenue) * 100)
-                    : 0,
-        }))
-        .sort(
-            (first, second) => second.percentage - first.percentage
-        )
-
-    const totalTypedOrders = stats.dineInCount + stats.takeoutCount
-    let dineInRevenue = 0
-    let takeoutRevenue = 0
-    for (const order of orders) {
-        if (order.paymentStatus !== "paid") continue
-        const revenueValue = Number(
-            (
-                (order.total || 0) -
-                Number(order.tipAmount || 0)
-            ).toFixed(2)
-        )
-        if (order.orderType === "dine-in") {
-            dineInRevenue += revenueValue
-        }
-        if (order.orderType === "takeout") {
-            takeoutRevenue += revenueValue
-        }
-    }
-
-    const orderTypeBreakdown = [
-        {
-            type: "dine-in",
-            count: stats.dineInCount,
-            revenue: dineInRevenue,
-            percentage:
-                totalTypedOrders > 0
-                    ? Math.round(
-                          (stats.dineInCount / totalTypedOrders) * 100
-                      )
-                    : 0,
-        },
-        {
-            type: "takeout",
-            count: stats.takeoutCount,
-            revenue: takeoutRevenue,
-            percentage:
-                totalTypedOrders > 0
-                    ? Math.round(
-                          (stats.takeoutCount / totalTypedOrders) * 100
-                      )
-                    : 0,
-        },
-    ]
-
-    const totalChannelOrders =
-        stats.customerOrderCount + stats.staffOrderCount
-    const totalChannelRevenue =
-        stats.customerRevenue + stats.staffRevenue
-    const channelBreakdown = [
-        {
-            channel: "self",
-            label: "Self Ordering",
-            count: stats.customerOrderCount,
-            revenue: stats.customerRevenue,
-            orderPercentage:
-                totalChannelOrders > 0
-                    ? Math.round(
-                          (stats.customerOrderCount /
-                              totalChannelOrders) *
-                              100
-                      )
-                    : 0,
-            revenuePercentage:
-                totalChannelRevenue > 0
-                    ? Math.round(
-                          (stats.customerRevenue /
-                              totalChannelRevenue) *
-                              100
-                      )
-                    : 0,
-        },
-        {
-            channel: "waitstaff",
-            label: "Staff-Assisted Ordering",
-            count: stats.staffOrderCount,
-            revenue: stats.staffRevenue,
-            orderPercentage:
-                totalChannelOrders > 0
-                    ? Math.round(
-                          (stats.staffOrderCount / totalChannelOrders) *
-                              100
-                      )
-                    : 0,
-            revenuePercentage:
-                totalChannelRevenue > 0
-                    ? Math.round(
-                          (stats.staffRevenue /
-                              totalChannelRevenue) *
-                              100
-                      )
-                    : 0,
-        },
-    ]
-
-    const serviceCalls = shapeServiceCalls(serviceCallsAggregation)
-    const tablePerformance = await shapeServicePointPerformance({
-        rows: servicePointAggregation,
-        businessId,
-        servicePointModel,
-    })
-    const waitstaffPerformance = shapeWaitstaffPerformance({
-        waiterCallStaffAggregation,
-        paymentStaffAggregation,
-        servedStaffAggregation,
-    })
-
     return {
-        stats,
-        revenueByDay,
-        hourlyOrders,
-        topItems,
+        overview: {
+            paidRevenueCents: financials.current.grossCents,
+            activeOrders: integer(overviewRow.activeOrders),
+            completedOrders: integer(
+                overviewRow.completedOrders
+            ),
+            averageOrderValueCents:
+                financials.current
+                    .averageTransactionValueCents,
+            comparisonAverageOrderValueCents:
+                financials.comparison
+                    .averageTransactionValueCents,
+            averageOrderValueComparisonPercent:
+                financials.averageOrderValueComparisonPercent,
+            averagePrepTimeMinutes:
+                prepTimeCount > 0
+                    ? Math.round(
+                          Number(
+                              overviewRow.totalPrepMinutes || 0
+                          ) / prepTimeCount
+                      )
+                    : 0,
+            peakOrderHour:
+                Number.isInteger(Number(peakHourIndex))
+                    ? hourLabel(Number(peakHourIndex))
+                    : null,
+            totalItemsSold: integer(
+                orderFacet.totalItemsSold?.[0]?.quantity
+            ),
+        },
+        tips: {
+            totalTipsCents:
+                financials.current.totalTipsCents,
+            averageTipCents:
+                financials.current.averageTipCents,
+            highestTipCents:
+                financials.current.highestTipCents,
+            ordersWithTips:
+                financials.current.ordersWithTips,
+            tipRatePercent:
+                financials.current.tipRatePercent,
+        },
+        revenueByDay: financials.revenueByDay.map((row) => ({
+            date: row.date,
+            grossCents: row.grossCents,
+            orderCount: row.transactionCount,
+        })),
+        hourlyOrders: shapeHourlyOrders(
+            orderFacet.hourlyOrders
+        ),
+        topItems: (orderFacet.topItems || []).map((row) => ({
+            itemName: row._id || "Unknown item",
+            quantity: integer(row.quantity),
+            paidItemRevenueCents: integer(
+                row.paidItemRevenueCents
+            ),
+            category: row.category || "uncategorized",
+        })),
         categoryPerformance,
-        orderTypeBreakdown,
-        channelBreakdown,
-        serviceCalls,
-        tablePerformance,
-        waitstaffPerformance,
+        categoryRevenueBasis: "paidItemRevenue",
+        orderTypeBreakdown: shapeBreakdown({
+            ids: ["dine-in", "takeout"],
+            countRows: orderFacet.orderTypeCounts,
+            revenueRows: orderFacet.orderTypeRevenue,
+            idField: "type",
+        }),
+        channelBreakdown: shapeBreakdown({
+            ids: ["self", "waitstaff"],
+            labels: {
+                self: "Self Ordering",
+                waitstaff: "Staff-Assisted Ordering",
+            },
+            countRows: orderFacet.channelCounts,
+            revenueRows: orderFacet.channelRevenue,
+            idField: "channel",
+        }),
+        serviceRequests,
+        servicePointPerformance,
+        staffPerformance,
     }
 }

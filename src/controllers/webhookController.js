@@ -18,6 +18,7 @@ import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js"
 import { deductTrackedStock } from "../services/inventoryService.js";
 import { buildOrderEstimate } from "../utils/orderEstimate.js";
 import { generateHotelCheckInCredentials } from "../services/hotelCheckInService.js";
+import { applyReservationPaymentConfirmation } from "../services/reservationPaymentConfirmationService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -423,12 +424,18 @@ export async function handleStripeWebhook(req, res) {
             }
 
             // Mark reservation paid
-            reservation.paymentStatus = "paid";
-            reservation.status = "confirmed";
-            reservation.stripeCheckoutSessionId = session.id;
-            reservation.stripePaymentIntentId = session.payment_intent || null;
-            reservation.paidAt = new Date();
-            reservation.amountPaidCents = stripeAmountCents;
+            const paidAt = new Date();
+            applyReservationPaymentConfirmation(
+                reservation,
+                {
+                    checkoutSessionId: session.id,
+                    paymentIntentId:
+                        session.payment_intent || null,
+                    amountPaidCents:
+                        stripeAmountCents,
+                    confirmedAt: paidAt,
+                }
+            );
             await reservation.save();
             console.log(`[webhook] Reservation ${reservationId} marked paid — session=${session.id}`);
 

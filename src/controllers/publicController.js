@@ -250,6 +250,7 @@ export async function createReservation(req, res) {
         guestCount: guests,
         servicePointId: sp.servicePointId,
         servicePointLabel: sp.displayLabel || sp.label,
+        roomTypeSnapshot: sp.roomType || null,
         specialRequest,
         pricePerNight,
         numberOfNights,

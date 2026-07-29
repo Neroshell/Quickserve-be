@@ -1,14 +1,18 @@
 import ServiceRequest from "../models/ServiceRequest.js"
 import ServicePoint from "../models/ServicePoint.js"
 import GuestSession from "../models/GuestSession.js"
+import Business from "../models/Business.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { DateTime } from "luxon"
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
+import { normalizeFoodServiceRequestCategory } from "../services/serviceRequestClassificationService.js"
 
 async function expireStaleCalls(businessId) {
   const now = new Date()
   await ServiceRequest.updateMany(
     {
       businessId,
+      module: "foodService",
       status: "pending",
       pendingExpiresAt: { $lte: now },
     },
@@ -29,7 +33,12 @@ async function expireStaleCalls(businessId) {
  */
 async function resolveCallBusinessId(req, token) {
   if (req.session?.user?.businessId) {
-    return { businessId: req.session.user.businessId }
+    return {
+      businessId: req.session.user.businessId,
+      contextType: "public",
+      guestSessionId: null,
+      servicePointId: null,
+    }
   }
   if (!token) {
     return { error: "Missing table session token", status: 401 }
@@ -38,7 +47,12 @@ async function resolveCallBusinessId(req, token) {
   if (!ts || !ts.expiresAt || ts.expiresAt < new Date()) {
     return { error: "Invalid or expired table session", status: 403 }
   }
-  return { businessId: ts.businessId }
+  return {
+    businessId: ts.businessId,
+    contextType: "table_session",
+    guestSessionId: String(ts._id),
+    servicePointId: ts.servicePointId,
+  }
 }
 
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
@@ -90,6 +104,17 @@ export async function createWaiterCall(req, res) {
       return res.status(resolved.status).json({ error: resolved.error })
     }
     const businessId = resolved.businessId
+    const business = await Business.findOne({ businessId }).lean()
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+    const enabledModules =
+      resolveBusinessCapabilities(business).visibleModules
+    if (!enabledModules.includes("foodService")) {
+      return res.status(403).json({
+        error: "Food-service requests are not enabled for this business",
+      })
+    }
 
     if (!servicePointLabel || !String(servicePointLabel).trim()) {
       return res.status(400).json({ error: "servicePointLabel is required" })
@@ -102,6 +127,7 @@ export async function createWaiterCall(req, res) {
     // Table-level anti-spam: only block if acknowledged OR (pending and not yet expired)
     const existingActiveCall = await ServiceRequest.findOne({
       businessId,
+      module: "foodService",
       servicePointLabel: String(servicePointLabel).trim(),
       $or: [
         { status: "acknowledged" },
@@ -120,11 +146,14 @@ export async function createWaiterCall(req, res) {
     // Resolve Service Point dynamically on creation to store labels statically
     let finalTableLabel = String(servicePointLabel).trim()
     let finalTableCode = String(servicePointQrCode).trim()
+    let finalServicePointId = resolved.servicePointId || null
     
-    if (!finalTableLabel || !finalTableCode) {
-      const spCondition = servicePointLabel.startsWith('sp_') 
-        ? { servicePointId: servicePointLabel } 
-        : { _id: servicePointLabel };
+    if (finalServicePointId || !finalTableLabel || !finalTableCode) {
+      const spCondition = finalServicePointId
+        ? { servicePointId: finalServicePointId }
+        : servicePointLabel.startsWith('sp_')
+          ? { servicePointId: servicePointLabel }
+          : { _id: servicePointLabel };
 
       const sp = await ServicePoint.findOne({ 
         businessId, 
@@ -132,6 +161,7 @@ export async function createWaiterCall(req, res) {
       }).lean()
       
       if (sp) {
+        finalServicePointId = sp.servicePointId
         finalTableLabel = sp.label || finalTableLabel
         finalTableCode = sp.code || finalTableCode
       }
@@ -139,10 +169,16 @@ export async function createWaiterCall(req, res) {
 
     const call = await ServiceRequest.create({
       businessId,
+      module: "foodService",
+      contextType: resolved.contextType,
+      guestSessionId: resolved.guestSessionId,
+      servicePointId: finalServicePointId,
       servicePointLabel: finalTableLabel,
       servicePointQrCode: finalTableCode,
       userDeviceId: userDeviceId ? String(userDeviceId).trim() : null,
       reason: String(reason || "").trim(),
+      requestCategory:
+        normalizeFoodServiceRequestCategory(reason),
       note: String(note || "").trim(),
       status: "pending",
       createdBy: staffId || null, // usually null because customer triggers it
@@ -178,7 +214,7 @@ export async function listWaiterCalls(req, res) {
     // - "active" => pending + acknowledged
     // - "pending" | "acknowledged" | "resolved" | "missed" | "all"
 
-    const filter = { businessId }
+    const filter = { businessId, module: "foodService" }
     if (status === "active") {
       filter.status = { $in: ["pending", "acknowledged"] }
     } else if (["pending", "acknowledged", "resolved", "missed"].includes(String(status))) {
@@ -227,6 +263,7 @@ export async function claimWaiterCall(req, res) {
       {
         _id: id,
         businessId,
+        module: "foodService",
         status: "pending",
         claimedBy: null,
       },
@@ -245,7 +282,11 @@ export async function claimWaiterCall(req, res) {
 
     if (!claimed) {
       // either not found, or already claimed
-      const current = await ServiceRequest.findOne({ _id: id, businessId }).lean()
+      const current = await ServiceRequest.findOne({
+        _id: id,
+        businessId,
+        module: "foodService",
+      }).lean()
       if (!current) return res.status(404).json({ error: "Call not found" })
 
       return res.status(409).json({
@@ -290,6 +331,7 @@ export async function resolveWaiterCall(req, res) {
     const query = {
       _id: id,
       businessId,
+      module: "foodService",
       status: { $in: ["pending", "acknowledged"] },
     }
 
@@ -316,7 +358,11 @@ export async function resolveWaiterCall(req, res) {
     ).lean()
 
     if (!updated) {
-      const current = await ServiceRequest.findOne({ _id: id, businessId }).lean()
+      const current = await ServiceRequest.findOne({
+        _id: id,
+        businessId,
+        module: "foodService",
+      }).lean()
       if (!current) return res.status(404).json({ error: "Call not found" })
 
       // someone else owns it

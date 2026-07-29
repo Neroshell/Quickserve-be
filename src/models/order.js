@@ -140,6 +140,10 @@ const OrderSchema = new mongoose.Schema(
 )
 
 OrderSchema.index({ businessId: 1, orderId: 1 }, { unique: true })
+// Supports tenant-scoped paid-revenue analytics on the authoritative payment time.
+OrderSchema.index({ businessId: 1, paymentStatus: 1, paidAt: 1 })
+// Supports tenant-scoped operational analytics over order creation and status.
+OrderSchema.index({ businessId: 1, createdAt: 1, status: 1 })
 
 
 export default mongoose.models.Order || mongoose.model("Order", OrderSchema)

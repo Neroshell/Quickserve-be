@@ -8,6 +8,14 @@ export function generateServicePointId() {
     return `sp_${crypto.randomBytes(4).toString("hex")}`
 }
 
+export function normalizeRoomType(value) {
+    if (value === null || value === undefined) return null
+    const normalized = String(value)
+        .trim()
+        .replace(/\s+/g, " ")
+    return normalized || null
+}
+
 /**
  * Historical defaults are now resolved by businessCapabilityService.
  *   hotel → "room"
@@ -46,12 +54,19 @@ const ServicePointSchema = new mongoose.Schema(
             maxlength: 20,
         },
 
-        // Auto-derived from businessType — "table" or "room"
-        // servicePointType: {
-        //     type: String,
-        //     enum: ["table", "room", "booth", "other"],
-        //     default: "table",
-        // },
+        // Canonical physical-resource type. Creation and update validate it
+        // against server-resolved business capabilities.
+        servicePointType: {
+            type: String,
+            enum: ["table", "room", "booth", "other"],
+            required: true,
+        },
+        roomType: {
+            type: String,
+            default: null,
+            maxlength: 80,
+            set: normalizeRoomType,
+        },
 
         // Optional seating/guest capacity
         capacity: {
@@ -88,6 +103,25 @@ const ServicePointSchema = new mongoose.Schema(
 // Compound index: fast lookup of a service point within a business
 ServicePointSchema.index({ businessId: 1, servicePointId: 1 })
 ServicePointSchema.index({ businessId: 1, isActive: 1 })
+ServicePointSchema.index({
+    businessId: 1,
+    servicePointType: 1,
+    isActive: 1,
+    reservable: 1,
+})
+
+ServicePointSchema.pre("validate", function () {
+    if (
+        this.servicePointType !== "room" &&
+        this.roomType !== null &&
+        this.roomType !== undefined
+    ) {
+        this.invalidate(
+            "roomType",
+            "roomType is only available for room ServicePoints"
+        )
+    }
+})
 
 export default mongoose.models.ServicePoint ||
     mongoose.model("ServicePoint", ServicePointSchema)

@@ -3,6 +3,22 @@ import mongoose from "mongoose"
 const WaiterCallSchema = new mongoose.Schema(
   {
     businessId: { type: String, required: true, index: true },
+    module: {
+      type: String,
+      enum: ["foodService", "lodging"],
+      required: true,
+      default: "foodService",
+      index: true,
+    },
+    contextType: {
+      type: String,
+      enum: ["table_session", "reservation", "room_stay", "public"],
+      required: true,
+      default: "table_session",
+    },
+    reservationId: { type: String, default: null, index: true },
+    guestSessionId: { type: String, default: null, index: true },
+    servicePointId: { type: String, default: null, index: true },
     servicePointLabel: { type: String, required: true, index: true },
     servicePointQrCode: { type: String, default: "" },
 
@@ -12,6 +28,7 @@ const WaiterCallSchema = new mongoose.Schema(
 
     // Optional metadata (future-proof)
     reason: { type: String, default: "" },
+    requestCategory: { type: String, default: "other", trim: true },
     note: { type: String, default: "" },
 
     status: {
@@ -43,5 +60,14 @@ const WaiterCallSchema = new mongoose.Schema(
   },
   { timestamps: true },
 )
+
+// Supports tenant-scoped service-request analytics over a selected range.
+WaiterCallSchema.index({ businessId: 1, createdAt: 1 })
+WaiterCallSchema.index({
+  businessId: 1,
+  module: 1,
+  createdAt: 1,
+  status: 1,
+})
 
 export default mongoose.models.ServiceRequest || mongoose.model("ServiceRequest", WaiterCallSchema)

@@ -1,5 +1,8 @@
 import { AnalyticsRangeError } from "../services/analytics/analyticsRangeService.js"
-import { ownerAnalyticsService } from "../services/analytics/ownerAnalyticsService.js"
+import {
+    OwnerAnalyticsServiceError,
+    ownerAnalyticsService,
+} from "../services/analytics/ownerAnalyticsService.js"
 
 export function createOwnerAnalyticsController({
     getAnalytics = ownerAnalyticsService,
@@ -24,6 +27,11 @@ export function createOwnerAnalyticsController({
             return res.json(result)
         } catch (error) {
             if (error instanceof AnalyticsRangeError) {
+                return res
+                    .status(error.statusCode)
+                    .json({ error: error.message })
+            }
+            if (error instanceof OwnerAnalyticsServiceError) {
                 return res
                     .status(error.statusCode)
                     .json({ error: error.message })

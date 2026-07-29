@@ -10,6 +10,73 @@ import { ensureReservationPricingSnapshot } from "../services/reservationPricing
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 export const HOTEL_PAYMENT_WINDOW_MINUTES = 30;
+const ARCHIVABLE_RESERVATION_STATUSES = new Set([
+  "cancelled",
+  "declined",
+  "expired",
+  "no_show",
+  "completed",
+  "checked_out",
+]);
+
+const STAY_STATUS_TRANSITIONS = Object.freeze({
+  pending: ["accepted_awaiting_payment", "confirmed", "cancelled", "expired"],
+  pending_approval: ["accepted_awaiting_payment", "cancelled"],
+  accepted_awaiting_payment: ["confirmed", "cancelled", "expired"],
+  confirmed: ["cancelled"],
+  checked_in: ["checked_out", "cancelled"],
+  checked_out: [],
+  completed: [],
+  cancelled: [],
+  expired: [],
+});
+
+const TIMESLOT_STATUS_TRANSITIONS = Object.freeze({
+  pending: ["confirmed", "cancelled", "no_show"],
+  confirmed: ["seated", "completed", "cancelled", "no_show"],
+  seated: ["completed", "cancelled", "no_show"],
+  completed: [],
+  cancelled: [],
+  no_show: [],
+});
+
+export function buildReservationStaffSnapshot(user) {
+  if (!user) return null;
+  const userId = user.userId || user.staffId || user.id || null;
+  const name = user.name || null;
+  const email = user.email || null;
+  const role = user.role || null;
+  if (!userId && !name && !email && !role) return null;
+  return { userId, name, email, role };
+}
+
+export function isReservationStatusTransitionAllowed({
+  currentStatus,
+  nextStatus,
+  isStay,
+}) {
+  if (currentStatus === nextStatus) return true;
+  const transitions = isStay
+    ? STAY_STATUS_TRANSITIONS
+    : TIMESLOT_STATUS_TRANSITIONS;
+  return (transitions[currentStatus] || []).includes(nextStatus);
+}
+
+function reservationScope(req, id) {
+  const sessionUser = req.session?.user;
+  if (sessionUser?.role === "admin") return { _id: id };
+  if (!sessionUser?.businessId) return null;
+  return {
+    _id: id,
+    businessId: sessionUser.businessId,
+  };
+}
+
+function normalizeCancellationReason(value) {
+  if (value === null || value === undefined) return null;
+  const normalized = String(value).trim().replace(/\s+/g, " ");
+  return normalized || null;
+}
 
 export function getHotelPaymentExpiresAt(now = Date.now()) {
   return new Date(now + HOTEL_PAYMENT_WINDOW_MINUTES * 60 * 1000);
@@ -35,7 +102,7 @@ export async function getReservations(req, res) {
 
     // Optional filtering by status, date, etc.
     const { status, date } = req.query;
-    const query = { businessId };
+    const query = { businessId, archivedAt: null };
     if (status) query.status = status;
     if (date) query.date = date;
 
@@ -55,7 +122,7 @@ export async function getReservations(req, res) {
 export async function updateReservationStatus(req, res) {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, cancellationReason } = req.body;
 
     if (!status) {
       return res.status(400).json({ error: "status is required" });
@@ -67,7 +134,12 @@ export async function updateReservationStatus(req, res) {
       });
     }
 
-    const reservation = await Reservation.findById(id);
+    const scope = reservationScope(req, id);
+    if (!scope) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    let reservation = await Reservation.findOne(scope);
     if (!reservation) {
       return res.status(404).json({ error: "Reservation not found" });
     }
@@ -79,21 +151,28 @@ export async function updateReservationStatus(req, res) {
       return res.status(404).json({ error: "Business not found" });
     }
 
-    // Ensure the business belongs to this owner (or the requester is an admin).
-    const isOwner = business.ownerEmail === req.session.user.email;
-    if (!isOwner && req.session.user.role !== "admin") {
-      return res.status(403).json({ error: "Unauthorized access to this business" });
-    }
-
     // Basic status validation
     const validStatuses = ["pending", "confirmed", "cancelled", "seated", "completed", "no_show",
-      "accepted_awaiting_payment", "expired"];
+      "accepted_awaiting_payment", "expired", "checked_out"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
     }
 
     // Conflict check when confirming (restaurant/café only — hotels use date-overlap via accepted_awaiting_payment)
     const isHotel = resolveBusinessCapabilities(business).reservations.primaryMode === "stay";
+    const previousStatus = reservation.status;
+    if (previousStatus === status) {
+      return res.json({ reservation, emailStatus: "not_sent" });
+    }
+    if (!isReservationStatusTransitionAllowed({
+      currentStatus: previousStatus,
+      nextStatus: status,
+      isStay: isHotel,
+    })) {
+      return res.status(409).json({
+        error: `Invalid reservation transition: ${previousStatus} -> ${status}`,
+      });
+    }
     if (status === "confirmed" && !isHotel) {
       // Operating hours validation
       const [year, month, day] = (reservation.date || "").split("-").map(Number);
@@ -131,11 +210,50 @@ export async function updateReservationStatus(req, res) {
       });
       reservation.secureToken = crypto.randomBytes(32).toString("hex");
       reservation.paymentExpiresAt = getHotelPaymentExpiresAt();
-    }
+      reservation.status = status;
+      await reservation.save();
+    } else {
+      const now = new Date();
+      const actor = buildReservationStaffSnapshot(req.session?.user);
+      const fields = { status };
 
-    const previousStatus = reservation.status;
-    reservation.status = status;
-    await reservation.save();
+      if (status === "confirmed" && !reservation.confirmedAt) {
+        fields.confirmedAt = now;
+        if (actor) fields.confirmedBy = actor;
+      }
+      if (status === "cancelled" && !reservation.cancelledAt) {
+        fields.cancelledAt = now;
+        fields.cancellationReason =
+          normalizeCancellationReason(cancellationReason);
+        if (actor) {
+          fields.cancelledBy = {
+            actorType:
+              req.session?.user?.role === "admin"
+                ? "admin"
+                : "staff",
+            ...actor,
+          };
+        }
+      }
+      if (status === "checked_out" && !reservation.checkedOutAt) {
+        fields.checkedOutAt = now;
+        if (actor) fields.checkedOutBy = actor;
+      }
+
+      reservation = await Reservation.findOneAndUpdate(
+        {
+          ...scope,
+          status: previousStatus,
+        },
+        { $set: fields },
+        { new: true, runValidators: true }
+      );
+      if (!reservation) {
+        return res.status(409).json({
+          error: "The reservation was updated elsewhere. Refresh and try again.",
+        });
+      }
+    }
 
     const statusChanged = previousStatus !== status;
     let emailStatus = "not_sent";
@@ -205,14 +323,13 @@ export async function checkInHotelReservation(req, res) {
       return res.status(400).json({ error: "A valid 6-digit check-in code is required." });
     }
 
-    const reservation = await Reservation.findById(id).select("+checkInCodeHash");
+    const scope = reservationScope(req, id);
+    if (!scope) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const reservation = await Reservation.findOne(scope).select("+checkInCodeHash");
     if (!reservation) {
       return res.status(404).json({ error: "Reservation not found" });
-    }
-
-    const isAdmin = sessionUser?.role === "admin";
-    if (!isAdmin && (!sessionUser?.businessId || sessionUser.businessId !== reservation.businessId)) {
-      return res.status(403).json({ error: "Unauthorized access to this business" });
     }
 
     if (!reservation.checkInDate) {
@@ -279,6 +396,7 @@ export async function checkInHotelReservation(req, res) {
     const updatedReservation = await Reservation.findOneAndUpdate(
       {
         _id: reservation._id,
+        businessId: reservation.businessId,
         status: "confirmed",
         checkInCodeUsedAt: null,
         checkInCodeLockedAt: null,
@@ -319,20 +437,35 @@ export async function checkInHotelReservation(req, res) {
 export async function deleteReservation(req, res) {
   try {
     const { id } = req.params;
-    const reservation = await Reservation.findById(id);
+    const scope = reservationScope(req, id);
+    if (!scope) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const reservation = await Reservation.findOne(scope);
     
     if (!reservation) {
       return res.status(404).json({ error: "Reservation not found" });
     }
 
-    // Ensure the business belongs to this owner
-    const business = await Business.findOne({ businessId: reservation.businessId, ownerEmail: req.session.user.email }).lean();
-    if (!business && req.session.user.role !== "admin") {
-      return res.status(403).json({ error: "Unauthorized access to this business" });
+    if (!ARCHIVABLE_RESERVATION_STATUSES.has(reservation.status)) {
+      return res.status(409).json({
+        error: "Only terminal reservations can be removed. Cancel the reservation first.",
+      });
     }
 
-    await Reservation.findByIdAndDelete(id);
-    res.json({ message: "Reservation deleted successfully" });
+    if (!reservation.archivedAt) {
+      const actor = buildReservationStaffSnapshot(req.session?.user);
+      const fields = { archivedAt: new Date() };
+      if (actor) fields.archivedBy = actor;
+
+      await Reservation.findOneAndUpdate(
+        { ...scope, archivedAt: null },
+        { $set: fields },
+        { new: true, runValidators: true }
+      );
+    }
+
+    res.json({ message: "Reservation removed from operational views" });
   } catch (error) {
     console.error("[reservationController.deleteReservation] Error:", error);
     res.status(500).json({ error: "Server error" });
