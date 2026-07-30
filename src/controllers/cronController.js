@@ -1,7 +1,7 @@
 import Stripe from "stripe";
 import Business from "../models/Business.js";
-import Reservation from "../models/Reservation.js";
 import { sendEmail } from "../utils/emailService.js";
+import { expireAwaitingPaymentReservations } from "../services/reservationExpiryService.js";
 
 function toUtcDateString(date) {
     if (!date) return null;
@@ -405,15 +405,10 @@ export const processReservationExpiry = async (req, res) => {
         }
 
         const now = new Date();
-        const result = await Reservation.updateMany(
-            {
-                status: "accepted_awaiting_payment",
-                paymentExpiresAt: { $lt: now }
-            },
-            {
-                $set: { status: "expired" }
-            }
-        );
+        const result = await expireAwaitingPaymentReservations({
+            now,
+            allTenants: true,
+        });
 
         return res.json({
             message: "Reservation expiry processed",

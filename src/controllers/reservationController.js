@@ -7,6 +7,7 @@ import { generateHotelCheckInCredentials } from "../services/hotelCheckInService
 import { CHECK_IN_CODE_PATTERN, normalizeCheckInCode, verifyCheckInCode } from "../utils/checkInCode.js";
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js";
 import { ensureReservationPricingSnapshot } from "../services/reservationPricingService.js";
+import { expireAwaitingPaymentReservations } from "../services/reservationExpiryService.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 export const HOTEL_PAYMENT_WINDOW_MINUTES = 30;
@@ -82,6 +83,24 @@ export function getHotelPaymentExpiresAt(now = Date.now()) {
   return new Date(now + HOTEL_PAYMENT_WINDOW_MINUTES * 60 * 1000);
 }
 
+export function toOwnerReservationResponse(reservation) {
+  const source = reservation?.toObject
+    ? reservation.toObject()
+    : { ...(reservation || {}) };
+  const { secureToken, ...safeReservation } = source;
+  const canUsePaymentLink =
+    safeReservation.status === "accepted_awaiting_payment" &&
+    safeReservation.paymentStatus !== "paid" &&
+    secureToken;
+
+  return {
+    ...safeReservation,
+    paymentUrl: canUsePaymentLink
+      ? `${process.env.FRONTEND_BASE_URL || "https://quickservehq.com"}/reservation/pay/${secureToken}`
+      : null,
+  };
+}
+
 /**
  * Get reservations for a specific business (Owner authenticated)
  * GET /owner/reservations?businessId=...
@@ -100,6 +119,10 @@ export async function getReservations(req, res) {
       return res.status(403).json({ error: "Unauthorized access to this business" });
     }
 
+    // Keep the owner view synchronized with the same persisted expiry state as
+    // the scheduled job, without client-side polling or duplicate UI state.
+    await expireAwaitingPaymentReservations({ businessId });
+
     // Optional filtering by status, date, etc.
     const { status, date } = req.query;
     const query = { businessId, archivedAt: null };
@@ -108,7 +131,7 @@ export async function getReservations(req, res) {
 
     const reservations = await Reservation.find(query).sort({ date: 1, time: 1 }).lean();
     
-    res.json(reservations);
+    res.json(reservations.map(toOwnerReservationResponse));
   } catch (error) {
     console.error("[reservationController.getReservations] Error:", error);
     res.status(500).json({ error: "Server error" });
@@ -302,7 +325,10 @@ export async function updateReservationStatus(req, res) {
       }
     }
 
-    res.json({ reservation, emailStatus });
+    res.json({
+      reservation: toOwnerReservationResponse(reservation),
+      emailStatus,
+    });
   } catch (error) {
     console.error("[reservationController.updateReservationStatus] Error:", error);
     res.status(500).json({ error: "Server error" });
@@ -586,6 +612,96 @@ export async function resendReservationConfirmation(req, res) {
   } catch (err) {
     console.error("[reservationController.resendReservationConfirmation] Error:", err);
     res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * POST /owner/reservations/:id/resend-payment-link
+ * Resend the existing, still-active payment link without extending its expiry.
+ */
+export async function resendReservationPaymentLink(req, res) {
+  try {
+    const { id } = req.params;
+    const scope = reservationScope(req, id);
+    if (!scope) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    let reservation = await Reservation.findOne(scope);
+    if (!reservation) {
+      return res.status(404).json({ error: "Reservation not found" });
+    }
+
+    const now = new Date();
+    const expiry = reservation.paymentExpiresAt
+      ? new Date(reservation.paymentExpiresAt)
+      : null;
+    if (
+      reservation.status === "accepted_awaiting_payment" &&
+      expiry &&
+      expiry <= now
+    ) {
+      reservation = await Reservation.findOneAndUpdate(
+        {
+          ...scope,
+          status: "accepted_awaiting_payment",
+          paymentExpiresAt: { $lte: now },
+        },
+        { $set: { status: "expired" } },
+        { new: true, runValidators: true },
+      ) || reservation;
+
+      return res.status(409).json({
+        error: "This payment link has expired.",
+        reservation: toOwnerReservationResponse(reservation),
+      });
+    }
+
+    if (
+      reservation.status !== "accepted_awaiting_payment" ||
+      reservation.paymentStatus === "paid"
+    ) {
+      return res.status(409).json({
+        error: "Only reservations awaiting payment have an active payment link.",
+      });
+    }
+
+    if (!reservation.secureToken || !reservation.email || !expiry) {
+      return res.status(409).json({
+        error: "This reservation does not have an active payment link.",
+      });
+    }
+
+    const business = await Business.findOne({
+      businessId: reservation.businessId,
+    }).lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
+    }
+
+    const sent = await sendReservationPaymentEmail({
+      to: reservation.email,
+      businessName: business.displayName || business.name,
+      businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
+      primaryColor: business.branding?.primaryColor,
+      reservation: reservation.toObject(),
+    });
+    if (!sent) {
+      return res.status(500).json({
+        error: "Failed to resend the payment link. Please check your provider settings.",
+      });
+    }
+
+    return res.json({
+      message: "Payment link resent successfully.",
+      reservation: toOwnerReservationResponse(reservation),
+    });
+  } catch (error) {
+    console.error(
+      "[reservationController.resendReservationPaymentLink] Error:",
+      error,
+    );
+    return res.status(500).json({ error: "Server error" });
   }
 }
 

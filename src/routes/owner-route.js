@@ -28,7 +28,8 @@ import {
     updateReservationStatus,
     checkInHotelReservation,
     deleteReservation,
-    resendReservationConfirmation
+    resendReservationConfirmation,
+    resendReservationPaymentLink
 } from "../controllers/reservationController.js"
 
 import { requireAuth, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
@@ -650,6 +651,27 @@ router.delete("/reservations/:id", deleteReservation)
  *         description: Reservation not found
  */
 router.post("/reservations/:id/resend-confirmation", resendReservationConfirmation)
+
+/**
+ * @openapi
+ * /owner/reservations/{id}/resend-payment-link:
+ *   post:
+ *     summary: Resend an active hotel reservation payment link
+ *     tags:
+ *       - Owner Reservations
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Payment link resent successfully
+ *       409:
+ *         description: Reservation is not awaiting payment or the link expired
+ */
+router.post("/reservations/:id/resend-payment-link", resendReservationPaymentLink)
 
 
 // ─── Stripe Connect ───────────────────────────────────────────────────────────
