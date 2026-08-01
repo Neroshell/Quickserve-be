@@ -33,7 +33,13 @@ function buildPaidRoomTypePipeline({
         {
             $match: {
                 businessId,
-                paymentStatus: "paid",
+                paymentStatus: {
+                    $in: [
+                        "paid",
+                        "partially_refunded",
+                        "refunded",
+                    ],
+                },
                 paidAt: currentInterval(analyticsRange),
                 ...getLodgingStayMatch(),
                 servicePointId: { $ne: null },

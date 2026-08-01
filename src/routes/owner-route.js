@@ -31,6 +31,7 @@ import {
     resendReservationConfirmation,
     resendReservationPaymentLink
 } from "../controllers/reservationController.js"
+import { cancelOwnerHotelReservation } from "../controllers/reservationCancellationController.js"
 
 import { requireAuth, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
 import { connectAccount, getStripeStatus, getStripeDashboardLink, getPayoutSummary } from "../controllers/stripeConnectController.js"
@@ -571,6 +572,31 @@ router.get("/reservations", getReservations)
  *         description: Reservation status updated successfully
  */
 router.patch("/reservations/:id/status", updateReservationStatus)
+
+/**
+ * @openapi
+ * /owner/reservations/{id}/cancel:
+ *   post:
+ *     summary: Cancel a hotel reservation with explicit payment handling
+ *     tags:
+ *       - Owner Reservations
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Cancellation completed
+ *       202:
+ *         description: Refund accepted and pending provider completion
+ *       403:
+ *         description: Refund permission denied
+ *       409:
+ *         description: Reservation or payment state conflict
+ */
+router.post("/reservations/:id/cancel", cancelOwnerHotelReservation)
 
 /**
  * @openapi

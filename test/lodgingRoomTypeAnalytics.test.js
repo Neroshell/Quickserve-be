@@ -29,8 +29,9 @@ test("room-type performance uses snapshots, current room inventory, unique room 
         async aggregate(pipeline) {
             pipelines.push(pipeline)
             if (
-                pipeline[0].$match.paymentStatus ===
-                "paid"
+                pipeline[0].$match.paymentStatus?.$in?.includes(
+                    "paid",
+                )
             ) {
                 return [
                     {

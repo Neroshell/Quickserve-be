@@ -19,6 +19,10 @@ import { deductTrackedStock } from "../services/inventoryService.js";
 import { buildOrderEstimate } from "../utils/orderEstimate.js";
 import { generateHotelCheckInCredentials } from "../services/hotelCheckInService.js";
 import { applyReservationPaymentConfirmation } from "../services/reservationPaymentConfirmationService.js";
+import {
+    reconcileStripeReservationRefund,
+    ReservationCancellationError,
+} from "../services/reservationCancellationService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -352,6 +356,40 @@ export async function handleStripeWebhook(req, res) {
                 );
             }
             return res.status(200).send();
+        }
+
+        if ([
+            "refund.created",
+            "refund.updated",
+            "refund.failed",
+        ].includes(event.type)) {
+            try {
+                const result = await reconcileStripeReservationRefund({
+                    providerRefund: event.data.object,
+                });
+                console.log("[webhook] Reservation refund reconciled", {
+                    eventId: event.id,
+                    eventType: event.type,
+                    providerRefundId: event.data.object?.id || null,
+                    ignored: Boolean(result?.ignored),
+                });
+                return res.status(200).send();
+            } catch (error) {
+                console.error("[webhook] Reservation refund reconciliation failed", {
+                    eventId: event.id,
+                    eventType: event.type,
+                    providerRefundId: event.data.object?.id || null,
+                    code: error?.code || null,
+                    message: error?.message,
+                });
+                if (
+                    error instanceof ReservationCancellationError &&
+                    error.status < 500
+                ) {
+                    return res.status(error.status).send(error.code);
+                }
+                return res.status(500).send("Refund reconciliation failed");
+            }
         }
 
         if (event.type !== "checkout.session.completed") {

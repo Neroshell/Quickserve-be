@@ -176,7 +176,11 @@ const ReservationSchema = new mongoose.Schema(
     stripePaymentIntentId: { type: String },
     stripeConnectedAccountId: { type: String },
     amountPaidCents: { type: Number, min: 0 },
-    paymentStatus: { type: String, enum: ["pending", "paid", "failed", "refunded"], default: "pending" },
+    paymentStatus: {
+      type: String,
+      enum: ["pending", "paid", "failed", "partially_refunded", "refunded"],
+      default: "pending",
+    },
     secureToken: { type: String },
     paidAt: { type: Date },
     confirmedAt: { type: Date, default: null },
@@ -194,6 +198,40 @@ const ReservationSchema = new mongoose.Schema(
       default: null,
       trim: true,
       maxlength: 300,
+    },
+    cancellationNotes: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 500,
+    },
+    cancellationOutcome: {
+      type: String,
+      enum: ["unpaid", "no_refund", "full_refund", "partial_refund"],
+      default: null,
+    },
+    cancellationIdempotencyKey: {
+      type: String,
+    },
+    cancellationOriginalPaidAmountCents: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    cancellationRefundAmountCents: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    refundedAmountCents: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    lastRefundAt: { type: Date, default: null },
+    activeRefundId: {
+      type: String,
+      default: null,
     },
     confirmationEmailSentAt: { type: Date },
     confirmationEmailMessageId: { type: String },
@@ -233,6 +271,10 @@ const ReservationSchema = new mongoose.Schema(
 ReservationSchema.index({ businessId: 1, servicePointId: 1, date: 1, status: 1, startTime: 1, endTime: 1 });
 // Supports authoritative lodging revenue recognition by payment time.
 ReservationSchema.index({ businessId: 1, paymentStatus: 1, paidAt: 1 });
+ReservationSchema.index(
+  { cancellationIdempotencyKey: 1 },
+  { unique: true, sparse: true },
+);
 // Event analytics use the persisted lifecycle instant as the leading range.
 ReservationSchema.index({ businessId: 1, confirmedAt: 1 });
 ReservationSchema.index({ businessId: 1, cancelledAt: 1 });

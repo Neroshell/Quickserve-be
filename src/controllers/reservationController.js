@@ -8,6 +8,10 @@ import { CHECK_IN_CODE_PATTERN, normalizeCheckInCode, verifyCheckInCode } from "
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js";
 import { ensureReservationPricingSnapshot } from "../services/reservationPricingService.js";
 import { expireAwaitingPaymentReservations } from "../services/reservationExpiryService.js";
+import {
+  getRemainingRefundableAmountCents,
+  getReservationCapturedAmountCents,
+} from "../services/reservationCancellationService.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 export const HOTEL_PAYMENT_WINDOW_MINUTES = 30;
@@ -87,7 +91,16 @@ export function toOwnerReservationResponse(reservation) {
   const source = reservation?.toObject
     ? reservation.toObject()
     : { ...(reservation || {}) };
-  const { secureToken, ...safeReservation } = source;
+  const {
+    secureToken,
+    activeRefundId,
+    ...safeReservation
+  } = source;
+  const originalPaidAmountCents =
+    getReservationCapturedAmountCents(safeReservation);
+  const refundedAmountCents = Number(
+    safeReservation.refundedAmountCents || 0,
+  );
   const canUsePaymentLink =
     safeReservation.status === "accepted_awaiting_payment" &&
     safeReservation.paymentStatus !== "paid" &&
@@ -98,6 +111,14 @@ export function toOwnerReservationResponse(reservation) {
     paymentUrl: canUsePaymentLink
       ? `${process.env.FRONTEND_BASE_URL || "https://quickservehq.com"}/reservation/pay/${secureToken}`
       : null,
+    originalPaidAmountCents,
+    refundedAmountCents,
+    remainingRefundableAmountCents:
+      getRemainingRefundableAmountCents({
+        capturedAmountCents: originalPaidAmountCents,
+        successfulRefundedAmountCents: refundedAmountCents,
+      }),
+    refundPending: Boolean(activeRefundId),
   };
 }
 
@@ -183,6 +204,22 @@ export async function updateReservationStatus(req, res) {
 
     // Conflict check when confirming (restaurant/café only — hotels use date-overlap via accepted_awaiting_payment)
     const isHotel = resolveBusinessCapabilities(business).reservations.primaryMode === "stay";
+    if (reservation.activeRefundId) {
+      return res.status(409).json({
+        error: "A refund operation is currently in progress for this reservation.",
+      });
+    }
+    if (
+      isHotel &&
+      status === "cancelled" &&
+      ["paid", "partially_refunded", "refunded"].includes(
+        reservation.paymentStatus,
+      )
+    ) {
+      return res.status(409).json({
+        error: "Use the explicit cancellation workflow to decide how the payment should be handled.",
+      });
+    }
     const previousStatus = reservation.status;
     if (previousStatus === status) {
       return res.json({ reservation, emailStatus: "not_sent" });
@@ -267,6 +304,7 @@ export async function updateReservationStatus(req, res) {
         {
           ...scope,
           status: previousStatus,
+          activeRefundId: null,
         },
         { $set: fields },
         { new: true, runValidators: true }
@@ -357,7 +395,6 @@ export async function checkInHotelReservation(req, res) {
     if (!reservation) {
       return res.status(404).json({ error: "Reservation not found" });
     }
-
     if (!reservation.checkInDate) {
       return res.status(400).json({ error: "Only hotel reservations can be checked in with a code." });
     }
@@ -368,6 +405,11 @@ export async function checkInHotelReservation(req, res) {
 
     if (reservation.status !== "confirmed" || reservation.paymentStatus !== "paid") {
       return res.status(409).json({ error: "Only paid, confirmed reservations can be checked in." });
+    }
+    if (reservation.activeRefundId) {
+      return res.status(409).json({
+        error: "Check-in is unavailable while a refund operation is in progress.",
+      });
     }
 
     if (!reservation.checkInCodeHash || !reservation.checkInCodeValidFrom || !reservation.checkInCodeExpiresAt) {
@@ -424,6 +466,7 @@ export async function checkInHotelReservation(req, res) {
         _id: reservation._id,
         businessId: reservation.businessId,
         status: "confirmed",
+        activeRefundId: null,
         checkInCodeUsedAt: null,
         checkInCodeLockedAt: null,
       },

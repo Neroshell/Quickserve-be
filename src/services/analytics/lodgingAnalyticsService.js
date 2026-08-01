@@ -213,7 +213,13 @@ function buildLodgingPipeline({
                 roomRevenuePerformance: [
                     {
                         $match: {
-                            paymentStatus: "paid",
+                            paymentStatus: {
+                                $in: [
+                                    "paid",
+                                    "partially_refunded",
+                                    "refunded",
+                                ],
+                            },
                             paidAt: currentInterval(
                                 analyticsRange
                             ),
@@ -740,6 +746,16 @@ export async function getLodgingAnalytics({
         overview: {
             paidBookingRevenueCents:
                 financials.current.grossCents,
+            refundedBookingRevenueCents:
+                Number(
+                    financials.current.refundedCents || 0
+                ),
+            netRetainedBookingRevenueCents:
+                Number(
+                    financials.current
+                        .netRetainedCents ??
+                        financials.current.grossCents
+                ),
             paidBookingRevenueComparisonPercent:
                 calculateComparisonPercent(
                     financials.current.grossCents,
@@ -774,10 +790,17 @@ export async function getLodgingAnalytics({
         bookingRevenueByDay:
             financials.current.transactionCount > 0
                 ? financials.revenueByDay.map((row) => ({
-                      date: row.date,
-                      grossCents: row.grossCents,
-                      bookingCount:
-                          row.transactionCount,
+                       date: row.date,
+                       grossCents: row.grossCents,
+                       refundedCents: Number(
+                           row.refundedCents || 0
+                       ),
+                       netRetainedCents: Number(
+                           row.netRetainedCents ??
+                               row.grossCents
+                       ),
+                       bookingCount:
+                           row.transactionCount,
                   }))
                 : [],
         bookingTrend: shapeBookingTrend(

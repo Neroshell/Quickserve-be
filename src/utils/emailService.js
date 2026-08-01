@@ -10,6 +10,7 @@ import ReservationRequestReceivedEmail from "../../emails/ReservationRequestRece
 import ReservationConfirmedEmail from "../../emails/ReservationConfirmedEmail.js";
 import ReservationPaymentEmail from "../../emails/ReservationPaymentEmail.js";
 import ReservationCancelledEmail from "../../emails/ReservationCancelledEmail.js";
+import ReservationRefundEmail from "../../emails/ReservationRefundEmail.js";
 import EmailChangeEmail from "../../emails/EmailChangeEmail.js";
 import HotelPaymentConfirmationEmail from "../../emails/HotelPaymentConfirmationEmail.js";
 import Business from "../models/Business.js";
@@ -342,10 +343,55 @@ export async function sendReservationPaymentEmail({ to, businessName, businessLo
 export async function sendReservationCancelledEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
   try {
     const html = await render(React.createElement(ReservationCancelledEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
-    const subject = `Reservation Unavailable - ${businessName}`;
+    const subject = reservation?.cancellationOutcome
+      ? `Reservation Cancelled - ${businessName}`
+      : `Reservation Unavailable - ${businessName}`;
     return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
   } catch (error) {
     console.error("[EmailService]  Error in sendReservationCancelledEmail:", error);
+    return false;
+  }
+}
+
+export function getReservationRefundEmailIdempotencyKey(refund) {
+  return `reservation-refund/${refund?.businessId || "unknown-business"}/${refund?.refundId || "unknown-refund"}`.slice(0, 256);
+}
+
+/**
+ * Customer-facing confirmation sent only after Stripe reports a successful
+ * reservation refund. Card issuers commonly take 5-10 business days to post it.
+ */
+export async function sendReservationRefundEmail({
+  to,
+  businessName,
+  businessLogoUrl,
+  primaryColor,
+  reservation,
+  refund,
+}) {
+  try {
+    const html = await render(
+      React.createElement(ReservationRefundEmail, {
+        businessName,
+        businessLogoUrl,
+        primaryColor,
+        reservation,
+        refund,
+      }),
+    );
+    return await sendEmail({
+      to,
+      subject: `Refund Confirmed - ${businessName}`,
+      html,
+      from: RESERVATION_FROM,
+      idempotencyKey: getReservationRefundEmailIdempotencyKey(refund),
+    });
+  } catch (error) {
+    console.error("[EmailService] Error in sendReservationRefundEmail:", {
+      name: error?.name,
+      message: error?.message,
+      refundId: refund?.refundId,
+    });
     return false;
   }
 }

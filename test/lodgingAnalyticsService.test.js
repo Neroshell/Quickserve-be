@@ -68,12 +68,16 @@ const generatedAt = new Date("2026-07-28T12:00:00.000Z")
 const financials = {
     current: {
         grossCents: 60000,
+        refundedCents: 0,
+        netRetainedCents: 60000,
         netToBusinessCents: 55000,
         transactionCount: 2,
         averageTransactionValueCents: 30000,
     },
     comparison: {
         grossCents: 50000,
+        refundedCents: 0,
+        netRetainedCents: 50000,
         netToBusinessCents: 46000,
         transactionCount: 2,
         averageTransactionValueCents: 25000,
@@ -82,11 +86,15 @@ const financials = {
         {
             date: "2026-07-22",
             grossCents: 30000,
+            refundedCents: 0,
+            netRetainedCents: 30000,
             transactionCount: 1,
         },
         {
             date: "2026-07-28",
             grossCents: 30000,
+            refundedCents: 0,
+            netRetainedCents: 30000,
             transactionCount: 1,
         },
     ],
@@ -262,6 +270,8 @@ test("lodging analytics shapes reliable revenue, stay, arrival, pending, and roo
 
     assert.deepEqual(result.overview, {
         paidBookingRevenueCents: 60000,
+        refundedBookingRevenueCents: 0,
+        netRetainedBookingRevenueCents: 60000,
         paidBookingRevenueComparisonPercent: 20,
         paidBookingCount: 2,
         averageBookingValueCents: 30000,
@@ -276,6 +286,8 @@ test("lodging analytics shapes reliable revenue, stay, arrival, pending, and roo
     assert.deepEqual(result.bookingRevenueByDay[0], {
         date: "2026-07-22",
         grossCents: 30000,
+        refundedCents: 0,
+        netRetainedCents: 30000,
         bookingCount: 1,
     })
     assert.equal(result.bookingTrend.length, 7)
@@ -297,6 +309,48 @@ test("lodging analytics shapes reliable revenue, stay, arrival, pending, and roo
         activeValueCents: 30000,
         expiredValueCents: 20000,
         snapshotAt: generatedAt.toISOString(),
+    })
+})
+
+test("lodging overview distinguishes gross collected, successful refunds, and net retained", async () => {
+    const models = createModels()
+    const result = await getLodgingAnalytics({
+        businessId,
+        analyticsRange,
+        financials: {
+            ...financials,
+            current: {
+                ...financials.current,
+                refundedCents: 12000,
+                netRetainedCents: 48000,
+            },
+            revenueByDay: financials.revenueByDay.map(
+                (row, index) => ({
+                    ...row,
+                    refundedCents: index === 0 ? 12000 : 0,
+                    netRetainedCents:
+                        row.grossCents -
+                        (index === 0 ? 12000 : 0),
+                }),
+            ),
+        },
+        generatedAt,
+        reservationModel: models.reservationModel,
+        servicePointModel: models.servicePointModel,
+    })
+
+    assert.equal(result.overview.paidBookingRevenueCents, 60000)
+    assert.equal(result.overview.refundedBookingRevenueCents, 12000)
+    assert.equal(
+        result.overview.netRetainedBookingRevenueCents,
+        48000,
+    )
+    assert.deepEqual(result.bookingRevenueByDay[0], {
+        date: "2026-07-22",
+        grossCents: 30000,
+        refundedCents: 12000,
+        netRetainedCents: 18000,
+        bookingCount: 1,
     })
 })
 

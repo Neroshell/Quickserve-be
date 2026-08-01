@@ -5,6 +5,7 @@ import Reservation from "../src/models/Reservation.js"
 import {
     deleteReservation,
     isReservationStatusTransitionAllowed,
+    toOwnerReservationResponse,
     updateReservationStatus,
 } from "../src/controllers/reservationController.js"
 import { applyReservationPaymentConfirmation } from "../src/services/reservationPaymentConfirmationService.js"
@@ -81,6 +82,23 @@ test("hotel stays require the explicit checked_out transition instead of complet
         }),
         false
     )
+})
+
+test("owner reservation response exposes refund summaries without leaking the internal lock", () => {
+    const responseRecord = toOwnerReservationResponse(
+        stayReservation({
+            paymentStatus: "partially_refunded",
+            amountPaidCents: 30000,
+            refundedAmountCents: 12000,
+            activeRefundId: "RF-INTERNAL-LOCK",
+        }),
+    )
+
+    assert.equal(responseRecord.originalPaidAmountCents, 30000)
+    assert.equal(responseRecord.refundedAmountCents, 12000)
+    assert.equal(responseRecord.remainingRefundableAmountCents, 18000)
+    assert.equal(responseRecord.refundPending, true)
+    assert.equal("activeRefundId" in responseRecord, false)
 })
 
 test("staff confirmation atomically writes confirmedAt and actor attribution", async (t) => {
@@ -245,6 +263,32 @@ test("cancellation retains the record and persists its first reason and actor", 
     assert.equal(update.cancelledBy.actorType, "staff")
     assert.equal(update.cancelledBy.userId, "staff_1")
     assert.equal(res.body.reservation.status, "cancelled")
+})
+
+test("the generic status endpoint cannot bypass paid cancellation payment handling", async (t) => {
+    mockHotelBusiness(t)
+    const reservation = stayReservation({
+        status: "confirmed",
+        paymentStatus: "paid",
+        confirmedAt: new Date(),
+    })
+    t.mock.method(Reservation, "findOne", async () => reservation)
+    t.mock.method(Reservation, "findOneAndUpdate", async () => {
+        throw new Error("paid cancellation must use the explicit operation")
+    })
+    const res = response()
+
+    await updateReservationStatus(
+        {
+            params: { id: reservation._id },
+            body: { status: "cancelled" },
+            session: { user: sessionUser() },
+        },
+        res,
+    )
+
+    assert.equal(res.statusCode, 409)
+    assert.match(res.body.error, /explicit cancellation workflow/i)
 })
 
 test("checkout requires checked_in and preserves the first timestamp on retry", async (t) => {

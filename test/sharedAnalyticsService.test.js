@@ -35,6 +35,8 @@ function createOrderModel({
                     currentSummary: currentRows || [
                         {
                             grossCents: 5500,
+                            refundedCents: 0,
+                            netRetainedCents: 5500,
                             netCents: 5000,
                             netKnownCount: currentNetKnownCount,
                             transactionCount: 2,
@@ -46,6 +48,8 @@ function createOrderModel({
                     comparisonSummary: [
                         {
                             grossCents: 4400,
+                            refundedCents: 0,
+                            netRetainedCents: 4400,
                             netCents: 4000,
                             netKnownCount: 2,
                             transactionCount: 2,
@@ -58,11 +62,15 @@ function createOrderModel({
                         {
                             _id: "2026-07-22",
                             grossCents: 2500,
+                            refundedCents: 0,
+                            netRetainedCents: 2500,
                             transactionCount: 1,
                         },
                         {
                             _id: "2026-07-28",
                             grossCents: 3000,
+                            refundedCents: 0,
+                            netRetainedCents: 3000,
                             transactionCount: 1,
                         },
                     ],
@@ -81,6 +89,7 @@ function createOrderModel({
 
 function createReservationModel({
     currentNetKnownCount = 1,
+    currentRefundedCents = 0,
 } = {}) {
     const pipelines = []
     return {
@@ -92,6 +101,11 @@ function createReservationModel({
                     currentSummary: [
                         {
                             grossCents: 30000,
+                            refundedCents:
+                                currentRefundedCents,
+                            netRetainedCents:
+                                30000 -
+                                currentRefundedCents,
                             netCents: 28000,
                             netKnownCount:
                                 currentNetKnownCount,
@@ -101,6 +115,8 @@ function createReservationModel({
                     comparisonSummary: [
                         {
                             grossCents: 20000,
+                            refundedCents: 0,
+                            netRetainedCents: 20000,
                             netCents: 18500,
                             netKnownCount: 1,
                             transactionCount: 1,
@@ -110,6 +126,11 @@ function createReservationModel({
                         {
                             _id: "2026-07-22",
                             grossCents: 30000,
+                            refundedCents:
+                                currentRefundedCents,
+                            netRetainedCents:
+                                30000 -
+                                currentRefundedCents,
                             transactionCount: 1,
                         },
                     ],
@@ -136,6 +157,8 @@ test("shared analytics returns paid gross cents, reliable net, tips, comparisons
 
     assert.deepEqual(result.shared.paidRevenue, {
         grossCents: 5500,
+        refundedCents: 0,
+        netRetainedCents: 5500,
         netToBusinessCents: 5000,
         transactionCount: 2,
         averageTransactionValueCents: 2750,
@@ -145,6 +168,8 @@ test("shared analytics returns paid gross cents, reliable net, tips, comparisons
         {
             module: "foodService",
             grossCents: 5500,
+            refundedCents: 0,
+            netRetainedCents: 5500,
             transactionCount: 2,
         },
     ])
@@ -157,6 +182,8 @@ test("shared analytics returns paid gross cents, reliable net, tips, comparisons
     )
     assert.deepEqual(result.foodServiceFinancials.current, {
         grossCents: 5500,
+        refundedCents: 0,
+        netRetainedCents: 5500,
         netToBusinessCents: 5000,
         transactionCount: 2,
         averageTransactionValueCents: 2750,
@@ -174,6 +201,8 @@ test("shared analytics returns paid gross cents, reliable net, tips, comparisons
     assert.deepEqual(result.shared.revenueByDay[0], {
         date: "2026-07-22",
         grossCents: 2500,
+        refundedCents: 0,
+        netRetainedCents: 2500,
         transactionCount: 1,
     })
     assert.equal(result.foodServiceFinancials.hourlyOrders.length, 24)
@@ -210,6 +239,8 @@ test("empty paid range returns zero shared facts without fabricating module tota
 
     assert.deepEqual(result.shared.paidRevenue, {
         grossCents: 0,
+        refundedCents: 0,
+        netRetainedCents: 0,
         netToBusinessCents: 0,
         transactionCount: 0,
         averageTransactionValueCents: 0,
@@ -219,6 +250,8 @@ test("empty paid range returns zero shared facts without fabricating module tota
         {
             module: "foodService",
             grossCents: 0,
+            refundedCents: 0,
+            netRetainedCents: 0,
             transactionCount: 0,
         },
     ])
@@ -295,6 +328,8 @@ test("lodging-only shared revenue uses paid stay reservations and never queries 
 
     assert.deepEqual(result.shared.paidRevenue, {
         grossCents: 30000,
+        refundedCents: 0,
+        netRetainedCents: 30000,
         netToBusinessCents: 28000,
         transactionCount: 1,
         averageTransactionValueCents: 30000,
@@ -304,6 +339,8 @@ test("lodging-only shared revenue uses paid stay reservations and never queries 
         {
             module: "lodging",
             grossCents: 30000,
+            refundedCents: 0,
+            netRetainedCents: 30000,
             transactionCount: 1,
         },
     ])
@@ -317,9 +354,9 @@ test("lodging-only shared revenue uses paid stay reservations and never queries 
         pipeline[0].$match.businessId,
         businessId
     )
-    assert.equal(
-        pipeline[0].$match.paymentStatus,
-        "paid"
+    assert.deepEqual(
+        pipeline[0].$match.paymentStatus.$in,
+        ["paid", "partially_refunded", "refunded"]
     )
     assert.ok(pipeline[0].$match.checkInDate.$regex)
     assert.ok(pipeline[0].$match.checkOutDate.$regex)
@@ -351,6 +388,8 @@ test("hybrid shared revenue combines each module once and merges local daily buc
 
     assert.deepEqual(result.shared.paidRevenue, {
         grossCents: 35500,
+        refundedCents: 0,
+        netRetainedCents: 35500,
         netToBusinessCents: 33000,
         transactionCount: 3,
         averageTransactionValueCents: 11833,
@@ -360,17 +399,23 @@ test("hybrid shared revenue combines each module once and merges local daily buc
         {
             module: "lodging",
             grossCents: 30000,
+            refundedCents: 0,
+            netRetainedCents: 30000,
             transactionCount: 1,
         },
         {
             module: "foodService",
             grossCents: 5500,
+            refundedCents: 0,
+            netRetainedCents: 5500,
             transactionCount: 2,
         },
     ])
     assert.deepEqual(result.shared.revenueByDay[0], {
         date: "2026-07-22",
         grossCents: 32500,
+        refundedCents: 0,
+        netRetainedCents: 32500,
         transactionCount: 2,
     })
     assert.equal(
@@ -380,6 +425,42 @@ test("hybrid shared revenue combines each module once and merges local daily buc
         ),
         result.shared.paidRevenue.grossCents
     )
+})
+
+test("successful lodging refunds preserve gross collected and reduce net retained exactly once in hybrid totals", async () => {
+    const result = await getSharedAnalytics({
+        businessId,
+        enabledAnalyticsModules: [
+            "lodging",
+            "foodService",
+        ],
+        foodOperationalRange: analyticsRange,
+        lodgingCalendarRange: analyticsRange,
+        orderModel: createOrderModel(),
+        reservationModel: createReservationModel({
+            currentNetKnownCount: 0,
+            currentRefundedCents: 12000,
+        }),
+    })
+
+    assert.equal(result.shared.paidRevenue.grossCents, 35500)
+    assert.equal(result.shared.paidRevenue.refundedCents, 12000)
+    assert.equal(result.shared.paidRevenue.netRetainedCents, 23500)
+    assert.equal(result.shared.paidRevenue.netToBusinessCents, null)
+    assert.deepEqual(result.shared.revenueByModule[0], {
+        module: "lodging",
+        grossCents: 30000,
+        refundedCents: 12000,
+        netRetainedCents: 18000,
+        transactionCount: 1,
+    })
+    assert.deepEqual(result.shared.revenueByDay[0], {
+        date: "2026-07-22",
+        grossCents: 32500,
+        refundedCents: 12000,
+        netRetainedCents: 20500,
+        transactionCount: 2,
+    })
 })
 
 test("hybrid shared net is null when any included lodging payment lacks reliable persisted net", async () => {

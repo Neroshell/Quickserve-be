@@ -108,6 +108,7 @@ export function buildOrderAnalyticsFinancialFields() {
         analyticsGrossCents: orderGrossCentsExpression(),
         analyticsNetCents: netCentsExpression(),
         analyticsTipCents: tipCentsExpression(),
+        analyticsRefundedCents: 0,
     }
 }
 
@@ -119,7 +120,39 @@ export function buildReservationAnalyticsFinancialFields() {
         analyticsPaidAt: "$paidAt",
         analyticsGrossCents:
             reservationGrossCentsExpression(),
-        analyticsNetCents: netCentsExpression(),
+        analyticsNetCents: {
+            // The pre-refund net transfer snapshot is no longer authoritative
+            // after Stripe reverses all or part of the destination transfer.
+            // Keep it unknown rather than presenting the original net as the
+            // business's post-refund net.
+            $cond: [
+                {
+                    $gt: [
+                        {
+                            $ifNull: [
+                                "$refundedAmountCents",
+                                0,
+                            ],
+                        },
+                        0,
+                    ],
+                },
+                null,
+                netCentsExpression(),
+            ],
+        },
+        analyticsRefundedCents: {
+            $cond: [
+                {
+                    $and: [
+                        isNumericField("$refundedAmountCents"),
+                        { $gte: ["$refundedAmountCents", 0] },
+                    ],
+                },
+                { $round: ["$refundedAmountCents", 0] },
+                0,
+            ],
+        },
     }
 }
 
@@ -152,6 +185,22 @@ function summaryFacet(startUtc, endUtcExclusive, {
             $group: {
                 _id: null,
                 grossCents: { $sum: "$analyticsGrossCents" },
+                refundedCents: {
+                    $sum: "$analyticsRefundedCents",
+                },
+                netRetainedCents: {
+                    $sum: {
+                        $max: [
+                            0,
+                            {
+                                $subtract: [
+                                    "$analyticsGrossCents",
+                                    "$analyticsRefundedCents",
+                                ],
+                            },
+                        ],
+                    },
+                },
                 netCents: {
                     $sum: {
                         $ifNull: ["$analyticsNetCents", 0],
@@ -264,6 +313,22 @@ function buildFoodFinancialPipeline({
                             grossCents: {
                                 $sum: "$analyticsGrossCents",
                             },
+                            refundedCents: {
+                                $sum: "$analyticsRefundedCents",
+                            },
+                            netRetainedCents: {
+                                $sum: {
+                                    $max: [
+                                        0,
+                                        {
+                                            $subtract: [
+                                                "$analyticsGrossCents",
+                                                "$analyticsRefundedCents",
+                                            ],
+                                        },
+                                    ],
+                                },
+                            },
                             transactionCount: { $sum: 1 },
                         },
                     },
@@ -314,7 +379,13 @@ function buildLodgingFinancialPipeline({
         {
             $match: {
                 businessId,
-                paymentStatus: "paid",
+                paymentStatus: {
+                    $in: [
+                        "paid",
+                        "partially_refunded",
+                        "refunded",
+                    ],
+                },
                 ...getLodgingStayMatch(),
                 $or: [
                     { paidAt: currentInterval },
@@ -361,6 +432,22 @@ function buildLodgingFinancialPipeline({
                             grossCents: {
                                 $sum: "$analyticsGrossCents",
                             },
+                            refundedCents: {
+                                $sum: "$analyticsRefundedCents",
+                            },
+                            netRetainedCents: {
+                                $sum: {
+                                    $max: [
+                                        0,
+                                        {
+                                            $subtract: [
+                                                "$analyticsGrossCents",
+                                                "$analyticsRefundedCents",
+                                            ],
+                                        },
+                                    ],
+                                },
+                            },
                             transactionCount: { $sum: 1 },
                         },
                     },
@@ -386,6 +473,8 @@ function shapeSummary(rows) {
 
     return {
         grossCents,
+        refundedCents: integer(row.refundedCents),
+        netRetainedCents: integer(row.netRetainedCents),
         netToBusinessCents:
             transactionCount === 0
                 ? 0
@@ -435,6 +524,8 @@ function shapeRevenueByDay(rows, analyticsRange) {
             row._id,
             {
                 grossCents: integer(row.grossCents),
+                refundedCents: integer(row.refundedCents),
+                netRetainedCents: integer(row.netRetainedCents),
                 transactionCount: integer(row.transactionCount),
             },
         ])
@@ -444,6 +535,10 @@ function shapeRevenueByDay(rows, analyticsRange) {
         (date) => ({
             date,
             grossCents: byDate.get(date)?.grossCents || 0,
+            refundedCents:
+                byDate.get(date)?.refundedCents || 0,
+            netRetainedCents:
+                byDate.get(date)?.netRetainedCents || 0,
             transactionCount:
                 byDate.get(date)?.transactionCount || 0,
         })
@@ -491,6 +586,14 @@ function combineSummaries(summaries) {
         (sum, summary) => sum + summary.grossCents,
         0
     )
+    const refundedCents = summaries.reduce(
+        (sum, summary) => sum + summary.refundedCents,
+        0
+    )
+    const netRetainedCents = summaries.reduce(
+        (sum, summary) => sum + summary.netRetainedCents,
+        0
+    )
     const netIsComplete = summaries.every(
         (summary) =>
             summary.transactionCount === 0 ||
@@ -499,6 +602,8 @@ function combineSummaries(summaries) {
 
     return {
         grossCents,
+        refundedCents,
+        netRetainedCents,
         netToBusinessCents:
             transactionCount === 0
                 ? 0
@@ -527,9 +632,13 @@ function combineRevenueByDay(moduleRows) {
         for (const row of rows) {
             const current = combined.get(row.date) || {
                 grossCents: 0,
+                refundedCents: 0,
+                netRetainedCents: 0,
                 transactionCount: 0,
             }
             current.grossCents += row.grossCents
+            current.refundedCents += row.refundedCents
+            current.netRetainedCents += row.netRetainedCents
             current.transactionCount += row.transactionCount
             combined.set(row.date, current)
         }
@@ -542,6 +651,8 @@ function combineRevenueByDay(moduleRows) {
         .map(([date, row]) => ({
             date,
             grossCents: row.grossCents,
+            refundedCents: row.refundedCents,
+            netRetainedCents: row.netRetainedCents,
             transactionCount: row.transactionCount,
         }))
 }
@@ -682,6 +793,10 @@ export async function getSharedAnalytics({
                     return {
                         module: moduleId,
                         grossCents: financials.grossCents,
+                        refundedCents:
+                            financials.refundedCents,
+                        netRetainedCents:
+                            financials.netRetainedCents,
                         transactionCount:
                             financials.transactionCount,
                     }
