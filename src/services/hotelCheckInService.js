@@ -54,7 +54,10 @@ export async function generateHotelCheckInCredentials(reservation, business) {
 
   // 3. Update reservation with hashes, version bump, and tracking fields
   const updatedReservation = await Reservation.findOneAndUpdate(
-    { _id: reservation._id },
+    {
+      _id: reservation._id,
+      businessId: reservation.businessId,
+    },
     {
       $set: {
         checkInCodeHash,
@@ -83,10 +86,16 @@ export async function generateHotelCheckInCredentials(reservation, business) {
       validFrom: checkInCodeValidFrom,
       expiresAt: checkInCodeExpiresAt,
     });
+    if (!result) {
+      throw new Error("The email provider did not accept the check-in code email.");
+    }
 
     // 5. Update email delivery success state
     await Reservation.updateOne(
-      { _id: reservation._id },
+      {
+        _id: reservation._id,
+        businessId: reservation.businessId,
+      },
       {
         $set: {
           confirmationEmailSentAt: new Date(),
@@ -101,7 +110,10 @@ export async function generateHotelCheckInCredentials(reservation, business) {
     console.error(`[generateHotelCheckInCredentials] Email delivery failed for reservation ${reservation._id}:`, err);
     // Record email failure, but keep the generated hashes active for retry
     await Reservation.updateOne(
-      { _id: reservation._id },
+      {
+        _id: reservation._id,
+        businessId: reservation.businessId,
+      },
       {
         $set: {
           confirmationEmailError: err.message || "Unknown email delivery error",

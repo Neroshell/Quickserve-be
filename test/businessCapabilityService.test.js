@@ -56,6 +56,31 @@ test("food service extends a hotel without replacing the hotel shell", () => {
         capabilities.navigation.groups.map(({ id }) => id),
         ["hotelOperations", "foodService", "management", "insights", "account"]
     )
+    assert.deepEqual(
+        capabilities.navigation.groups
+            .filter(({ id }) => id === "hotelOperations" || id === "foodService")
+            .map(({ id, items }) => ({ id, items })),
+        [
+            {
+                id: "hotelOperations",
+                items: ["reservations", "transactions", "servicePoints"],
+            },
+            { id: "foodService", items: ["orders", "menu"] },
+        ]
+    )
+})
+
+test("hotel-only navigation keeps transactions under hotel operations", () => {
+    const capabilities = resolveBusinessCapabilities({
+        businessType: "hotel",
+        modules: ["lodging"],
+    })
+
+    assert.deepEqual(capabilities.navigation.groups[0], {
+        id: "hotelOperations",
+        label: "Hotel Operations",
+        items: ["reservations", "transactions", "servicePoints"],
+    })
 })
 
 test("business identity modules cannot be removed", () => {

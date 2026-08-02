@@ -130,3 +130,96 @@ test("a matching active code checks in the guest and records the staff member", 
     Reservation.findOneAndUpdate = originalFindOneAndUpdate;
   }
 });
+
+test("a locked check-in code returns structured lock state for the owner UI", async () => {
+  const originalFindOne = Reservation.findOne;
+  const lockedAt = new Date("2026-07-18T12:00:00.000Z");
+  const reservation = {
+    _id: "reservation-locked",
+    businessId: "hotel-1",
+    checkInDate: "2026-07-18",
+    status: "confirmed",
+    paymentStatus: "paid",
+    checkInCodeHash: hashCheckInCode("123456"),
+    checkInCodeValidFrom: new Date("2026-07-18T11:00:00.000Z"),
+    checkInCodeExpiresAt: new Date("2026-07-19T11:00:00.000Z"),
+    checkInCodeLockedAt: lockedAt,
+    checkInCodeUsedAt: null,
+  };
+
+  Reservation.findOne = () => ({
+    select: async () => reservation,
+  });
+
+  try {
+    const req = {
+      params: { id: reservation._id },
+      body: { code: "123456" },
+      session: { user: { businessId: "hotel-1", role: "owner" } },
+    };
+    const res = createResponse();
+
+    await checkInHotelReservation(req, res);
+
+    assert.equal(res.statusCode, 423);
+    assert.equal(res.body.code, "CHECK_IN_CODE_LOCKED");
+    assert.equal(res.body.checkInCodeLocked, true);
+    assert.equal(res.body.attemptsRemaining, 0);
+    assert.equal(res.body.lockedAt, lockedAt);
+  } finally {
+    Reservation.findOne = originalFindOne;
+  }
+});
+
+test("the fifth incorrect check-in code locks the credential", async () => {
+  const originalFindOne = Reservation.findOne;
+  const originalUpdateOne = Reservation.updateOne;
+  const now = Date.now();
+  let capturedUpdate;
+  const reservation = {
+    _id: "reservation-final-attempt",
+    businessId: "hotel-1",
+    checkInDate: "2026-07-18",
+    status: "confirmed",
+    paymentStatus: "paid",
+    checkInCodeHash: hashCheckInCode("123456"),
+    checkInCodeValidFrom: new Date(now - 60_000),
+    checkInCodeExpiresAt: new Date(now + 60_000),
+    checkInCodeLockedAt: null,
+    checkInCodeUsedAt: null,
+    checkInCodeFailedAttempts: 4,
+  };
+
+  Reservation.findOne = () => ({
+    select: async () => reservation,
+  });
+  Reservation.updateOne = async (_filter, update) => {
+    capturedUpdate = update;
+    return { acknowledged: true, modifiedCount: 1 };
+  };
+
+  try {
+    const req = {
+      params: { id: reservation._id },
+      body: { code: "654321" },
+      session: { user: { businessId: "hotel-1", role: "owner" } },
+    };
+    const res = createResponse();
+
+    await checkInHotelReservation(req, res);
+
+    assert.equal(res.statusCode, 423);
+    assert.equal(res.body.code, "CHECK_IN_CODE_LOCKED");
+    assert.equal(res.body.checkInCodeLocked, true);
+    assert.equal(capturedUpdate.$set.checkInCodeFailedAttempts, 5);
+    assert.ok(capturedUpdate.$set.checkInCodeLockedAt instanceof Date);
+  } finally {
+    Reservation.findOne = originalFindOne;
+    Reservation.updateOne = originalUpdateOne;
+  }
+});
+
+test("reservation schema records who triggered a confirmation resend", () => {
+  assert.ok(Reservation.schema.path("confirmationEmailResentAt"));
+  assert.ok(Reservation.schema.path("confirmationEmailResentBy"));
+});

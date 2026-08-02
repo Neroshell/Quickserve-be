@@ -420,7 +420,11 @@ export async function checkInHotelReservation(req, res) {
 
     if (reservation.checkInCodeLockedAt) {
       return res.status(423).json({
+        code: "CHECK_IN_CODE_LOCKED",
         error: "This check-in code is locked. Resend the confirmation email to issue a new code.",
+        checkInCodeLocked: true,
+        lockedAt: reservation.checkInCodeLockedAt,
+        attemptsRemaining: 0,
       });
     }
 
@@ -451,7 +455,11 @@ export async function checkInHotelReservation(req, res) {
 
       if (shouldLock) {
         return res.status(423).json({
+          code: "CHECK_IN_CODE_LOCKED",
           error: "Too many incorrect attempts. Resend the confirmation email to issue a new code.",
+          checkInCodeLocked: true,
+          lockedAt: now,
+          attemptsRemaining: 0,
         });
       }
 
@@ -610,45 +618,77 @@ export async function getAvailableStayServicePoints(req, res) {
 export async function resendReservationConfirmation(req, res) {
   try {
     const { id } = req.params;
-    
-    // Find the reservation
-    const reservation = await Reservation.findById(id);
+    const scope = reservationScope(req, id);
+    if (!scope) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const reservation = await Reservation.findOne(scope);
     if (!reservation) {
       return res.status(404).json({ error: "Reservation not found" });
     }
 
-    // Ensure it belongs to the authenticated owner's business
-    const business = await Business.findOne({ businessId: reservation.businessId, ownerEmail: req.session.user.email }).lean();
-    if (!business && req.session.user.role !== "admin") {
-      return res.status(403).json({ error: "Unauthorized access to this business" });
+    const business = await Business.findOne({
+      businessId: reservation.businessId,
+    }).lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
     }
 
-    // Must be a hotel check-in
     if (!reservation.checkInDate) {
       return res.status(400).json({ error: "Only hotel reservations are eligible for check-in codes" });
     }
 
-    // Must be paid and confirmed
-    if (reservation.paymentStatus !== "paid" || reservation.status === "cancelled") {
-      return res.status(400).json({ error: "Reservation must be paid and not cancelled" });
+    if (reservation.paymentStatus !== "paid" || reservation.status !== "confirmed") {
+      return res.status(409).json({ error: "Reservation must be paid and confirmed" });
+    }
+    if (reservation.activeRefundId) {
+      return res.status(409).json({
+        error: "A new check-in code cannot be sent while a refund operation is in progress.",
+      });
     }
 
-    // Generate new credentials and resend email
     try {
-      await generateHotelCheckInCredentials(reservation, business);
-      
-      // Update resend tracking
-      await Reservation.updateOne(
-        { _id: reservation._id },
-        { 
-          $set: { confirmationEmailResentAt: new Date() },
-          $inc: { confirmationEmailSendCount: 1 } 
-        }
+      const { updatedReservation } = await generateHotelCheckInCredentials(
+        reservation,
+        business,
+      );
+      const resentAt = new Date();
+      const actor = buildReservationStaffSnapshot(req.session?.user);
+      const auditedReservation = await Reservation.findOneAndUpdate(
+        {
+          _id: updatedReservation._id,
+          businessId: reservation.businessId,
+        },
+        {
+          $set: {
+            confirmationEmailResentAt: resentAt,
+            ...(actor ? { confirmationEmailResentBy: actor } : {}),
+          },
+          $inc: { confirmationEmailSendCount: 1 },
+        },
+        { new: true, runValidators: true },
       );
 
-      return res.json({ message: "Confirmation email resent successfully." });
+      return res.json({
+        message: "A new check-in code was sent to the guest.",
+        reservation: toOwnerReservationResponse(
+          auditedReservation || updatedReservation,
+        ),
+      });
     } catch (emailErr) {
       console.error("[reservationController.resendReservationConfirmation] Email failed:", emailErr);
+      // Keep the modal in its safe locked state when the provider does not
+      // accept the replacement-code email.
+      await Reservation.updateOne(
+        {
+          _id: reservation._id,
+          businessId: reservation.businessId,
+          status: "confirmed",
+          paymentStatus: "paid",
+        },
+        { $set: { checkInCodeLockedAt: new Date() } },
+      );
       return res.status(500).json({ error: "Failed to send the email. Please check your provider settings." });
     }
 

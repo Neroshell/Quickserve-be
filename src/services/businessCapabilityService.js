@@ -21,7 +21,7 @@ const RESTAURANT_NAVIGATION = Object.freeze([
 ])
 
 const HOTEL_NAVIGATION_BASE = Object.freeze([
-    Object.freeze({ id: "hotelOperations", label: "Hotel Operations", items: Object.freeze(["reservations", "servicePoints"]) }),
+    Object.freeze({ id: "hotelOperations", label: "Hotel Operations", items: Object.freeze(["reservations", "transactions", "servicePoints"]) }),
 ])
 
 const HOTEL_NAVIGATION_COMMON = Object.freeze([
@@ -109,7 +109,7 @@ function buildNavigation(shell, modules) {
         groups.push({
             id: "foodService",
             label: "Food Service",
-            items: ["orders", "transactions", "menu"],
+            items: ["orders", "menu"],
         })
     }
     groups.push(...HOTEL_NAVIGATION_COMMON.map((group) => ({ ...group, items: [...group.items] })))
@@ -154,8 +154,9 @@ export function resolveBusinessCapabilities(business) {
             sections: shell === "hotel"
                 ? [
                     "reservations",
+                    "transactions",
                     "servicePoints",
-                    ...(hasFoodService ? ["orders", "transactions", "menu"] : []),
+                    ...(hasFoodService ? ["orders", "menu"] : []),
                 ]
                 : ["orders", "transactions", "reservations", "servicePoints"],
         },

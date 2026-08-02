@@ -262,6 +262,10 @@ const ReservationSchema = new mongoose.Schema(
     },
     checkInCredentialVersion: { type: Number, default: 0 },
     confirmationEmailResentAt: { type: Date },
+    confirmationEmailResentBy: {
+      type: ReservationStaffSnapshotSchema,
+      default: null,
+    },
     confirmationEmailSendCount: { type: Number, default: 0 },
     publicReference: { type: String, unique: true, sparse: true },
   },
