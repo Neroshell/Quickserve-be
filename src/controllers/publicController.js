@@ -4,6 +4,8 @@ import ServicePoint from "../models/ServicePoint.js";
 import Plan from "../models/Plan.js";
 import { sendReservationRequestEmail, sendReservationRequestReceivedEmail } from "../utils/emailService.js";
 import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "../services/reservationPricingService.js";
+import { dispatchRestaurantReservationEmail } from "../services/email/emailDispatchService.js";
+import { EMAIL_JOB_NAMES } from "../queues/index.js";
 
 const SERVABLE_STATUSES = ["active", "onboarding", "draft"];
 
@@ -420,30 +422,48 @@ export async function createReservation(req, res) {
 
     await reservation.save();
 
-    // Emails are fire-and-forget: never block the response or fail the request.
+    // The reservation is durable before either direct rollback delivery or
+    // queued delivery intent is attempted.
     const reservationObj = reservation.toObject();
     const businessDisplayName = business.displayName || business.name;
+    const deliveryVersion = reservation.createdAt || new Date();
+    const deliveries = [];
 
     // 1. Notify the business owner of the new request.
     const targetEmail = business.contactEmail || business.ownerEmail;
     if (targetEmail) {
-      sendReservationRequestEmail({
-        to: targetEmail,
-        businessName: businessDisplayName,
-        reservation: reservationObj
-      }).catch(err => console.error("[createReservation] Owner email failed to send:", err));
+      deliveries.push(dispatchRestaurantReservationEmail({
+        jobName: EMAIL_JOB_NAMES.RESERVATION_REQUEST_OWNER,
+        businessId: reservation.businessId,
+        reservationId: reservation._id,
+        deliveryVersion,
+        waitForDirect: false,
+        directSend: () => sendReservationRequestEmail({
+          to: targetEmail,
+          businessName: businessDisplayName,
+          reservation: reservationObj,
+        }),
+      }));
     }
 
     // 2. Notify the customer their request was received (only if they gave an email).
     if (reservationObj.email) {
-      sendReservationRequestReceivedEmail({
-        to: reservationObj.email,
-        businessName: businessDisplayName,
-        businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
-        primaryColor: business.branding?.primaryColor,
-        reservation: reservationObj
-      }).catch(err => console.error("[createReservation] Customer email failed to send:", err));
+      deliveries.push(dispatchRestaurantReservationEmail({
+        jobName: EMAIL_JOB_NAMES.RESERVATION_REQUEST_GUEST,
+        businessId: reservation.businessId,
+        reservationId: reservation._id,
+        deliveryVersion,
+        waitForDirect: false,
+        directSend: () => sendReservationRequestReceivedEmail({
+          to: reservationObj.email,
+          businessName: businessDisplayName,
+          businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
+          primaryColor: business.branding?.primaryColor,
+          reservation: reservationObj,
+        }),
+      }));
     }
+    await Promise.all(deliveries);
 
     res.status(201).json({
       message: "Reservation request received.",

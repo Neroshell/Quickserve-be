@@ -75,6 +75,18 @@ const ReservationRefundSchema = new mongoose.Schema(
     customerEmailSendingAt: { type: Date, default: null },
     customerEmailSentAt: { type: Date, default: null },
     customerEmailError: { type: String, default: null, maxlength: 500 },
+    customerEmailStatus: {
+      type: String,
+      enum: ["pending", "processing", "sent", "failed", null],
+      default: null,
+      index: true,
+    },
+    customerEmailAttemptCount: { type: Number, default: 0, min: 0 },
+    customerEmailClaimId: { type: String, default: null },
+    customerEmailRetryable: { type: Boolean, default: true },
+    customerEmailEnqueuedAt: { type: Date, default: null },
+    customerEmailEnqueueError: { type: String, default: null, maxlength: 200 },
+    customerEmailProviderMessageId: { type: String, default: null },
   },
   { timestamps: true },
 );
@@ -87,6 +99,12 @@ ReservationRefundSchema.index({
   businessId: 1,
   reservationId: 1,
   status: 1,
+});
+ReservationRefundSchema.index({
+  businessId: 1,
+  status: 1,
+  customerEmailStatus: 1,
+  customerEmailRetryable: 1,
 });
 
 export default mongoose.models.ReservationRefund ||

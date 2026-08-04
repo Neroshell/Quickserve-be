@@ -56,6 +56,21 @@ const HotelSettingsSchema = new mongoose.Schema({
     }
 }, { _id: false })
 
+const BillingLifecycleClaimSchema = new mongoose.Schema({
+    periodKey: { type: String, default: null },
+    claimId: { type: String, default: null },
+    status: {
+        type: String,
+        enum: ["claimed", "completed", "failed"],
+        default: null,
+    },
+    claimedAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    failedAt: { type: Date, default: null },
+    lastError: { type: String, default: null },
+    providerMessageId: { type: String, default: null },
+}, { _id: false })
+
 const BusinessSchema = new mongoose.Schema({
     businessId: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true },
@@ -147,6 +162,13 @@ const BusinessSchema = new mongoose.Schema({
 
     billingRestoredAt: { type: Date, default: null },
     billingRestoredEmailSentAt: { type: Date, default: null },
+    billingLifecycleClaims: {
+        upcomingInvoice: { type: BillingLifecycleClaimSchema, default: () => ({}) },
+        overdueWarningDay3: { type: BillingLifecycleClaimSchema, default: () => ({}) },
+        overdueWarningDay5: { type: BillingLifecycleClaimSchema, default: () => ({}) },
+        restrictService: { type: BillingLifecycleClaimSchema, default: () => ({}) },
+        restoreService: { type: BillingLifecycleClaimSchema, default: () => ({}) },
+    },
     
     passPlatformFeeToCustomer: { type: Boolean, default: false },
     platformFeeMode: { type: String, enum: ["business_absorbs", "customer_pays", "split"], default: "business_absorbs" },
@@ -255,6 +277,9 @@ BusinessSchema.pre("validate", function normalizeModulesBeforeValidation() {
 
 // Compound index to ensure slug is unique per country
 BusinessSchema.index({ countryCode: 1, slug: 1 }, { unique: true })
+BusinessSchema.index({ billingStatus: 1, nextInvoiceDate: 1 })
+BusinessSchema.index({ billingStatus: 1, billingFailedAt: 1 })
+BusinessSchema.index({ billingStatus: 1, offlineServiceRestricted: 1 })
 
 // Explicitly bind to the existing "restaurants" collection
 export default mongoose.models.Business || mongoose.model("Business", BusinessSchema, "restaurants")

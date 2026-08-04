@@ -4,6 +4,8 @@ import Reservation from "../models/Reservation.js";
 import ReservationRefund from "../models/ReservationRefund.js";
 import { sendReservationRefundEmail } from "../utils/emailService.js";
 import { canRefundReservation } from "./reservationRefundAuthorization.js";
+import { dispatchRefundConfirmation } from "./email/emailDispatchService.js";
+import { deliverRefundEmailDirect } from "./email/refundEmailDeliveryService.js";
 
 export const RESERVATION_CANCELLATION_OUTCOMES = Object.freeze([
   "cancel_unpaid",
@@ -185,6 +187,7 @@ function stripeReason(reason) {
 async function sendRefundNotificationOnce({
   refund,
   reservation,
+  reservationModel,
   businessModel,
   refundModel,
   sendRefundEmail,
@@ -192,69 +195,19 @@ async function sendRefundNotificationOnce({
 }) {
   if (!reservation?.email) return false;
 
-  const staleClaimBefore = new Date(now.getTime() - 5 * 60 * 1000);
-  const claim = await refundModel.findOneAndUpdate(
-    {
-      _id: refund._id,
-      status: "succeeded",
-      customerEmailSentAt: null,
-      $or: [
-        { customerEmailSendingAt: null },
-        { customerEmailSendingAt: { $lt: staleClaimBefore } },
-      ],
-    },
-    {
-      $set: {
-        customerEmailSendingAt: now,
-        customerEmailError: null,
-      },
-    },
-    { new: true },
-  );
-  if (!claim) return Boolean(refund.customerEmailSentAt);
-
-  const business = await businessModel
-    .findOne({ businessId: refund.businessId })
-    .lean();
-  let sent = false;
-  let emailError = business
-    ? "Refund email provider did not accept the message."
-    : "Business not found while preparing refund email.";
-  if (business) {
-    try {
-      sent = await sendRefundEmail({
-        to: reservation.email,
-        businessName: business.displayName || business.name,
-        businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
-        primaryColor: business.branding?.primaryColor,
-        reservation,
-        refund: claim,
-      });
-    } catch (error) {
-      emailError = String(
-        error?.message || "Refund email delivery failed.",
-      ).slice(0, 500);
-    }
-  }
-
-  await refundModel.updateOne(
-    { _id: refund._id, customerEmailSendingAt: now },
-    sent
-      ? {
-          $set: {
-            customerEmailSentAt: now,
-            customerEmailSendingAt: null,
-            customerEmailError: null,
-          },
-        }
-      : {
-          $set: {
-            customerEmailSendingAt: null,
-            customerEmailError: emailError,
-          },
-        },
-  );
-  return sent;
+  return dispatchRefundConfirmation({
+    businessId: refund.businessId,
+    refundId: refund.refundId,
+    directSend: () => deliverRefundEmailDirect({
+      refund,
+      reservation,
+      reservationModel,
+      refundModel,
+      businessModel,
+      sendRefundEmail,
+      now,
+    }),
+  });
 }
 
 export async function reconcileReservationRefund({
@@ -283,6 +236,7 @@ export async function reconcileReservationRefund({
       await sendRefundNotificationOnce({
         refund: refundRecord,
         reservation,
+        reservationModel,
         businessModel,
         refundModel,
         sendRefundEmail,
@@ -436,9 +390,10 @@ export async function reconcileReservationRefund({
     );
   }
 
-  const emailSent = await sendRefundNotificationOnce({
+  const emailDelivery = await sendRefundNotificationOnce({
     refund: finalRefund,
     reservation: finalizedReservation,
+    reservationModel,
     businessModel,
     refundModel,
     sendRefundEmail,
@@ -448,7 +403,10 @@ export async function reconcileReservationRefund({
   return {
     refund: finalRefund,
     reservation: finalizedReservation,
-    emailSent,
+    emailSent:
+      emailDelivery?.mode === "direct" && Boolean(emailDelivery.success),
+    emailQueued:
+      emailDelivery?.mode === "queued" && Boolean(emailDelivery.queued),
   };
 }
 

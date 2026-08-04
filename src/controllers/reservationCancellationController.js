@@ -54,7 +54,11 @@ export async function cancelOwnerHotelReservation(req, res) {
       stripeClient: req.app?.locals?.stripe || stripe,
     });
 
-    let emailStatus = result.emailSent ? "sent" : "not_sent";
+    let emailStatus = result.emailQueued
+      ? "queued"
+      : result.emailSent
+        ? "sent"
+        : "not_sent";
     if (!result.refund && result.reservation?.email && !result.idempotent) {
       const business = await Business.findOne({ businessId }).lean();
       if (business) {

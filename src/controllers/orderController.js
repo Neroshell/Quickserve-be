@@ -17,12 +17,17 @@ import { isBusinessOpen } from "../utils/operatingHours.js"
 import { calculateOfflineCommission } from "../utils/platformFee.js"
 import { normalizeTip } from "../utils/tips.js"
 import CustomerConsent from "../models/CustomerConsent.js"
-import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js"
+import {
+  captureGuestLead,
+  dispatchCrmOrder,
+  recordCrmOrderIntent,
+} from "../services/guestProfileService.js"
 import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
 import {
   calculateOfflinePricing,
   getCustomerPricingBreakdown,
 } from "../services/pricingService.js"
+import { dispatchAutomaticOrderReceipt } from "../services/email/emailDispatchService.js"
 // Restaurant-flow defect safeguards for direct/offline orders:
 // validate and normalize the cart, enforce business ordering/payment settings,
 // and derive currency from the business instead of accepting client values.
@@ -578,6 +583,13 @@ export async function markPaid(req, res) {
       paidVia,
       paidAt: new Date()
     }
+    if (order.receiptEmail) {
+      updateObj.crmEmail = order.receiptEmail.toLowerCase().trim()
+      updateObj.crmProcessingStatus = "pending"
+      updateObj.crmProcessingRetryable = true
+      updateObj.crmProcessingLastError = null
+      updateObj.crmProcessingFailedAt = null
+    }
     // Stamp which staff member confirmed this payment (waiter analytics)
     if (req.session?.user?.staffId) updateObj.paidByStaffId = req.session.user.staffId
     if (req.session?.user?.name) updateObj.paidByName = req.session.user.name
@@ -636,8 +648,11 @@ export async function markPaid(req, res) {
     // ✅ Step 3: Respond immediately — do NOT wait for email
 
     if (updatedOrder.receiptEmail && !updatedOrder.receiptSent) {
-      ; (async () => {
-        try {
+      await dispatchAutomaticOrderReceipt({
+        businessId: updatedOrder.businessId,
+        orderId: updatedOrder.orderId,
+        waitForDirect: false,
+        directSend: async () => {
           const emailSent = await sendReceiptEmail(
             updatedOrder,
             updatedOrder.receiptEmail,
@@ -645,24 +660,22 @@ export async function markPaid(req, res) {
           )
           if (emailSent) {
             await Order.findOneAndUpdate(
-              { _id: updatedOrder._id },
+              { _id: updatedOrder._id, businessId: updatedOrder.businessId },
               { $set: { receiptSent: true, receiptSentAt: new Date() } },
             )
           } else {
             console.error(`[markPaid] Receipt provider did not accept order ${orderId}`)
           }
-        } catch (emailErr) {
-          console.error(`[markPaid] ❌ Background receipt email failed for order ${orderId}:`, emailErr)
-        }
-      })()
+          return emailSent
+        },
+      })
     }
 
     if (updatedOrder.receiptEmail) {
-      upsertGuestProfileFromOrder({
+      void dispatchCrmOrder({
         businessId: updatedOrder.businessId,
-        order: updatedOrder,
-        email: updatedOrder.receiptEmail
-      });
+        orderId: updatedOrder.orderId,
+      })
     }
 
     res.json({
@@ -757,12 +770,10 @@ export async function saveReceiptEmail(req, res) {
           );
         }
 
-        upsertGuestProfileFromOrder({
+        await captureGuestLead({
           businessId: pending.businessId,
-          order: pending,
           email,
           marketingConsent,
-          trackVisit: false
         });
 
         return res.status(200).json({ success: true, message: "Receipt email saved for pending checkout successfully" });
@@ -804,13 +815,33 @@ export async function saveReceiptEmail(req, res) {
       );
     }
 
-    upsertGuestProfileFromOrder({
+    await captureGuestLead({
       businessId: order.businessId,
-      order,
       email,
       marketingConsent,
-      trackVisit: order.paymentStatus === "paid"
-    });
+    })
+
+    if (order.paymentStatus === "paid") {
+      try {
+        const intent = await recordCrmOrderIntent({
+          businessId: order.businessId,
+          orderId: order.orderId,
+          email,
+        })
+        if (intent.recorded) {
+          void dispatchCrmOrder({
+            businessId: order.businessId,
+            orderId: order.orderId,
+          })
+        }
+      } catch (crmError) {
+        console.error("[saveReceiptEmail] CRM intent recording failed", {
+          businessId: order.businessId,
+          orderId: order.orderId,
+          reason: crmError?.code || crmError?.name || "crm_intent_failed",
+        })
+      }
+    }
 
     if (receiptAttempted && !receiptDelivered) {
       return res.status(502).json({

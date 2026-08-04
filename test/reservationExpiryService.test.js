@@ -19,6 +19,7 @@ test("owner-triggered reservation expiry is tenant-scoped and includes the deadl
     {
       businessId: "hotel_1",
       status: "accepted_awaiting_payment",
+      paymentStatus: { $ne: "paid" },
       paymentExpiresAt: { $lte: now },
     },
   );
@@ -51,6 +52,7 @@ test("the trusted scheduled job can reuse the same atomic expiry operation", asy
 
   assert.deepEqual(capturedFilter, {
     status: "accepted_awaiting_payment",
+    paymentStatus: { $ne: "paid" },
     paymentExpiresAt: { $lte: now },
   });
   assert.deepEqual(capturedUpdate, { $set: { status: "expired" } });
@@ -118,6 +120,7 @@ test("loading the owner list synchronizes expiry for the authenticated tenant", 
 
   assert.equal(expiryFilter.businessId, "hotel_1");
   assert.equal(expiryFilter.status, "accepted_awaiting_payment");
+  assert.deepEqual(expiryFilter.paymentStatus, { $ne: "paid" });
   assert.ok(expiryFilter.paymentExpiresAt.$lte instanceof Date);
   assert.deepEqual(listFilter, {
     businessId: "hotel_1",

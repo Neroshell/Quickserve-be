@@ -8,6 +8,22 @@ const favoriteItemSchema = new mongoose.Schema(
   { _id: false }
 )
 
+const crmProjectionBaselineSchema = new mongoose.Schema(
+  {
+    capturedAt: { type: Date, required: true },
+    firstVisitAt: { type: Date, default: null },
+    lastVisitAt: { type: Date, default: null },
+    firstOrderId: { type: String, default: null },
+    lastOrderId: { type: String, default: null },
+    visitCount: { type: Number, default: 0 },
+    orderCount: { type: Number, default: 0 },
+    paidOrderCount: { type: Number, default: 0 },
+    totalSpendCents: { type: Number, default: 0 },
+    favouriteItems: { type: [favoriteItemSchema], default: [] },
+  },
+  { _id: false },
+)
+
 const guestProfileSchema = new mongoose.Schema(
   {
     businessId: { type: String, required: true, index: true },
@@ -28,8 +44,10 @@ const guestProfileSchema = new mongoose.Schema(
     
     firstOrderId: { type: String },
     lastOrderId: { type: String },
-    processedOrderIds: { type: [String], default: [] }, // Prevents double counting for order count
-    processedPaidOrderIds: { type: [String], default: [] }, // Prevents double counting for spend and items
+    // Legacy compatibility snapshots only. Phase 3 deduplication is owned by
+    // the durable CrmOrderProjectionLedger and never depends on these arrays.
+    processedOrderIds: { type: [String], default: [] },
+    processedPaidOrderIds: { type: [String], default: [] },
 
     firstVisitAt: { type: Date },
     lastVisitAt: { type: Date, index: true },
@@ -53,6 +71,11 @@ const guestProfileSchema = new mongoose.Schema(
     lastFeedbackAt: { type: Date },
     feedbackCount: { type: Number, default: 0 },
     averageRating: { type: Number },
+
+    // Serializes rebuilds of this guest's ledger-backed CRM projection.
+    crmProjectionClaimId: { type: String, default: null },
+    crmProjectionClaimedAt: { type: Date, default: null },
+    crmProjectionBaseline: { type: crmProjectionBaselineSchema, default: null },
   },
   { timestamps: true }
 )

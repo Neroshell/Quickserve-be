@@ -82,11 +82,39 @@ const OrderSchema = new mongoose.Schema(
     receiptEmail: { type: String, default: null },
     receiptSent:  { type: Boolean, default: false },
     receiptSentAt: { type: Date, default: null },
+    receiptDeliveryStatus: {
+      type: String,
+      enum: ["pending", "processing", "sent", "failed", null],
+      default: null,
+      index: true,
+    },
+    receiptDeliveryAttemptCount: { type: Number, default: 0, min: 0 },
+    receiptDeliveryClaimedAt: { type: Date, default: null },
+    receiptDeliveryClaimId: { type: String, default: null },
+    receiptDeliveryLastError: { type: String, default: null, maxlength: 500 },
+    receiptDeliveryRetryable: { type: Boolean, default: true },
+    receiptDeliveryEnqueuedAt: { type: Date, default: null },
+    receiptDeliveryEnqueueError: { type: String, default: null, maxlength: 200 },
+    receiptProviderMessageId: { type: String, default: null },
 
     // CRM Ownership Locks
     crmEmail: { type: String, default: null },
     crmProcessed: { type: Boolean, default: false },
-    crmProcessedAt: { type: Date },
+    crmProcessedAt: { type: Date, default: null },
+    crmProcessingStatus: {
+      type: String,
+      enum: ["pending", "processing", "completed", "failed", null],
+      default: null,
+      index: true,
+    },
+    crmProcessingClaimId: { type: String, default: null },
+    crmProcessingClaimedAt: { type: Date, default: null },
+    crmProcessingAttemptCount: { type: Number, default: 0, min: 0 },
+    crmProcessingFailedAt: { type: Date, default: null },
+    crmProcessingLastError: { type: String, default: null, maxlength: 500 },
+    crmProcessingRetryable: { type: Boolean, default: true },
+    crmProcessingEnqueuedAt: { type: Date, default: null },
+    crmProcessingEnqueueError: { type: String, default: null, maxlength: 200 },
 
     // Order creation metadata
     orderSource: { type: String, enum: ["self", "waitstaff"], default: "self", index: true },
@@ -144,6 +172,21 @@ OrderSchema.index({ businessId: 1, orderId: 1 }, { unique: true })
 OrderSchema.index({ businessId: 1, paymentStatus: 1, paidAt: 1 })
 // Supports tenant-scoped operational analytics over order creation and status.
 OrderSchema.index({ businessId: 1, createdAt: 1, status: 1 })
+OrderSchema.index({
+  businessId: 1,
+  paymentStatus: 1,
+  receiptDeliveryStatus: 1,
+  receiptDeliveryRetryable: 1,
+})
+OrderSchema.index({
+  businessId: 1,
+  paymentStatus: 1,
+  crmProcessed: 1,
+  crmProcessingStatus: 1,
+  crmProcessingRetryable: 1,
+  crmProcessingClaimedAt: 1,
+  paidAt: 1,
+})
 
 
 export default mongoose.models.Order || mongoose.model("Order", OrderSchema)

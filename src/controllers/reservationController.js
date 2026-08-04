@@ -12,6 +12,11 @@ import {
   getRemainingRefundableAmountCents,
   getReservationCapturedAmountCents,
 } from "../services/reservationCancellationService.js";
+import { dispatchRestaurantReservationEmail } from "../services/email/emailDispatchService.js";
+import {
+  EMAIL_JOB_NAMES,
+  enqueueReservationPaymentExpiry,
+} from "../queues/index.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 export const HOTEL_PAYMENT_WINDOW_MINUTES = 30;
@@ -272,6 +277,24 @@ export async function updateReservationStatus(req, res) {
       reservation.paymentExpiresAt = getHotelPaymentExpiresAt();
       reservation.status = status;
       await reservation.save();
+      const scheduleExpiry =
+        req.app?.locals?.enqueueReservationPaymentExpiry ||
+        enqueueReservationPaymentExpiry;
+      try {
+        await scheduleExpiry({
+          businessId: reservation.businessId,
+          reservationId: reservation._id,
+          expectedPaymentExpiry: reservation.paymentExpiresAt,
+        });
+      } catch (error) {
+        // The recurring repair scan and retained cron endpoint remain the
+        // recovery path if Redis is unavailable after the durable acceptance.
+        console.error("[Reservation] Failed to enqueue payment expiry", {
+          businessId: reservation.businessId,
+          reservationId: String(reservation._id),
+          reason: error?.code || error?.name || "enqueue_failed",
+        });
+      }
     } else {
       const now = new Date();
       const actor = buildReservationStaffSnapshot(req.session?.user);
@@ -326,8 +349,7 @@ export async function updateReservationStatus(req, res) {
 
       if (!reservationObj.email) {
         console.log("Reservation status changed but no customer email found in DB.", reservationObj);
-      } else if (status === "confirmed" || status === "cancelled" || status === "accepted_awaiting_payment") {
-        console.log("[Reservation Email] Customer email:", reservationObj.email);
+      } else if (["confirmed", "cancelled", "declined", "accepted_awaiting_payment"].includes(status)) {
         console.log(`[Reservation Email] Sending ${status} email`);
 
         const emailArgs = {
@@ -345,18 +367,39 @@ export async function updateReservationStatus(req, res) {
 
         if (sender) {
           try {
-            console.log("[Reservation Email] Awaiting sender...");
-            const success = await sender(emailArgs);
-            console.log(`[Reservation Email] Sender returned:`, success);
-            if (!success) {
-              emailStatus = "failed";
-              console.error(`[Reservation Email] Failed to send ${status} email (sender returned false)`);
+            const isRestaurantStatusEmail =
+              !reservationObj.checkInDate &&
+              ["confirmed", "cancelled", "declined"].includes(status);
+            if (isRestaurantStatusEmail) {
+              const jobName = status === "confirmed"
+                ? EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CONFIRMED
+                : EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CANCELLED;
+              const dispatch = await dispatchRestaurantReservationEmail({
+                jobName,
+                businessId: reservationObj.businessId,
+                reservationId: reservationObj._id,
+                deliveryVersion:
+                  status === "confirmed"
+                    ? reservationObj.confirmedAt || reservationObj.updatedAt
+                    : reservationObj.cancelledAt || reservationObj.updatedAt,
+                directSend: () => sender(emailArgs),
+              });
+              if (dispatch.mode === "queued") {
+                emailStatus = dispatch.queued ? "queued" : "pending_retry";
+              } else {
+                emailStatus = dispatch.success ? "sent" : "failed";
+              }
             } else {
-              emailStatus = "sent";
-              console.log(`[Reservation Email] Successfully sent ${status} email`);
+              // Payment-link and all lodging emails remain synchronous because
+              // they may contain one-time reservation credentials.
+              const success = await sender(emailArgs);
+              emailStatus = success ? "sent" : "failed";
             }
           } catch (emailError) {
-            console.error(`[Reservation Email] Exception in sender for ${status} email:`, emailError);
+            console.error(`[Reservation Email] ${status} delivery failed`, {
+              reservationId: String(reservationObj._id),
+              reason: emailError?.code || emailError?.name || "email_failed",
+            });
             emailStatus = "failed";
           }
         }

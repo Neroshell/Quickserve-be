@@ -9,6 +9,13 @@ const guestVisitSchema = new mongoose.Schema(
     orderIds: { type: [String], default: [] },
     paidOrderIds: { type: [String], default: [] },
     spendCents: { type: Number, default: 0 },
+    crmProjectionBaseline: {
+      capturedAt: { type: Date, default: null },
+      existed: { type: Boolean, default: false },
+      orderIds: { type: [String], default: [] },
+      paidOrderIds: { type: [String], default: [] },
+      spendCents: { type: Number, default: 0 },
+    },
   },
   { timestamps: true }
 );

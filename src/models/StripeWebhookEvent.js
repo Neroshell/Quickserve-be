@@ -14,7 +14,7 @@ const StripeWebhookEventSchema = new mongoose.Schema(
     },
     processedAt: {
       type: Date,
-      default: Date.now,
+      default: null,
     },
     status: {
       type: String,
@@ -24,10 +24,15 @@ const StripeWebhookEventSchema = new mongoose.Schema(
     error: {
       type: String,
     },
+    claimId: { type: String, default: null },
+    claimedAt: { type: Date, default: null },
+    claimExpiresAt: { type: Date, default: null },
+    attemptCount: { type: Number, default: 0, min: 0 },
   },
   { timestamps: true }
 );
 
-const StripeWebhookEvent = mongoose.model("StripeWebhookEvent", StripeWebhookEventSchema);
+const StripeWebhookEvent = mongoose.models.StripeWebhookEvent ||
+  mongoose.model("StripeWebhookEvent", StripeWebhookEventSchema);
 
 export default StripeWebhookEvent;

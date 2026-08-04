@@ -20,6 +20,21 @@ import { getCustomerReservationPricing } from "../services/reservationPricingSer
 dotenv.config();
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+export const EMAIL_PROVIDER_TIMEOUT_MS = 30_000;
+
+export class EmailDeliveryError extends Error {
+  constructor(message, {
+    code = "email_delivery_failed",
+    retryable = true,
+    statusCode = null,
+  } = {}) {
+    super(message);
+    this.name = "EmailDeliveryError";
+    this.code = code;
+    this.retryable = retryable;
+    this.statusCode = statusCode;
+  }
+}
 
 function toCurrencyAmount(value) {
   const amount = Number(value);
@@ -87,22 +102,79 @@ export async function getReceiptServicePointLabel(order) {
   return String(servicePoint?.label || servicePoint?.code || "Service Point").trim();
 }
 
-export async function sendEmail({ to, subject, html, from, idempotencyKey, emailClient = resend }) {
+function providerStatusCode(error) {
+  const statusCode = Number(error?.statusCode ?? error?.status);
+  return Number.isInteger(statusCode) ? statusCode : null;
+}
+
+export function isPermanentEmailProviderError(error) {
+  const statusCode = providerStatusCode(error);
+  if ([400, 401, 403, 404, 422].includes(statusCode)) return true;
+
+  const name = String(error?.name || error?.code || "").toLowerCase();
+  return (
+    name.includes("validation") ||
+    name.includes("invalid_recipient") ||
+    name.includes("invalid_parameter") ||
+    name.includes("missing_required_field")
+  );
+}
+
+function normalizeEmailDeliveryError(error) {
+  if (error instanceof EmailDeliveryError) return error;
+
+  const statusCode = providerStatusCode(error);
+  const retryable = !isPermanentEmailProviderError(error);
+  const providerCode = String(error?.name || error?.code || "provider_error")
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, 80);
+
+  return new EmailDeliveryError(
+    retryable
+      ? "The email provider is temporarily unavailable."
+      : "The email provider permanently rejected the message.",
+    {
+      code: providerCode || "provider_error",
+      retryable,
+      statusCode,
+    },
+  );
+}
+
+function withProviderTimeout(promise, timeoutMs) {
+  let timeout;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(new EmailDeliveryError(
+        "The email provider request timed out.",
+        { code: "provider_timeout", retryable: true },
+      ));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeout));
+}
+
+export async function sendEmailWithResult({
+  to,
+  subject,
+  html,
+  from,
+  idempotencyKey,
+  emailClient = resend,
+  timeoutMs = EMAIL_PROVIDER_TIMEOUT_MS,
+}) {
+  const message = { from, to, subject, html };
+  const requestOptions = idempotencyKey ? { idempotencyKey } : undefined;
+
   try {
-    const message = { from, to, subject, html };
-    const requestOptions = idempotencyKey ? { idempotencyKey } : undefined;
-    const { data, error } = await emailClient.emails.send(message, requestOptions);
+    const { data, error } = await withProviderTimeout(
+      emailClient.emails.send(message, requestOptions),
+      timeoutMs,
+    );
 
     if (error) {
-      console.error("[EmailService] Provider rejected email", {
-        provider: "resend",
-        providerStatus: "rejected",
-        recipient: maskEmailAddress(to),
-        name: error.name || "ResendError",
-        message: error.message || String(error),
-        responseCode: error.statusCode || error.status || null,
-      });
-      return false;
+      throw normalizeEmailDeliveryError(error);
     }
 
     console.log("[EmailService] Provider accepted email", {
@@ -111,21 +183,46 @@ export async function sendEmail({ to, subject, html, from, idempotencyKey, email
       recipient: maskEmailAddress(to),
       providerMessageId: data?.id || null,
     });
+    return {
+      success: true,
+      messageId: data?.id || null,
+    };
+  } catch (error) {
+    throw normalizeEmailDeliveryError(error);
+  }
+}
+
+// Compatibility wrapper retained for existing synchronous callers. Queued
+// handlers use sendEmailWithResult so BullMQ can distinguish retryable failures.
+export async function sendEmail(options) {
+  try {
+    await sendEmailWithResult(options);
     return true;
   } catch (error) {
-    console.error("[EmailService] Transport/execution error sending email", {
+    console.error("[EmailService] Email delivery failed", {
       provider: "resend",
-      recipient: maskEmailAddress(to),
+      recipient: maskEmailAddress(options?.to),
       name: error.name,
-      message: error.message,
-      responseCode: error.statusCode || error.status || null,
-      stack: error.stack,
+      code: error.code || "email_delivery_failed",
+      retryable: error.retryable !== false,
+      responseCode: error.statusCode || null,
     });
     return false;
   }
 }
 
-export async function sendReceiptEmail(order, toEmail, { idempotencyKey } = {}) {
+async function deliverPreparedEmail(options, { returnResult = false, timeoutMs } = {}) {
+  if (returnResult) {
+    return sendEmailWithResult({ ...options, timeoutMs });
+  }
+  return sendEmail({ ...options, timeoutMs });
+}
+
+export async function sendReceiptEmail(
+  order,
+  toEmail,
+  { idempotencyKey, returnResult = false, timeoutMs } = {},
+) {
   try {
     console.log("[EmailService] Initiating order receipt", {
       orderId: order.orderId,
@@ -179,8 +276,12 @@ export async function sendReceiptEmail(order, toEmail, { idempotencyKey } = {}) 
     const subject = `Your receipt from ${businessName} — ${order.orderId}`;
     const from = process.env.EMAIL_FROM_RECEIPTS || "QuickServe Receipts <receipts@quickservehq.com>";
     
-    return await sendEmail({ to: toEmail, subject, html, from, idempotencyKey });
+    return await deliverPreparedEmail(
+      { to: toEmail, subject, html, from, idempotencyKey },
+      { returnResult, timeoutMs },
+    );
   } catch (error) {
+    if (returnResult) throw error;
     console.error("[EmailService] Error in sendReceiptEmail", {
       orderId: order?.orderId,
       businessId: order?.businessId,
@@ -261,13 +362,24 @@ export async function sendOnboardingVerificationCode({ to, userName, verificatio
 /**
  * Send a reservation request email to the business owner.
  */
-export async function sendReservationRequestEmail({ to, businessName, reservation }) {
+export async function sendReservationRequestEmail({
+  to,
+  businessName,
+  reservation,
+  idempotencyKey,
+  returnResult = false,
+  timeoutMs,
+}) {
   try {
     const html = await render(React.createElement(ReservationRequestEmail, { businessName, reservation }));
     const subject = `New Reservation Request for ${businessName}`;
     const from = process.env.EMAIL_FROM_RESERVATIONS || "QuickServe Reservations <reservations@quickservehq.com>";
-    return await sendEmail({ to, subject, html, from });
+    return await deliverPreparedEmail(
+      { to, subject, html, from, idempotencyKey },
+      { returnResult, timeoutMs },
+    );
   } catch (error) {
+    if (returnResult) throw error;
     console.error("[EmailService]  Error in sendReservationRequestEmail:", error);
     return false;
   }
@@ -284,12 +396,25 @@ const RESERVATION_FROM = process.env.EMAIL_FROM_RESERVATIONS || "QuickServe Rese
  * @param {string} [params.primaryColor]
  * @param {object} params.reservation - Plain reservation object
  */
-export async function sendReservationRequestReceivedEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
+export async function sendReservationRequestReceivedEmail({
+  to,
+  businessName,
+  businessLogoUrl,
+  primaryColor,
+  reservation,
+  idempotencyKey,
+  returnResult = false,
+  timeoutMs,
+}) {
   try {
     const html = await render(React.createElement(ReservationRequestReceivedEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
     const subject = `Reservation Request Received - ${businessName}`;
-    return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
+    return await deliverPreparedEmail(
+      { to, subject, html, from: RESERVATION_FROM, idempotencyKey },
+      { returnResult, timeoutMs },
+    );
   } catch (error) {
+    if (returnResult) throw error;
     console.error("[EmailService]  Error in sendReservationRequestReceivedEmail:", error);
     return false;
   }
@@ -298,12 +423,25 @@ export async function sendReservationRequestReceivedEmail({ to, businessName, bu
 /**
  * Customer-facing: notify the customer their reservation is confirmed.
  */
-export async function sendReservationConfirmedEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
+export async function sendReservationConfirmedEmail({
+  to,
+  businessName,
+  businessLogoUrl,
+  primaryColor,
+  reservation,
+  idempotencyKey,
+  returnResult = false,
+  timeoutMs,
+}) {
   try {
     const html = await render(React.createElement(ReservationConfirmedEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
     const subject = `Reservation Confirmed - ${businessName}`;
-    return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
+    return await deliverPreparedEmail(
+      { to, subject, html, from: RESERVATION_FROM, idempotencyKey },
+      { returnResult, timeoutMs },
+    );
   } catch (error) {
+    if (returnResult) throw error;
     console.error("[EmailService]  Error in sendReservationConfirmedEmail:", error);
     return false;
   }
@@ -340,14 +478,27 @@ export async function sendReservationPaymentEmail({ to, businessName, businessLo
 /**
  * Customer-facing: notify the customer their reservation cannot be accommodated.
  */
-export async function sendReservationCancelledEmail({ to, businessName, businessLogoUrl, primaryColor, reservation }) {
+export async function sendReservationCancelledEmail({
+  to,
+  businessName,
+  businessLogoUrl,
+  primaryColor,
+  reservation,
+  idempotencyKey,
+  returnResult = false,
+  timeoutMs,
+}) {
   try {
     const html = await render(React.createElement(ReservationCancelledEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
     const subject = reservation?.cancellationOutcome
       ? `Reservation Cancelled - ${businessName}`
       : `Reservation Unavailable - ${businessName}`;
-    return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
+    return await deliverPreparedEmail(
+      { to, subject, html, from: RESERVATION_FROM, idempotencyKey },
+      { returnResult, timeoutMs },
+    );
   } catch (error) {
+    if (returnResult) throw error;
     console.error("[EmailService]  Error in sendReservationCancelledEmail:", error);
     return false;
   }
@@ -368,6 +519,8 @@ export async function sendReservationRefundEmail({
   primaryColor,
   reservation,
   refund,
+  returnResult = false,
+  timeoutMs,
 }) {
   try {
     const html = await render(
@@ -379,14 +532,18 @@ export async function sendReservationRefundEmail({
         refund,
       }),
     );
-    return await sendEmail({
-      to,
-      subject: `Refund Confirmed - ${businessName}`,
-      html,
-      from: RESERVATION_FROM,
-      idempotencyKey: getReservationRefundEmailIdempotencyKey(refund),
-    });
+    return await deliverPreparedEmail(
+      {
+        to,
+        subject: `Refund Confirmed - ${businessName}`,
+        html,
+        from: RESERVATION_FROM,
+        idempotencyKey: getReservationRefundEmailIdempotencyKey(refund),
+      },
+      { returnResult, timeoutMs },
+    );
   } catch (error) {
+    if (returnResult) throw error;
     console.error("[EmailService] Error in sendReservationRefundEmail:", {
       name: error?.name,
       message: error?.message,

@@ -14,18 +14,54 @@ import {
     sendReceiptEmail,
     sendEmail,
 } from "../utils/emailService.js";
-import { upsertGuestProfileFromOrder } from "../services/guestProfileService.js";
+import {
+    dispatchCrmOrder,
+    recordCrmOrderIntent,
+} from "../services/guestProfileService.js";
 import { deductTrackedStock } from "../services/inventoryService.js";
 import { buildOrderEstimate } from "../utils/orderEstimate.js";
 import { generateHotelCheckInCredentials } from "../services/hotelCheckInService.js";
-import { applyReservationPaymentConfirmation } from "../services/reservationPaymentConfirmationService.js";
+import { confirmReservationPaymentAtomic } from "../services/reservationPaymentConfirmationService.js";
 import {
     reconcileStripeReservationRefund,
     ReservationCancellationError,
 } from "../services/reservationCancellationService.js";
+import { dispatchAutomaticOrderReceipt } from "../services/email/emailDispatchService.js";
+import {
+    getBillingActionPeriodKey,
+    processBillingLifecycleAction,
+} from "../services/billingLifecycleService.js";
+import { BILLING_JOB_NAMES } from "../queues/index.js";
+import {
+    claimStripeWebhookEvent,
+    completeStripeWebhookEvent,
+} from "../services/stripeWebhookEventService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+async function dispatchPaidOrderReceipt({ dispatcher, order, email }) {
+    if (order.receiptEmail !== email) {
+        order.receiptEmail = email;
+        await order.save();
+    }
+
+    return dispatcher({
+        businessId: order.businessId,
+        orderId: order.orderId,
+        directSend: async () => {
+            const sent = await sendReceiptEmail(order, email, {
+                idempotencyKey: getOrderReceiptIdempotencyKey(order),
+            });
+            if (sent) {
+                order.receiptSent = true;
+                order.receiptSentAt = new Date();
+                await order.save();
+            }
+            return sent;
+        },
+    });
+}
 
 function getStoredCheckoutAmountCents(checkoutRecord) {
     const grossAmountCents = Number(checkoutRecord?.grossAmount);
@@ -115,41 +151,22 @@ function getSubscriptionPeriodUpdate(subscription) {
     };
 }
 
-async function handleBusinessRestorationIfNeeded(biz, updateFields) {
-    if (biz?.offlineServiceRestricted) {
-        updateFields.offlineServiceRestricted = false;
-        updateFields.offlineServiceRestrictedAt = null;
-        updateFields.offlineRestrictionEmailSentAt = null;
-        updateFields.overdueReminderSentAt = null;
-        updateFields.finalWarningSentAt = null;
-        updateFields.billingFailedAt = null;
-        updateFields.billingRestoredAt = new Date();
-
-        const recipient = biz.ownerEmail || biz.contactEmail || null;
-        if (recipient) {
-            const displayName = biz.displayName || biz.name || "there";
-            const emailBody = `
-                <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
-                    <p>Hi ${displayName},</p>
-                    <p>Good news! Your QuickServe billing has been resolved and <strong>your offline ordering services have been fully restored</strong>.</p>
-                    <p>Thank you for your prompt attention.</p>
-                </div>
-            `;
-            const from = process.env.EMAIL_FROM_BILLING || "QuickServe Billing <billing@quickservehq.com>";
-            try {
-                const emailSent = await sendEmail({
-                    to: recipient,
-                    subject: "QuickServe Services Restored",
-                    html: emailBody,
-                    from,
-                });
-                if (emailSent) {
-                    updateFields.billingRestoredEmailSentAt = new Date();
-                }
-            } catch (err) {
-                console.error(`[webhook] Failed to send restoration email to ${recipient}:`, err.message);
-            }
-        }
+async function restoreBusinessAfterDurableBillingUpdate(biz) {
+    if (!biz?.offlineServiceRestricted) return;
+    const jobName = BILLING_JOB_NAMES.RESTORE_SERVICE;
+    const periodKey = getBillingActionPeriodKey(jobName, biz);
+    try {
+        await processBillingLifecycleAction({
+            jobName,
+            businessId: biz.businessId,
+            periodKey,
+        });
+    } catch (error) {
+        // Billing lifecycle scheduler and manual cron recovery will retry.
+        console.error("[webhook] Durable billing restoration follow-up failed", {
+            businessId: biz.businessId,
+            reason: error?.code || error?.name || "restoration_failed",
+        });
     }
 }
 
@@ -157,11 +174,16 @@ async function handleBusinessRestorationIfNeeded(biz, updateFields) {
  * POST /webhook/stripe
  */
 export async function handleStripeWebhook(req, res) {
+    const orderReceiptDispatcher =
+        req.app?.locals?.dispatchAutomaticOrderReceipt ||
+        dispatchAutomaticOrderReceipt;
     const sig = req.headers["stripe-signature"];
-    let event;
+    let event = req.stripeWebhookEvent || null;
 
     try {
-        event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+        if (!event) {
+            event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+        }
         console.log("[stripeWebhook] Signature verified", {
             eventId: event.id,
             eventType: event.type,
@@ -253,12 +275,11 @@ export async function handleStripeWebhook(req, res) {
                                 billingFailedAt: null,
                                 ...periodUpdate,
                             };
-                            await handleBusinessRestorationIfNeeded(biz, updateFields);
-
                             await Business.findOneAndUpdate(
                                 { _id: biz._id },
                                 { $set: updateFields }
                             );
+                            await restoreBusinessAfterDurableBillingUpdate(biz);
                             console.log(`[webhook] Downgrade complete for business ${biz.businessId}`);
                         }
                     } else if (subscription) {
@@ -270,12 +291,11 @@ export async function handleStripeWebhook(req, res) {
                                 billingFailedAt: null,
                                 ...periodUpdate,
                             };
-                            await handleBusinessRestorationIfNeeded(biz, updateFields);
-
                             await Business.findOneAndUpdate(
                                 { _id: biz._id },
                                 { $set: updateFields }
                             );
+                            await restoreBusinessAfterDurableBillingUpdate(biz);
                         }
                     }
 
@@ -314,17 +334,28 @@ export async function handleStripeWebhook(req, res) {
         if (event.type === "invoice.payment_failed") {
             const invoice = event.data.object;
             if (invoice.subscription) {
-                await Business.findOneAndUpdate(
-                    { stripeSubscriptionId: invoice.subscription },
+                const failedAt = new Date();
+                const stamped = await Business.findOneAndUpdate(
+                    {
+                        stripeSubscriptionId: invoice.subscription,
+                        $or: [
+                            { billingFailedAt: null },
+                            { billingFailedAt: { $exists: false } },
+                        ],
+                    },
                     {
                         $set: {
                             billingStatus: 'past_due',
+                            billingFailedAt: failedAt,
                         },
-                        $setOnInsert: {
-                            billingFailedAt: new Date()
-                        }
                     }
                 );
+                if (!stamped) {
+                    await Business.updateOne(
+                        { stripeSubscriptionId: invoice.subscription },
+                        { $set: { billingStatus: 'past_due' } },
+                    );
+                }
             }
             return res.status(200).send();
         }
@@ -346,14 +377,15 @@ export async function handleStripeWebhook(req, res) {
             if (biz) {
                 if ((subscription.status === "past_due" || subscription.status === "unpaid" || subscription.status === "canceled") && !biz.billingFailedAt) {
                     updateFields.billingFailedAt = new Date();
-                } else if (subscription.status === "active") {
-                    await handleBusinessRestorationIfNeeded(biz, updateFields);
                 }
                 
                 await Business.updateOne(
                     { _id: biz._id },
                     { $set: updateFields }
                 );
+                if (subscription.status === "active") {
+                    await restoreBusinessAfterDurableBillingUpdate(biz);
+                }
             }
             return res.status(200).send();
         }
@@ -461,29 +493,35 @@ export async function handleStripeWebhook(req, res) {
                 return res.status(200).send();
             }
 
-            // Mark reservation paid
+            // Persist the payment truth with one tenant-scoped conditional update.
             const paidAt = new Date();
-            applyReservationPaymentConfirmation(
-                reservation,
-                {
-                    checkoutSessionId: session.id,
-                    paymentIntentId:
-                        session.payment_intent || null,
-                    amountPaidCents:
-                        stripeAmountCents,
-                    confirmedAt: paidAt,
-                }
-            );
-            await reservation.save();
+            const paymentTransition = await confirmReservationPaymentAtomic({
+                reservationId: reservation._id,
+                businessId: reservation.businessId,
+                expectedAmountCents: stripeAmountCents,
+                expectedCurrency: storedCurrency,
+                checkoutSessionId: session.id,
+                paymentIntentId: session.payment_intent || null,
+                confirmedAt: paidAt,
+            });
+            if (!paymentTransition.transitioned) {
+                if (paymentTransition.alreadyPaid) return res.status(200).send();
+                console.error("[webhook] Reservation payment transition lost its conditional state", {
+                    reservationId,
+                    businessId: reservation.businessId,
+                });
+                return res.status(409).send("Reservation payment state changed");
+            }
+            const paidReservation = paymentTransition.reservation;
             console.log(`[webhook] Reservation ${reservationId} marked paid — session=${session.id}`);
 
             // Fetch business for email / check-in credential generation
-            const resBusiness = await Business.findOne({ businessId: reservation.businessId }).lean();
+            const resBusiness = await Business.findOne({ businessId: paidReservation.businessId }).lean();
             if (resBusiness) {
                 try {
                     // generateHotelCheckInCredentials sends the post-payment confirmation
                     // email (with check-in code) via sendHotelPaymentConfirmationEmail.
-                    await generateHotelCheckInCredentials(reservation, resBusiness);
+                    await generateHotelCheckInCredentials(paidReservation, resBusiness);
                 } catch (emailErr) {
                     // Credentials are stored — email failure is non-fatal here.
                     console.error(`[webhook] Check-in credential/email error for reservation ${reservationId}:`, {
@@ -577,16 +615,18 @@ export async function handleStripeWebhook(req, res) {
                 return res.status(200).send();
             }
 
-            console.log("[webhook] Calling receipt sender for previously processed payment", {
+            console.log("[webhook] Dispatching receipt for previously processed payment", {
                 eventId: event.id,
                 checkoutSessionId: session.id,
                 orderId: existingOrder.orderId,
                 businessId: existingOrder.businessId,
             });
-            const receiptSent = await sendReceiptEmail(existingOrder, retryEmail, {
-                idempotencyKey: getOrderReceiptIdempotencyKey(existingOrder),
+            const receiptDelivery = await dispatchPaidOrderReceipt({
+                dispatcher: orderReceiptDispatcher,
+                order: existingOrder,
+                email: retryEmail,
             });
-            if (!receiptSent) {
+            if (receiptDelivery.mode === "direct" && !receiptDelivery.success) {
                 console.error("[webhook] Receipt retry failed for previously processed payment", {
                     eventId: event.id,
                     checkoutSessionId: session.id,
@@ -596,16 +636,13 @@ export async function handleStripeWebhook(req, res) {
                 return res.status(500).send("Receipt delivery failed");
             }
 
-            existingOrder.receiptEmail = retryEmail;
-            existingOrder.receiptSent = true;
-            existingOrder.receiptSentAt = new Date();
-            await existingOrder.save();
-
-            console.log("[webhook] Receipt retry accepted by provider", {
+            console.log("[webhook] Receipt retry dispatched", {
                 eventId: event.id,
                 checkoutSessionId: session.id,
                 orderId: existingOrder.orderId,
                 businessId: existingOrder.businessId,
+                mode: receiptDelivery.mode,
+                queued: receiptDelivery.queued || false,
             });
             return res.status(200).send();
         }
@@ -746,7 +783,7 @@ export async function handleStripeWebhook(req, res) {
             }
 
             if (customerEmail && !order.receiptSentAt && !order.receiptSent) {
-                console.log("[webhook] Calling receipt sender", {
+                console.log("[webhook] Dispatching paid-order receipt", {
                     eventId: event.id,
                     checkoutSessionId: session.id,
                     pendingCheckoutId,
@@ -755,13 +792,12 @@ export async function handleStripeWebhook(req, res) {
                     paymentStatus: order.paymentStatus,
                 });
                 try {
-                    const emailSent = await sendReceiptEmail(order, customerEmail, {
-                        idempotencyKey: getOrderReceiptIdempotencyKey(order),
+                    const receiptDelivery = await dispatchPaidOrderReceipt({
+                        dispatcher: orderReceiptDispatcher,
+                        order,
+                        email: customerEmail,
                     });
-                    if (emailSent) {
-                        order.receiptSent = true;
-                        order.receiptSentAt = new Date();
-                        await order.save();
+                    if (receiptDelivery.mode === "direct" && receiptDelivery.success) {
                         updated = true;
                         console.log("[webhook] Receipt accepted by provider", {
                             eventId: event.id,
@@ -769,13 +805,21 @@ export async function handleStripeWebhook(req, res) {
                             orderId,
                             businessId,
                         });
-                    } else {
+                    } else if (receiptDelivery.mode === "direct") {
                         receiptDeliveryFailed = true;
                         console.error("[webhook] Receipt provider rejected or failed the send", {
                             eventId: event.id,
                             checkoutSessionId: session.id,
                             orderId,
                             businessId,
+                        });
+                    } else {
+                        console.log("[webhook] Receipt delivery intent recorded", {
+                            eventId: event.id,
+                            checkoutSessionId: session.id,
+                            orderId,
+                            businessId,
+                            queued: receiptDelivery.queued || false,
                         });
                     }
                 } catch (err) {
@@ -812,12 +856,25 @@ export async function handleStripeWebhook(req, res) {
                 await publishEvent("order_updated", businessId, ["waiter", "table"], { order: orderDTO });
             }
 
-            if (customerEmail) {
-                upsertGuestProfileFromOrder({
-                    businessId,
-                    order,
-                    email: customerEmail
-                });
+            if (customerEmail && !order.crmProcessed) {
+                try {
+                    const intent = await recordCrmOrderIntent({
+                        businessId,
+                        orderId: order.orderId,
+                        email: customerEmail,
+                    });
+                    if (intent.recorded) {
+                        void dispatchCrmOrder({ businessId, orderId: order.orderId });
+                    }
+                } catch (crmError) {
+                    // The paid Order is already durable. Repair scanning will
+                    // discover it by receiptEmail without failing the webhook.
+                    console.error("[webhook] CRM intent recording failed", {
+                        businessId,
+                        orderId: order.orderId,
+                        reason: crmError?.code || crmError?.name || "crm_intent_failed",
+                    });
+                }
             }
         } else {
             const hasFood = pending.items.some((i) => i.category === "food" || i.type === "food");
@@ -887,12 +944,15 @@ export async function handleStripeWebhook(req, res) {
 
                 receiptEmail: customerEmail,
                 receiptSent: false,
+                crmEmail: customerEmail ? customerEmail.toLowerCase().trim() : null,
+                crmProcessingStatus: customerEmail ? "pending" : null,
+                crmProcessingRetryable: true,
             });
 
             console.log(`[webhook] Order created: orderId=${orderId}, businessId=${businessId}`);
 
             if (customerEmail) {
-                console.log("[webhook] Calling receipt sender", {
+                console.log("[webhook] Dispatching paid-order receipt", {
                     eventId: event.id,
                     checkoutSessionId: session.id,
                     pendingCheckoutId,
@@ -901,26 +961,33 @@ export async function handleStripeWebhook(req, res) {
                     paymentStatus: order.paymentStatus,
                 });
                 try {
-                    const emailSent = await sendReceiptEmail(order, customerEmail, {
-                        idempotencyKey: getOrderReceiptIdempotencyKey(order),
+                    const receiptDelivery = await dispatchPaidOrderReceipt({
+                        dispatcher: orderReceiptDispatcher,
+                        order,
+                        email: customerEmail,
                     });
-                    if (emailSent) {
-                        order.receiptSent = true;
-                        order.receiptSentAt = new Date();
-                        await order.save();
+                    if (receiptDelivery.mode === "direct" && receiptDelivery.success) {
                         console.log("[webhook] Receipt accepted by provider", {
                             eventId: event.id,
                             checkoutSessionId: session.id,
                             orderId,
                             businessId,
                         });
-                    } else {
+                    } else if (receiptDelivery.mode === "direct") {
                         receiptDeliveryFailed = true;
                         console.error("[webhook] Receipt provider rejected or failed the send", {
                             eventId: event.id,
                             checkoutSessionId: session.id,
                             orderId,
                             businessId,
+                        });
+                    } else {
+                        console.log("[webhook] Receipt delivery intent recorded", {
+                            eventId: event.id,
+                            checkoutSessionId: session.id,
+                            orderId,
+                            businessId,
+                            queued: receiptDelivery.queued || false,
                         });
                     }
                 } catch (err) {
@@ -945,11 +1012,7 @@ export async function handleStripeWebhook(req, res) {
             }
 
             if (customerEmail) {
-                upsertGuestProfileFromOrder({
-                    businessId,
-                    order,
-                    email: customerEmail
-                });
+                void dispatchCrmOrder({ businessId, orderId: order.orderId });
             }
 
             const orderDTO = toOrderDTO(order);
@@ -1006,4 +1069,86 @@ export async function handleStripeWebhook(req, res) {
         console.error("[stripeWebhook] Error processing webhook:", error.message, error.stack);
         return res.status(500).send("Internal Server Error");
     }
+}
+
+function createDeferredWebhookResponse() {
+    return {
+        statusCode: 200,
+        body: undefined,
+        responseType: "send",
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        send(body) {
+            this.body = body;
+            this.responseType = "send";
+            return this;
+        },
+        json(body) {
+            this.body = body;
+            this.responseType = "json";
+            return this;
+        },
+    };
+}
+
+/**
+ * Production wrapper: signature verification and Mongo claim stay synchronous,
+ * and Stripe is acknowledged only after the event claim is durably completed.
+ */
+export async function handleDurableStripeWebhook(req, res) {
+    let event;
+    try {
+        event = stripe.webhooks.constructEvent(
+            req.body,
+            req.headers["stripe-signature"],
+            endpointSecret,
+        );
+    } catch (error) {
+        console.error("[stripeWebhook] Signature verification failed:", error.message);
+        return res.status(400).send(`Webhook Error: ${error.message}`);
+    }
+
+    const claimEvent = req.app?.locals?.claimStripeWebhookEvent ||
+        claimStripeWebhookEvent;
+    const completeEvent = req.app?.locals?.completeStripeWebhookEvent ||
+        completeStripeWebhookEvent;
+    let claim;
+    try {
+        claim = await claimEvent({ eventId: event.id, eventType: event.type });
+    } catch (error) {
+        console.error("[stripeWebhook] Durable event claim failed", {
+            eventId: event.id,
+            reason: error?.code || error?.name || "claim_failed",
+        });
+        return res.status(500).send("Webhook claim failed");
+    }
+    if (!claim.claimed) {
+        if (claim.reason === "already_processed") return res.status(200).send();
+        return res.status(503).send("Webhook event is already processing");
+    }
+
+    const deferred = createDeferredWebhookResponse();
+    req.stripeWebhookEvent = event;
+    await handleStripeWebhook(req, deferred);
+    const failed = deferred.statusCode >= 500;
+    try {
+        await completeEvent({
+            eventId: event.id,
+            claimId: claim.claimId,
+            status: failed ? "failed" : "processed",
+            error: failed ? String(deferred.body || "webhook processing failed") : null,
+        });
+    } catch (error) {
+        console.error("[stripeWebhook] Durable event completion failed", {
+            eventId: event.id,
+            reason: error?.code || error?.name || "completion_failed",
+        });
+        return res.status(500).send("Webhook completion claim failed");
+    }
+    const target = res.status(deferred.statusCode);
+    return deferred.responseType === "json"
+        ? target.json(deferred.body)
+        : target.send(deferred.body);
 }
