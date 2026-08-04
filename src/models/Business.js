@@ -281,5 +281,5 @@ BusinessSchema.index({ billingStatus: 1, nextInvoiceDate: 1 })
 BusinessSchema.index({ billingStatus: 1, billingFailedAt: 1 })
 BusinessSchema.index({ billingStatus: 1, offlineServiceRestricted: 1 })
 
-// Explicitly bind to the existing "restaurants" collection
-export default mongoose.models.Business || mongoose.model("Business", BusinessSchema, "restaurants")
+// Keep the canonical collection explicit; never rely on Mongoose pluralization.
+export default mongoose.models.Business || mongoose.model("Business", BusinessSchema, "businesses")

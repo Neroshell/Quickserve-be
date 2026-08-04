@@ -16,7 +16,7 @@ import { sendEmail } from "../src/utils/emailService.js";
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 
 // ─── Minimal Business model ──────────────────────────────────────────────────
-const BusinessSchema = new mongoose.Schema({}, { strict: false, collection: "restaurants" });
+const BusinessSchema = new mongoose.Schema({}, { strict: false, collection: "businesses" });
 const Business = mongoose.models.Business || mongoose.model("Business", BusinessSchema);
 
 async function main() {

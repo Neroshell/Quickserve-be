@@ -45,7 +45,7 @@ async function test() {
         passwordResetExpires: { type: Date },
     }, { timestamps: true });
 
-    const Staff = mongoose.models.Staff || mongoose.model("Staff", StaffSchema, "waiters");
+    const Staff = mongoose.models.Staff || mongoose.model("Staff", StaffSchema, "staff");
 
     try {
         const staff = await Staff.create({

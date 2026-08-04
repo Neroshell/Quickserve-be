@@ -32,7 +32,7 @@ const CRON_SECRET = process.env.CRON_SECRET;
 const API_BASE = `http://localhost:${process.env.PORT || 5000}`;
 
 // ─── Minimal Business model (subset of fields we need) ───────────────────────
-const BusinessSchema = new mongoose.Schema({}, { strict: false, collection: "restaurants" });
+const BusinessSchema = new mongoose.Schema({}, { strict: false, collection: "businesses" });
 const Business = mongoose.models.Business || mongoose.model("Business", BusinessSchema);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -1,4 +1,12 @@
 /**
+ * DEPRECATED AND INTENTIONALLY DISABLED.
+ *
+ * A mechanical rename corrupted this historical field migration. Do not run
+ * it. Use `npm run audit:collections` for the safe read-only replacement.
+ */
+throw new Error("Deprecated migration disabled. Run npm run audit:collections instead.")
+
+/**
  * migrate-businessId-to-businessId.js
  *
  * One-time migration script to rename the `businessId` field to `businessId`

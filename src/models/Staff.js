@@ -51,5 +51,5 @@ StaffSchema.index({ businessId: 1, staffId: 1 }, { unique: true })
 // Ensure email is unique per business
 StaffSchema.index({ businessId: 1, email: 1 }, { unique: true })
 
-// Bind to existing "waiters" collection for safe data migration
-export default mongoose.models.Staff || mongoose.model("Staff", StaffSchema, "waiters")
+// Keep the canonical collection explicit; never rely on Mongoose pluralization.
+export default mongoose.models.Staff || mongoose.model("Staff", StaffSchema, "staff")
