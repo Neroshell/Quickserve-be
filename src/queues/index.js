@@ -2,6 +2,7 @@ export {
     createDiagnosticJobId,
     enqueueDiagnosticJob,
     getDiagnosticQueueHealth,
+    isDiagnosticQueueEnabled,
     validateDiagnosticPayload,
 } from "./diagnosticQueue.js";
 export {

@@ -6,6 +6,10 @@ import { publishEvent } from "../utils/sseManager.js"
 import { DateTime } from "luxon"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 import { normalizeFoodServiceRequestCategory } from "../services/serviceRequestClassificationService.js"
+import {
+  buildActiveServiceRequestLocationScope,
+  getTrustedTableServicePointId,
+} from "../services/serviceRequestScopeService.js"
 
 async function expireStaleCalls(businessId) {
   const now = new Date()
@@ -96,7 +100,7 @@ function getRelativeTime(date) {
 export async function createWaiterCall(req, res) {
   try {
     const staffId = getWaiterId(req) // can be empty for customer calls (that's fine)
-    const { servicePointLabel = "", servicePointQrCode = "", reason = "", note = "", userDeviceId = "", token } = req.body || {}
+    const { servicePointId = "", servicePointLabel = "", servicePointQrCode = "", reason = "", note = "", userDeviceId = "", token } = req.body || {}
 
     // businessId comes from the staff session or a valid table token — never the body.
     const resolved = await resolveCallBusinessId(req, token)
@@ -124,47 +128,64 @@ export async function createWaiterCall(req, res) {
     await expireStaleCalls(businessId)
     const now = new Date()
 
-    // Table-level anti-spam: only block if acknowledged OR (pending and not yet expired)
+    // Resolve the canonical service point before checking for an active request.
+    // servicePointLabel is display data and can change independently of identity.
+    const requestedTableLabel = String(servicePointLabel).trim()
+    let finalTableLabel = String(servicePointLabel).trim()
+    let finalTableCode = String(servicePointQrCode).trim()
+    let finalServicePointId =
+      resolved.servicePointId || String(servicePointId).trim() || null
+
+    if (finalServicePointId || !finalTableLabel || !finalTableCode) {
+      const spCondition = finalServicePointId
+        ? { servicePointId: finalServicePointId }
+        : requestedTableLabel.startsWith("sp_")
+          ? { servicePointId: servicePointLabel }
+          : { _id: servicePointLabel }
+
+      const sp = await ServicePoint.findOne({
+        businessId,
+        ...spCondition
+      }).lean()
+
+      if (sp) {
+        finalServicePointId = sp.servicePointId
+        finalTableLabel = sp.label || finalTableLabel
+        finalTableCode = sp.code || finalTableCode
+      }
+      if (!sp && finalServicePointId) {
+        return res.status(400).json({ error: "A valid servicePointId is required" })
+      }
+    }
+
+    const activeLocationScope = buildActiveServiceRequestLocationScope({
+      servicePointId: finalServicePointId,
+    })
+    if (!activeLocationScope) {
+      return res.status(400).json({ error: "servicePointId is required" })
+    }
+
+    // Sequential retries return the existing canonical service-point request.
     const existingActiveCall = await ServiceRequest.findOne({
       businessId,
       module: "foodService",
-      servicePointLabel: String(servicePointLabel).trim(),
-      $or: [
-        { status: "acknowledged" },
-        { status: "pending", pendingExpiresAt: { $gt: now } }
-      ]
+      $and: [
+        activeLocationScope,
+        {
+          $or: [
+            { status: "acknowledged" },
+            { status: "pending", pendingExpiresAt: { $gt: now } },
+          ],
+        },
+      ],
     }).lean()
 
     if (existingActiveCall) {
       return res.status(200).json({
         success: true,
         call: existingActiveCall,
-        message: "A waiter has already been requested for this table.",
+        message: "A waiter has already been requested for this service point.",
       })
-    }
-
-    // Resolve Service Point dynamically on creation to store labels statically
-    let finalTableLabel = String(servicePointLabel).trim()
-    let finalTableCode = String(servicePointQrCode).trim()
-    let finalServicePointId = resolved.servicePointId || null
-    
-    if (finalServicePointId || !finalTableLabel || !finalTableCode) {
-      const spCondition = finalServicePointId
-        ? { servicePointId: finalServicePointId }
-        : servicePointLabel.startsWith('sp_')
-          ? { servicePointId: servicePointLabel }
-          : { _id: servicePointLabel };
-
-      const sp = await ServicePoint.findOne({ 
-        businessId, 
-        ...spCondition
-      }).lean()
-      
-      if (sp) {
-        finalServicePointId = sp.servicePointId
-        finalTableLabel = sp.label || finalTableLabel
-        finalTableCode = sp.code || finalTableCode
-      }
     }
 
     const call = await ServiceRequest.create({
@@ -182,7 +203,7 @@ export async function createWaiterCall(req, res) {
       note: String(note || "").trim(),
       status: "pending",
       createdBy: staffId || null, // usually null because customer triggers it
-      pendingExpiresAt: new Date(now.getTime() + 3 * 60 * 1000), // 10 minutes from now
+      pendingExpiresAt: new Date(now.getTime() + 3 * 60 * 1000),
     })
 
     // Notify staff and the customer's table stream (per-table scoped). The latter
@@ -215,6 +236,18 @@ export async function listWaiterCalls(req, res) {
     // - "pending" | "acknowledged" | "resolved" | "missed" | "all"
 
     const filter = { businessId, module: "foodService" }
+    const trustedTableServicePointId = getTrustedTableServicePointId(resolved)
+    if (resolved.contextType === "table_session") {
+      if (!trustedTableServicePointId) {
+        return res.status(403).json({
+          error: "Table session is missing service point scope",
+        })
+      }
+
+      // A table token must never list another service point's requests.
+      filter.servicePointId = trustedTableServicePointId
+    }
+
     if (status === "active") {
       filter.status = { $in: ["pending", "acknowledged"] }
     } else if (["pending", "acknowledged", "resolved", "missed"].includes(String(status))) {

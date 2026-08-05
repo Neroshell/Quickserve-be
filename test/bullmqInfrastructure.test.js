@@ -4,7 +4,6 @@ import {
     BullMqConfigurationError,
     assertBullMqAvailable,
     closeBullMqConnection,
-    createBullMqEventsConnection,
     createBullMqProducerConnection,
     createBullMqWorkerConnection,
     getBullMqAvailability,
@@ -13,8 +12,10 @@ import {
     createDiagnosticJobId,
     enqueueDiagnosticJob,
     getDiagnosticQueueHealth,
+    isDiagnosticQueueEnabled,
     validateDiagnosticPayload,
 } from "../src/queues/diagnosticQueue.js";
+import { enqueueQueueDiagnostic } from "../src/controllers/queueDiagnosticController.js";
 import { getRegisteredQueue } from "../src/queues/createQueue.js";
 import { DIAGNOSTIC_JOB_NAME, QUEUE_NAMES } from "../src/queues/queueNames.js";
 import { processDiagnosticJob } from "../src/workers/processors/diagnosticProcessor.js";
@@ -79,9 +80,9 @@ test("BullMQ remains disabled unless explicitly enabled", () => {
     );
 });
 
-test("disabled diagnostics neither initialize a queue nor report enqueue readiness", async () => {
+test("diagnostics default disabled and do not initialize a queue", async () => {
     const env = {
-        BULLMQ_ENABLED: "false",
+        BULLMQ_ENABLED: "true",
         REDIS_URL: "redis://example.invalid",
     };
     const payload = {
@@ -91,17 +92,50 @@ test("disabled diagnostics neither initialize a queue nor report enqueue readine
 
     await assert.rejects(
         () => enqueueDiagnosticJob(payload, { env }),
-        (error) => error instanceof BullMqConfigurationError
-            && error.code === "BULLMQ_DISABLED",
+        (error) => error.code === "BULLMQ_DIAGNOSTIC_DISABLED",
     );
+    assert.equal(isDiagnosticQueueEnabled(env), false);
     assert.equal(getRegisteredQueue(QUEUE_NAMES.DIAGNOSTIC), null);
     assert.deepEqual(await getDiagnosticQueueHealth({ env }), {
-        enabled: false,
+        enabled: true,
         redisConfigured: true,
-        canInitialize: false,
+        canInitialize: true,
+        diagnosticEnabled: false,
         producerRedisStatus: "disabled",
         canAttemptDiagnosticEnqueue: false,
     });
+});
+
+test("diagnostic producer route returns a clear disabled response", async () => {
+    const previous = process.env.BULLMQ_DIAGNOSTIC_ENABLED;
+    delete process.env.BULLMQ_DIAGNOSTIC_ENABLED;
+    const res = {
+        statusCode: 200,
+        body: null,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(body) {
+            this.body = body;
+            return this;
+        },
+    };
+    try {
+        await enqueueQueueDiagnostic({}, res);
+        assert.equal(res.statusCode, 503);
+        assert.deepEqual(res.body, {
+            queued: false,
+            code: "BULLMQ_DIAGNOSTIC_DISABLED",
+            error: "Diagnostic queue disabled",
+        });
+    } finally {
+        if (previous === undefined) {
+            delete process.env.BULLMQ_DIAGNOSTIC_ENABLED;
+        } else {
+            process.env.BULLMQ_DIAGNOSTIC_ENABLED = previous;
+        }
+    }
 });
 
 test("BullMQ rejects missing REDIS_URL without creating a Redis connection", () => {
@@ -114,29 +148,24 @@ test("BullMQ rejects missing REDIS_URL without creating a Redis connection", () 
     );
 });
 
-test("producer, worker, and QueueEvents receive separate lazy ioredis connections", async () => {
+test("producer and worker receive separate lazy ioredis connections", async () => {
     const env = {
         BULLMQ_ENABLED: "true",
         REDIS_URL: "rediss://localhost:6379",
     };
     const producer = createBullMqProducerConnection({ env });
     const worker = createBullMqWorkerConnection({ env });
-    const events = createBullMqEventsConnection({ env });
 
     assert.notEqual(producer, worker);
-    assert.notEqual(worker, events);
     assert.equal(producer.status, "wait");
     assert.equal(worker.status, "wait");
-    assert.equal(events.status, "wait");
     assert.equal(producer.options.maxRetriesPerRequest, 1);
     assert.equal(worker.options.maxRetriesPerRequest, null);
-    assert.equal(events.options.maxRetriesPerRequest, null);
     assert.deepEqual(producer.options.tls, {});
 
     await Promise.all([
         closeBullMqConnection(producer),
         closeBullMqConnection(worker),
-        closeBullMqConnection(events),
     ]);
 });
 

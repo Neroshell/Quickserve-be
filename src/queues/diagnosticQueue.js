@@ -6,6 +6,10 @@ import { DIAGNOSTIC_JOB_NAME, QUEUE_NAMES } from "./queueNames.js";
 const MAX_DIAGNOSTIC_MESSAGE_LENGTH = 200;
 const HEALTH_TIMEOUT_MS = 3000;
 
+export function isDiagnosticQueueEnabled(env = process.env) {
+    return env.BULLMQ_DIAGNOSTIC_ENABLED === "true";
+}
+
 function withTimeout(promise, timeoutMs) {
     let timeout;
     const timeoutPromise = new Promise((_, reject) => {
@@ -56,6 +60,11 @@ export function createDiagnosticJobId({ requestedAt, nonce = randomUUID() }) {
 }
 
 export async function enqueueDiagnosticJob(payload, { env = process.env } = {}) {
+    if (!isDiagnosticQueueEnabled(env)) {
+        const error = new Error("BullMQ diagnostics are disabled");
+        error.code = "BULLMQ_DIAGNOSTIC_DISABLED";
+        throw error;
+    }
     const data = validateDiagnosticPayload(payload);
     const queue = createQueue(QUEUE_NAMES.DIAGNOSTIC, { env });
     const job = await queue.add(DIAGNOSTIC_JOB_NAME, data, {
@@ -67,10 +76,15 @@ export async function enqueueDiagnosticJob(payload, { env = process.env } = {}) 
 
 export async function getDiagnosticQueueHealth({ env = process.env } = {}) {
     const availability = getBullMqAvailability(env);
-    if (!availability.canInitialize) {
+    const diagnosticEnabled = isDiagnosticQueueEnabled(env);
+    if (!availability.canInitialize || !diagnosticEnabled) {
         return {
             ...availability,
-            producerRedisStatus: availability.enabled ? "not_configured" : "disabled",
+            diagnosticEnabled,
+            producerRedisStatus:
+                availability.enabled && diagnosticEnabled
+                    ? "not_configured"
+                    : "disabled",
             canAttemptDiagnosticEnqueue: false,
         };
     }
@@ -82,12 +96,14 @@ export async function getDiagnosticQueueHealth({ env = process.env } = {}) {
 
         return {
             ...availability,
+            diagnosticEnabled,
             producerRedisStatus: client.status,
             canAttemptDiagnosticEnqueue: client.status === "ready",
         };
     } catch {
         return {
             ...availability,
+            diagnosticEnabled,
             producerRedisStatus: "unavailable",
             canAttemptDiagnosticEnqueue: false,
         };

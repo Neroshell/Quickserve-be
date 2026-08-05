@@ -149,10 +149,11 @@ export function broadcastLocal(msg) {
     const data = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
 
     // The table this event belongs to, if any. Orders and waiter calls carry the
-    // service-point id in servicePointLabel; used to scope customer streams below.
+    // identity used to scope customer streams below. Waiter calls use only the
+    // canonical servicePointId; the order fallback remains unchanged.
     const msgTableId =
         payload?.order?.servicePointLabel ||
-        payload?.call?.servicePointLabel ||
+        payload?.call?.servicePointId ||
         null
 
     let matched = 0

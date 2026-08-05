@@ -71,7 +71,7 @@ function createBullMqConnection({ role, env, maxRetriesPerRequest, retryStrategy
 
     // BullMQ intentionally owns dedicated ioredis connections. Session Redis and
     // SSE pub/sub clients have different command and lifecycle requirements and
-    // must never be shared with queue producers, workers, or QueueEvents.
+    // must never be shared with queue producers or workers.
     const connection = new Redis(redisUrl, {
         enableReadyCheck: false,
         lazyConnect: true,
@@ -101,17 +101,6 @@ export function createBullMqProducerConnection({ env = process.env } = {}) {
 export function createBullMqWorkerConnection({ env = process.env } = {}) {
     return createBullMqConnection({
         role: "worker",
-        env,
-        maxRetriesPerRequest: null,
-        retryStrategy(attempt) {
-            return Math.min(attempt * 250, 5000);
-        },
-    });
-}
-
-export function createBullMqEventsConnection({ env = process.env } = {}) {
-    return createBullMqConnection({
-        role: "events",
         env,
         maxRetriesPerRequest: null,
         retryStrategy(attempt) {

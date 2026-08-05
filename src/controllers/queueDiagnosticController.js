@@ -1,9 +1,17 @@
 import {
     enqueueDiagnosticJob,
     getDiagnosticQueueHealth,
+    isDiagnosticQueueEnabled,
 } from "../queues/index.js";
 
 export async function enqueueQueueDiagnostic(req, res) {
+    if (!isDiagnosticQueueEnabled()) {
+        return res.status(503).json({
+            queued: false,
+            code: "BULLMQ_DIAGNOSTIC_DISABLED",
+            error: "Diagnostic queue disabled",
+        });
+    }
     try {
         const requestedAt = new Date().toISOString();
         const { jobId } = await enqueueDiagnosticJob({
@@ -38,6 +46,7 @@ export async function getQueueHealth(req, res) {
             status: health.producerRedisStatus,
         },
         diagnostic: {
+            enabled: health.diagnosticEnabled,
             canAttemptEnqueue: health.canAttemptDiagnosticEnqueue,
         },
     });
