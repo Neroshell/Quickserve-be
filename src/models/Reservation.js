@@ -122,7 +122,7 @@ const ReservationSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: [
-        "pending", "confirmed", "cancelled", "seated", "completed", "no_show",
+        "pending", "confirmed", "arrived", "cancelled", "seated", "completed", "no_show",
         "pending_approval", "accepted_awaiting_payment", "declined", "checked_in", "checked_out", "expired"
       ],
       default: "pending",
@@ -236,6 +236,27 @@ const ReservationSchema = new mongoose.Schema(
     confirmationEmailSentAt: { type: Date },
     confirmationEmailMessageId: { type: String },
     confirmationEmailError: { type: String },
+    arrivalReminderVersion: { type: String, default: null },
+    arrivalReminderScheduledFor: { type: Date, default: null },
+    arrivalReminderScheduledAt: { type: Date, default: null },
+    arrivalReminderJobId: { type: String, default: null },
+    arrivalTokenHash: { type: String, select: false },
+    arrivalTokenIssuedAt: { type: Date, default: null },
+    arrivalTokenExpiresAt: { type: Date, default: null },
+    arrivalTokenUsedAt: { type: Date, default: null },
+    arrivedAt: { type: Date, default: null },
+    arrivalSource: {
+      type: String,
+      enum: ["email"],
+      default: null,
+    },
+    arrivalIp: { type: String, default: null, maxlength: 64, select: false },
+    arrivalUserAgent: {
+      type: String,
+      default: null,
+      maxlength: 500,
+      select: false,
+    },
     checkInCodeHash: { type: String, select: false },
     checkInCodeCreatedAt: { type: Date },
     checkInCodeValidFrom: { type: Date },
@@ -281,6 +302,14 @@ ReservationSchema.index(
 );
 // Event analytics use the persisted lifecycle instant as the leading range.
 ReservationSchema.index({ businessId: 1, confirmedAt: 1 });
+ReservationSchema.index(
+  { arrivalTokenHash: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { arrivalTokenHash: { $type: "string" } },
+  },
+);
+ReservationSchema.index({ businessId: 1, status: 1, arrivedAt: 1 });
 ReservationSchema.index({ businessId: 1, cancelledAt: 1 });
 ReservationSchema.index({ businessId: 1, checkedInAt: 1 });
 ReservationSchema.index({ businessId: 1, checkedOutAt: 1 });

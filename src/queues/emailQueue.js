@@ -6,6 +6,7 @@ const RESERVATION_JOB_NAMES = new Set([
   EMAIL_JOB_NAMES.RESERVATION_REQUEST_GUEST,
   EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CONFIRMED,
   EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CANCELLED,
+  EMAIL_JOB_NAMES.RESERVATION_ARRIVAL_REMINDER,
 ]);
 
 const EMAIL_JOB_OPTIONS = Object.freeze({
@@ -13,6 +14,7 @@ const EMAIL_JOB_OPTIONS = Object.freeze({
   [EMAIL_JOB_NAMES.RESERVATION_REQUEST_GUEST]: { attempts: 5 },
   [EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CONFIRMED]: { attempts: 5 },
   [EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CANCELLED]: { attempts: 5 },
+  [EMAIL_JOB_NAMES.RESERVATION_ARRIVAL_REMINDER]: { attempts: 5 },
   [EMAIL_JOB_NAMES.ORDER_RECEIPT]: { attempts: 6 },
   [EMAIL_JOB_NAMES.REFUND_CONFIRMATION]: { attempts: 8 },
 });
@@ -78,6 +80,8 @@ export function buildEmailJobId(jobName, payload) {
       return `email-reservation-confirmed-${sanitizeEmailJobIdComponent(data.reservationId)}-${sanitizeEmailJobIdComponent(data.deliveryVersion)}`;
     case EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CANCELLED:
       return `email-reservation-cancelled-${sanitizeEmailJobIdComponent(data.reservationId)}-${sanitizeEmailJobIdComponent(data.deliveryVersion)}`;
+    case EMAIL_JOB_NAMES.RESERVATION_ARRIVAL_REMINDER:
+      return `email-reservation-arrival-${businessId}-${sanitizeEmailJobIdComponent(data.reservationId)}-${sanitizeEmailJobIdComponent(data.deliveryVersion)}`;
     case EMAIL_JOB_NAMES.ORDER_RECEIPT:
       return `email-order-receipt-${businessId}-${sanitizeEmailJobIdComponent(data.orderId)}`;
     case EMAIL_JOB_NAMES.REFUND_CONFIRMATION:
@@ -95,7 +99,7 @@ export function getEmailJobEntityId(jobName, payload) {
 export async function enqueueEmailJob(
   jobName,
   payload,
-  { env = process.env, queue, recover = false } = {},
+  { env = process.env, queue, recover = false, delay = 0 } = {},
 ) {
   const data = validateEmailJobPayload(jobName, payload);
   const emailQueue = queue || createQueue(QUEUE_NAMES.EMAIL, { env });
@@ -120,6 +124,7 @@ export async function enqueueEmailJob(
   const job = await emailQueue.add(jobName, data, {
     jobId,
     attempts: EMAIL_JOB_OPTIONS[jobName].attempts,
+    delay: Math.max(0, Number(delay) || 0),
     backoff: {
       type: "exponential",
       delay: 30_000,

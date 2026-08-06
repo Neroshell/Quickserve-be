@@ -6,10 +6,15 @@ import {
   EmailDeliveryError,
   sendReservationCancelledEmail,
   sendReservationConfirmedEmail,
+  sendReservationArrivalReminderEmail,
   sendReservationRequestEmail,
   sendReservationRequestReceivedEmail,
 } from "../../utils/emailService.js";
 import { buildEmailJobId, EMAIL_JOB_NAMES } from "../../queues/index.js";
+import {
+  createReservationArrivalToken,
+  hashReservationArrivalToken,
+} from "../reservationArrivalTokenService.js";
 
 const CLAIM_TTL_MS = 5 * 60 * 1000;
 
@@ -45,6 +50,7 @@ export async function ensureReservationEmailIntent({
   businessId,
   reservationId,
   deliveryVersion,
+  scheduledFor = null,
   deliveryModel = EmailDelivery,
   now = new Date(),
 }) {
@@ -65,6 +71,7 @@ export async function ensureReservationEmailIntent({
     retryable: true,
     enqueuedAt: null,
     enqueueError: null,
+    scheduledFor,
     createdAt: now,
   };
 
@@ -229,6 +236,28 @@ export async function failReservationEmailDelivery({
   );
 }
 
+export async function cancelReservationEmailDelivery({
+  deliveryId,
+  businessId,
+  claimId,
+  reason,
+  deliveryModel = EmailDelivery,
+}) {
+  return deliveryModel.findOneAndUpdate(
+    { deliveryId, businessId, status: "processing", claimId },
+    {
+      $set: {
+        status: "cancelled",
+        claimedAt: null,
+        claimId: null,
+        lastError: safeErrorCode({ code: reason }),
+        retryable: false,
+      },
+    },
+    { new: true },
+  );
+}
+
 function permanentError(code) {
   return new EmailDeliveryError("Reservation email cannot be delivered.", {
     code,
@@ -243,6 +272,9 @@ function reservationStatusIsCurrent(jobName, reservation) {
   if (jobName === EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CANCELLED) {
     return ["cancelled", "declined"].includes(reservation.status);
   }
+  if (jobName === EMAIL_JOB_NAMES.RESERVATION_ARRIVAL_REMINDER) {
+    return reservation.status === "confirmed";
+  }
   return true;
 }
 
@@ -252,6 +284,7 @@ function senderForReservationJob(jobName, senders) {
     [EMAIL_JOB_NAMES.RESERVATION_REQUEST_GUEST]: senders.sendGuest,
     [EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CONFIRMED]: senders.sendConfirmed,
     [EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CANCELLED]: senders.sendCancelled,
+    [EMAIL_JOB_NAMES.RESERVATION_ARRIVAL_REMINDER]: senders.sendArrivalReminder,
   };
   return map[jobName];
 }
@@ -271,6 +304,7 @@ export async function processReservationEmailDelivery(
       sendGuest: sendReservationRequestReceivedEmail,
       sendConfirmed: sendReservationConfirmedEmail,
       sendCancelled: sendReservationCancelledEmail,
+      sendArrivalReminder: sendReservationArrivalReminderEmail,
     },
     now = new Date(),
   } = {},
@@ -285,18 +319,72 @@ export async function processReservationEmailDelivery(
   if (!claim) return { skipped: true, reason: "not_claimed" };
 
   try {
-    const reservation = await reservationModel.findOne({
+    const isArrivalReminder =
+      job.name === EMAIL_JOB_NAMES.RESERVATION_ARRIVAL_REMINDER;
+    let reservationQuery = reservationModel.findOne({
       _id: reservationId,
       businessId,
     });
+    if (isArrivalReminder && typeof reservationQuery?.select === "function") {
+      reservationQuery = reservationQuery.select("+arrivalTokenHash");
+    }
+    const reservation = await reservationQuery;
     if (!reservation) throw permanentError("reservation_not_found");
-    if (reservation.checkInDate) throw permanentError("lodging_email_not_queueable");
+    if (reservation.checkInDate) {
+      if (isArrivalReminder) {
+        await cancelReservationEmailDelivery({
+          deliveryId,
+          businessId,
+          claimId: claim.claimId,
+          reason: "lodging_email_not_queueable",
+          deliveryModel,
+        });
+        return { skipped: true, reason: "lodging_email_not_queueable" };
+      }
+      throw permanentError("lodging_email_not_queueable");
+    }
     if (!reservationStatusIsCurrent(job.name, reservation)) {
+      if (isArrivalReminder) {
+        await cancelReservationEmailDelivery({
+          deliveryId,
+          businessId,
+          claimId: claim.claimId,
+          reason: "stale_reservation_status",
+          deliveryModel,
+        });
+        return { skipped: true, reason: "stale_reservation_status" };
+      }
       throw permanentError("stale_reservation_status");
     }
 
     const business = await resolveLean(businessModel.findOne({ businessId }));
     if (!business) throw permanentError("business_not_found");
+
+    if (isArrivalReminder && business.settings?.arrivalReminderEnabled === false) {
+      await cancelReservationEmailDelivery({
+        deliveryId,
+        businessId,
+        claimId: claim.claimId,
+        reason: "business_reminder_disabled",
+        deliveryModel,
+      });
+      return { skipped: true, reason: "business_reminder_disabled" };
+    }
+
+    if (
+      isArrivalReminder &&
+      (!reservation.arrivalTokenExpiresAt ||
+        reservation.arrivalTokenExpiresAt <= now)
+    ) {
+      await cancelReservationEmailDelivery({
+        deliveryId,
+        businessId,
+        claimId: claim.claimId,
+        reason: "arrival_link_expired",
+        deliveryModel,
+      });
+      return { skipped: true, reason: "arrival_link_expired" };
+    }
 
     const sender = senderForReservationJob(job.name, senders);
     if (!sender) throw permanentError("unsupported_reservation_email_job");
@@ -311,12 +399,37 @@ export async function processReservationEmailDelivery(
       : reservation.email;
     if (!recipient) throw permanentError("recipient_missing");
 
+    let arrivalUrl;
+    let viewReservationUrl;
+    if (isArrivalReminder) {
+      const arrivalToken = createReservationArrivalToken(reservation);
+      if (
+        !reservation.arrivalTokenHash ||
+        hashReservationArrivalToken(arrivalToken) !== reservation.arrivalTokenHash
+      ) {
+        await cancelReservationEmailDelivery({
+          deliveryId,
+          businessId,
+          claimId: claim.claimId,
+          reason: "arrival_token_scope_changed",
+          deliveryModel,
+        });
+        return { skipped: true, reason: "arrival_token_scope_changed" };
+      }
+      const frontendBaseUrl =
+        process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+      arrivalUrl = `${frontendBaseUrl}/reservation/arrival?token=${encodeURIComponent(arrivalToken)}`;
+      viewReservationUrl = `${arrivalUrl}&view=1`;
+    }
+
     const result = await sender({
       to: recipient,
       businessName: business.displayName || business.name,
       businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
       primaryColor: business.branding?.primaryColor,
       reservation: reservationObject,
+      arrivalUrl,
+      viewReservationUrl,
       idempotencyKey: deliveryId,
       returnResult: true,
     });

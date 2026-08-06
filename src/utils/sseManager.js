@@ -28,11 +28,11 @@ import GuestSession from "../models/GuestSession.js"
 const SSE_CHANNELS_BY_ROLE = {
     kitchen: ["kitchen"],
     bartender: ["bar"],
-    waiter: ["waiter"],
-    manager: ["kitchen", "bar", "waiter"],
-    owner: ["kitchen", "bar", "waiter"],
-    co_owner: ["kitchen", "bar", "waiter"],
-    admin: ["kitchen", "bar", "waiter"],
+    waiter: ["waiter", "reservations"],
+    manager: ["kitchen", "bar", "waiter", "reservations"],
+    owner: ["kitchen", "bar", "waiter", "reservations"],
+    co_owner: ["kitchen", "bar", "waiter", "reservations"],
+    admin: ["kitchen", "bar", "waiter", "reservations"],
 }
 
 // Customer-facing SSE roles — these streams are scoped to a single table.

@@ -3,6 +3,10 @@ import rateLimit from "express-rate-limit";
 import { getBusinessBySlug, createReservation, getPublicBusinessConfig, getReservationByToken, getReservationById } from "../controllers/publicController.js";
 import { getAvailableStayServicePoints } from "../controllers/reservationController.js";
 import { getPlans } from "../controllers/planController.js";
+import {
+  checkInReservationArrival,
+  validateReservationArrival,
+} from "../controllers/reservationArrivalController.js";
 
 const router = express.Router();
 
@@ -13,6 +17,17 @@ const reservationLimiter = rateLimit({
   message: { error: "Too many reservation requests from this IP, please try again later." },
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+});
+
+const arrivalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: {
+    outcome: "rate_limited",
+    message: "Too many check-in attempts. Please try again shortly.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 /**
@@ -106,6 +121,18 @@ router.get("/business-config", getPublicBusinessConfig);
  *         description: Reservation requested successfully
  */
 router.post("/reservations", reservationLimiter, createReservation);
+
+router.post(
+  "/reservations/arrival/validate",
+  arrivalLimiter,
+  validateReservationArrival,
+);
+
+router.post(
+  "/reservations/arrival/check-in",
+  arrivalLimiter,
+  checkInReservationArrival,
+);
 
 /**
  * @openapi

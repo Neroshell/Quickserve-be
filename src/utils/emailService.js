@@ -13,6 +13,7 @@ import ReservationCancelledEmail from "../../emails/ReservationCancelledEmail.js
 import ReservationRefundEmail from "../../emails/ReservationRefundEmail.js";
 import EmailChangeEmail from "../../emails/EmailChangeEmail.js";
 import HotelPaymentConfirmationEmail from "../../emails/HotelPaymentConfirmationEmail.js";
+import ReservationArrivalReminderEmail from "../../emails/ReservationArrivalReminderEmail.js";
 import Business from "../models/Business.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { getCustomerReservationPricing } from "../services/reservationPricingService.js";
@@ -500,6 +501,50 @@ export async function sendReservationCancelledEmail({
   } catch (error) {
     if (returnResult) throw error;
     console.error("[EmailService]  Error in sendReservationCancelledEmail:", error);
+    return false;
+  }
+}
+
+export async function sendReservationArrivalReminderEmail({
+  to,
+  businessName,
+  businessLogoUrl,
+  primaryColor,
+  reservation,
+  arrivalUrl,
+  viewReservationUrl,
+  idempotencyKey,
+  returnResult = false,
+  timeoutMs,
+}) {
+  try {
+    const html = await render(React.createElement(
+      ReservationArrivalReminderEmail,
+      {
+        businessName,
+        businessLogoUrl,
+        primaryColor,
+        reservation,
+        arrivalUrl,
+        viewReservationUrl,
+      },
+    ));
+    return await deliverPreparedEmail(
+      {
+        to,
+        subject: `Your reservation at ${businessName} is coming up`,
+        html,
+        from: RESERVATION_FROM,
+        idempotencyKey,
+      },
+      { returnResult, timeoutMs },
+    );
+  } catch (error) {
+    if (returnResult) throw error;
+    console.error("[EmailService] Error in sendReservationArrivalReminderEmail", {
+      reservationId: String(reservation?._id || "unknown"),
+      errorClass: error?.name || "Error",
+    });
     return false;
   }
 }

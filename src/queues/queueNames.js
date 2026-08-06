@@ -13,6 +13,7 @@ export const EMAIL_JOB_NAMES = Object.freeze({
     RESERVATION_REQUEST_GUEST: "reservation-request-guest",
     RESTAURANT_RESERVATION_CONFIRMED: "restaurant-reservation-confirmed",
     RESTAURANT_RESERVATION_CANCELLED: "restaurant-reservation-cancelled",
+    RESERVATION_ARRIVAL_REMINDER: "reservation-arrival-reminder",
     ORDER_RECEIPT: "order-receipt",
     REFUND_CONFIRMATION: "refund-confirmation",
 });

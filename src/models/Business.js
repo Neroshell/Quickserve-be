@@ -213,6 +213,17 @@ const BusinessSchema = new mongoose.Schema({
         takeoutEnabled: { type: Boolean, default: false },
         callWaiterEnabled: { type: Boolean, default: true },
         reservationsEnabled: { type: Boolean, default: true },
+        arrivalReminderEnabled: { type: Boolean, default: true },
+        arrivalReminderLeadMinutes: {
+            type: Number,
+            default: 10,
+            min: 0,
+            max: 10080,
+            validate: {
+                validator: Number.isInteger,
+                message: "Arrival reminder lead time must be a whole number of minutes",
+            },
+        },
         tipsEnabled: { type: Boolean, default: false },
     },
     notes: { type: String, default: "" },

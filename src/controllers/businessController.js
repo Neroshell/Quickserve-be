@@ -172,6 +172,27 @@ export async function updateSettings(req, res) {
 
         // Handle nested settings if provided (schema-enforced boolean flags only)
         if (settings && typeof settings === 'object') {
+            if (
+                settings.arrivalReminderEnabled !== undefined &&
+                typeof settings.arrivalReminderEnabled !== "boolean"
+            ) {
+                return res.status(400).json({
+                    message: "arrivalReminderEnabled must be a boolean",
+                })
+            }
+            if (settings.arrivalReminderLeadMinutes !== undefined) {
+                const leadMinutes = Number(settings.arrivalReminderLeadMinutes)
+                if (
+                    !Number.isInteger(leadMinutes) ||
+                    leadMinutes < 0 ||
+                    leadMinutes > 10080
+                ) {
+                    return res.status(400).json({
+                        message: "arrivalReminderLeadMinutes must be a whole number from 0 to 10080",
+                    })
+                }
+                settings.arrivalReminderLeadMinutes = leadMinutes
+            }
             for (const [key, value] of Object.entries(settings)) {
                 updateObj[`settings.${key}`] = value
             }

@@ -87,7 +87,12 @@ export async function recoverEmailDeliveries({
         reservationId: delivery.entityId,
         deliveryId: delivery.deliveryId,
         deliveryVersion: delivery.deliveryVersion,
-      }, { recover: true });
+      }, {
+        recover: true,
+        delay: delivery.scheduledFor
+          ? Math.max(0, new Date(delivery.scheduledFor).getTime() - now.getTime())
+          : 0,
+      });
       await markReservationEmailEnqueued({
         deliveryId: delivery.deliveryId,
         businessId,

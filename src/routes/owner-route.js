@@ -563,7 +563,7 @@ router.get("/reservations", getReservations)
  *             properties:
  *               status:
  *                 type: string
- *                 enum: [pending, confirmed, seated, completed, cancelled, no_show, accepted_awaiting_payment, expired, checked_out]
+ *                 enum: [pending, confirmed, arrived, seated, completed, cancelled, no_show, accepted_awaiting_payment, expired, checked_out]
  *               cancellationReason:
  *                 type: string
  *                 nullable: true

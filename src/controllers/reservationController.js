@@ -17,6 +17,7 @@ import {
   EMAIL_JOB_NAMES,
   enqueueReservationPaymentExpiry,
 } from "../queues/index.js";
+import { scheduleReservationArrivalReminder } from "../services/reservationArrivalService.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 export const HOTEL_PAYMENT_WINDOW_MINUTES = 30;
@@ -43,7 +44,8 @@ const STAY_STATUS_TRANSITIONS = Object.freeze({
 
 const TIMESLOT_STATUS_TRANSITIONS = Object.freeze({
   pending: ["confirmed", "cancelled", "no_show"],
-  confirmed: ["seated", "completed", "cancelled", "no_show"],
+  confirmed: ["arrived", "cancelled", "no_show"],
+  arrived: ["seated", "cancelled", "no_show"],
   seated: ["completed", "cancelled", "no_show"],
   completed: [],
   cancelled: [],
@@ -88,6 +90,27 @@ function normalizeCancellationReason(value) {
   return normalized || null;
 }
 
+async function tryScheduleArrivalReminder(req, reservation, business) {
+  const schedule = req.app?.locals?.scheduleReservationArrivalReminder ||
+    scheduleReservationArrivalReminder;
+  try {
+    const result = await schedule({ reservation, business });
+    return result?.queued ? "queued" : result?.reason || "not_scheduled";
+  } catch (error) {
+    console.error("[ReservationArrival] Reminder scheduling failed", {
+      reservationId: String(reservation?._id || "unknown"),
+      errorClass: error?.name || "Error",
+      reason: error?.code || "schedule_failed",
+    });
+    return "schedule_failed";
+  }
+}
+
+async function publishReservationEvent(...args) {
+  const { publishEvent } = await import("../utils/sseManager.js");
+  return publishEvent(...args);
+}
+
 export function getHotelPaymentExpiresAt(now = Date.now()) {
   return new Date(now + HOTEL_PAYMENT_WINDOW_MINUTES * 60 * 1000);
 }
@@ -99,6 +122,9 @@ export function toOwnerReservationResponse(reservation) {
   const {
     secureToken,
     activeRefundId,
+    arrivalTokenHash,
+    arrivalIp,
+    arrivalUserAgent,
     ...safeReservation
   } = source;
   const originalPaidAmountCents =
@@ -182,6 +208,11 @@ export async function updateReservationStatus(req, res) {
         error: "Use the reservation check-in action and provide the guest's check-in code.",
       });
     }
+    if (status === "arrived") {
+      return res.status(400).json({
+        error: "Guest arrival must use the secure arrival check-in link.",
+      });
+    }
 
     const scope = reservationScope(req, id);
     if (!scope) {
@@ -201,7 +232,7 @@ export async function updateReservationStatus(req, res) {
     }
 
     // Basic status validation
-    const validStatuses = ["pending", "confirmed", "cancelled", "seated", "completed", "no_show",
+    const validStatuses = ["pending", "confirmed", "arrived", "cancelled", "seated", "completed", "no_show",
       "accepted_awaiting_payment", "expired", "checked_out"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
@@ -227,7 +258,14 @@ export async function updateReservationStatus(req, res) {
     }
     const previousStatus = reservation.status;
     if (previousStatus === status) {
-      return res.json({ reservation, emailStatus: "not_sent" });
+      const arrivalReminderStatus = status === "confirmed" && !isHotel
+        ? await tryScheduleArrivalReminder(req, reservation, business)
+        : "not_scheduled";
+      return res.json({
+        reservation: toOwnerReservationResponse(reservation),
+        emailStatus: "not_sent",
+        arrivalReminderStatus,
+      });
     }
     if (!isReservationStatusTransitionAllowed({
       currentStatus: previousStatus,
@@ -254,7 +292,7 @@ export async function updateReservationStatus(req, res) {
             businessId: reservation.businessId,
             servicePointId: reservation.servicePointId,
             date: reservation.date,
-            status: "confirmed",
+            status: { $in: ["confirmed", "arrived", "seated"] },
             startTime: { $lt: reservation.endTime },
             endTime: { $gt: reservation.startTime },
             _id: { $ne: reservation._id }
@@ -341,14 +379,55 @@ export async function updateReservationStatus(req, res) {
 
     const statusChanged = previousStatus !== status;
     let emailStatus = "not_sent";
+    let arrivalReminderStatus = "not_scheduled";
 
     if (statusChanged) {
       console.log("[Reservation] Status change:", previousStatus, "->", status);
       
       const reservationObj = reservation.toObject();
 
+      if (status === "confirmed" && !isHotel) {
+        arrivalReminderStatus = await tryScheduleArrivalReminder(
+          req,
+          reservation,
+          business,
+        );
+      }
+
+      if (status === "seated" && !isHotel) {
+        const emit = req.app?.locals?.publishEvent || publishReservationEvent;
+        try {
+          await emit(
+            "reservation_seated",
+            reservation.businessId,
+            ["reservations"],
+            {
+              reservation: {
+                id: String(reservation._id),
+                status: reservation.status,
+                customerName: reservation.customerName,
+                guestCount: reservation.guestCount,
+                date: reservation.date,
+                startTime: reservation.startTime,
+                endTime: reservation.endTime,
+                servicePointLabel: reservation.servicePointLabel || null,
+              },
+            },
+          );
+        } catch (error) {
+          console.error("[Reservation] Seated SSE publish failed", {
+            reservationId: String(reservation._id),
+            errorClass: error?.name || "Error",
+          });
+        }
+      }
+
       if (!reservationObj.email) {
-        console.log("Reservation status changed but no customer email found in DB.", reservationObj);
+        console.log("Reservation status changed without an email recipient", {
+          reservationId: String(reservationObj._id),
+          businessId: reservationObj.businessId,
+          status: reservationObj.status,
+        });
       } else if (["confirmed", "cancelled", "declined", "accepted_awaiting_payment"].includes(status)) {
         console.log(`[Reservation Email] Sending ${status} email`);
 
@@ -409,6 +488,7 @@ export async function updateReservationStatus(req, res) {
     res.json({
       reservation: toOwnerReservationResponse(reservation),
       emailStatus,
+      arrivalReminderStatus,
     });
   } catch (error) {
     console.error("[reservationController.updateReservationStatus] Error:", error);

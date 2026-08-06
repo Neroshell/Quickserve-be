@@ -12,6 +12,8 @@ export const TRANSACTION_ORDER_STATUSES = Object.freeze([
 export const TRANSACTION_RESERVATION_STATUSES = Object.freeze([
     "accepted_awaiting_payment",
     "confirmed",
+    "arrived",
+    "seated",
     "checked_in",
     "checked_out",
     "completed",

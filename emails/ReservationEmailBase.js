@@ -13,6 +13,7 @@ import {
   Img,
   Hr,
   Button,
+  Link,
 } from "@react-email/components";
 
 /**
@@ -47,6 +48,8 @@ export default function ReservationEmailBase({
   closing = [],
   /** Optional CTA button: { text: string, url: string } */
   callToAction = null,
+  /** Optional link shown beneath the primary CTA: { text: string, url: string } */
+  secondaryAction = null,
 }) {
   const e = React.createElement;
   const brand = primaryColor || "#ea580c";
@@ -112,6 +115,12 @@ export default function ReservationEmailBase({
         callToAction
           ? e(Section, { style: { textAlign: "center", margin: "32px 0" } },
               e(Button, { href: callToAction.url, style: { ...buttonStyle, backgroundColor: brand } }, callToAction.text)
+            )
+          : null,
+
+        secondaryAction
+          ? e(Section, { style: { textAlign: "center", margin: "-18px 0 28px" } },
+              e(Link, { href: secondaryAction.url, style: { ...secondaryLink, color: brand } }, secondaryAction.text)
             )
           : null,
 
@@ -316,4 +325,10 @@ const buttonStyle = {
   textAlign: "center",
   display: "inline-block",
   padding: "12px 24px",
+};
+
+const secondaryLink = {
+  fontSize: "14px",
+  fontWeight: "600",
+  textDecoration: "underline",
 };
