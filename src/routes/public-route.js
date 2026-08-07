@@ -7,6 +7,10 @@ import {
   checkInReservationArrival,
   validateReservationArrival,
 } from "../controllers/reservationArrivalController.js";
+import {
+  cancelReservationNotComing,
+  validateReservationNotComing,
+} from "../controllers/reservationNotComingController.js";
 
 const router = express.Router();
 
@@ -132,6 +136,36 @@ router.post(
   "/reservations/arrival/check-in",
   arrivalLimiter,
   checkInReservationArrival,
+);
+
+router.get(
+  "/restaurant-reservations/not-coming/:token",
+  arrivalLimiter,
+  validateReservationNotComing,
+);
+
+router.post(
+  "/restaurant-reservations/not-coming/:token",
+  arrivalLimiter,
+  cancelReservationNotComing,
+);
+
+router.post(
+  "/reservations/not-coming/validate",
+  arrivalLimiter,
+  validateReservationNotComing,
+);
+
+router.post(
+  "/reservations/not-coming/cancel",
+  arrivalLimiter,
+  cancelReservationNotComing,
+);
+
+router.post(
+  "/reservations/not-coming",
+  arrivalLimiter,
+  cancelReservationNotComing,
 );
 
 /**

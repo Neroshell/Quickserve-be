@@ -19,6 +19,10 @@ import {
   isReservationArrivalTokenWellFormed,
   reservationArrivalTokenMatches,
 } from "./reservationArrivalTokenService.js";
+import {
+  createReservationNotComingToken,
+  hashReservationNotComingToken,
+} from "./reservationNotComingTokenService.js";
 import { resolveBusinessCapabilities } from "./businessCapabilityService.js";
 
 export const DEFAULT_ARRIVAL_REMINDER_LEAD_MINUTES = 10;
@@ -157,9 +161,12 @@ export async function scheduleReservationArrivalReminder({
     ...record,
     arrivalReminderVersion: deliveryVersion,
     arrivalTokenExpiresAt: schedule.end,
+    cancellationTokenExpiresAt: schedule.end,
   };
   const token = createReservationArrivalToken(tokenScope, { env });
   const tokenHash = hashReservationArrivalToken(token);
+  const cancellationToken = createReservationNotComingToken(tokenScope, { env });
+  const cancellationTokenHash = hashReservationNotComingToken(cancellationToken);
   const reservationId = String(record._id);
   const claimed = await reservationModel.findOneAndUpdate(
     {
@@ -178,6 +185,9 @@ export async function scheduleReservationArrivalReminder({
         arrivalTokenHash: tokenHash,
         arrivalTokenIssuedAt: now,
         arrivalTokenExpiresAt: schedule.end,
+        cancellationTokenHash,
+        cancellationTokenIssuedAt: now,
+        cancellationTokenExpiresAt: schedule.end,
       },
     },
     { new: true, runValidators: true },

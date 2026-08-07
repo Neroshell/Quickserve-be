@@ -15,6 +15,9 @@ import {
   createReservationArrivalToken,
   hashReservationArrivalToken,
 } from "../reservationArrivalTokenService.js";
+import {
+  createReservationNotComingToken,
+} from "../reservationNotComingTokenService.js";
 
 const CLAIM_TTL_MS = 5 * 60 * 1000;
 
@@ -401,6 +404,7 @@ export async function processReservationEmailDelivery(
 
     let arrivalUrl;
     let viewReservationUrl;
+    let notComingUrl;
     if (isArrivalReminder) {
       const arrivalToken = createReservationArrivalToken(reservation);
       if (
@@ -416,9 +420,11 @@ export async function processReservationEmailDelivery(
         });
         return { skipped: true, reason: "arrival_token_scope_changed" };
       }
+      const notComingToken = createReservationNotComingToken(reservation);
       const frontendBaseUrl =
         process.env.FRONTEND_BASE_URL || "http://localhost:3000";
       arrivalUrl = `${frontendBaseUrl}/reservation/arrival?token=${encodeURIComponent(arrivalToken)}`;
+      notComingUrl = `${frontendBaseUrl}/reservation/not-coming?token=${encodeURIComponent(notComingToken)}`;
       viewReservationUrl = `${arrivalUrl}&view=1`;
     }
 
@@ -429,6 +435,7 @@ export async function processReservationEmailDelivery(
       primaryColor: business.branding?.primaryColor,
       reservation: reservationObject,
       arrivalUrl,
+      notComingUrl,
       viewReservationUrl,
       idempotencyKey: deliveryId,
       returnResult: true,

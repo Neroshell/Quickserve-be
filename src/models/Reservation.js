@@ -18,7 +18,7 @@ const ReservationCancellationActorSchema = new mongoose.Schema(
   {
     actorType: {
       type: String,
-      enum: ["staff", "admin", "system"],
+      enum: ["staff", "admin", "system", "guest"],
       default: "staff",
     },
     userId: { type: String, default: null },
@@ -199,6 +199,10 @@ const ReservationSchema = new mongoose.Schema(
       trim: true,
       maxlength: 300,
     },
+    cancellationSource: {
+      type: String,
+      default: null,
+    },
     cancellationNotes: {
       type: String,
       default: null,
@@ -244,6 +248,10 @@ const ReservationSchema = new mongoose.Schema(
     arrivalTokenIssuedAt: { type: Date, default: null },
     arrivalTokenExpiresAt: { type: Date, default: null },
     arrivalTokenUsedAt: { type: Date, default: null },
+    cancellationTokenHash: { type: String, select: false },
+    cancellationTokenIssuedAt: { type: Date, default: null },
+    cancellationTokenExpiresAt: { type: Date, default: null },
+    cancellationTokenUsedAt: { type: Date, default: null },
     arrivedAt: { type: Date, default: null },
     arrivalSource: {
       type: String,
@@ -307,6 +315,13 @@ ReservationSchema.index(
   {
     unique: true,
     partialFilterExpression: { arrivalTokenHash: { $type: "string" } },
+  },
+);
+ReservationSchema.index(
+  { cancellationTokenHash: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { cancellationTokenHash: { $type: "string" } },
   },
 );
 ReservationSchema.index({ businessId: 1, status: 1, arrivedAt: 1 });

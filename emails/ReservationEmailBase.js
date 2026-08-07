@@ -50,6 +50,8 @@ export default function ReservationEmailBase({
   callToAction = null,
   /** Optional link shown beneath the primary CTA: { text: string, url: string } */
   secondaryAction = null,
+  /** Optional guest cancellation CTA: { text: string, url: string, label?: string, copy?: string } */
+  cancelAction = null,
 }) {
   const e = React.createElement;
   const brand = primaryColor || "#ea580c";
@@ -121,6 +123,14 @@ export default function ReservationEmailBase({
         secondaryAction
           ? e(Section, { style: { textAlign: "center", margin: "-18px 0 28px" } },
               e(Link, { href: secondaryAction.url, style: { ...secondaryLink, color: brand } }, secondaryAction.text)
+            )
+          : null,
+
+        cancelAction
+          ? e(Section, { style: { textAlign: "center", margin: "20px 0 28px", padding: "0 20px" } },
+              cancelAction.label ? e(Text, { style: cancelLabelStyle }, cancelAction.label) : null,
+              cancelAction.copy ? e(Text, { style: cancelCopyStyle }, cancelAction.copy) : null,
+              e(Button, { href: cancelAction.url, style: cancelButtonStyle }, cancelAction.text)
             )
           : null,
 
@@ -331,4 +341,31 @@ const secondaryLink = {
   fontSize: "14px",
   fontWeight: "600",
   textDecoration: "underline",
+};
+
+const cancelLabelStyle = {
+  fontSize: "14px",
+  fontWeight: "600",
+  color: "#334155",
+  margin: "0 0 4px 0",
+};
+
+const cancelCopyStyle = {
+  fontSize: "13px",
+  color: "#64748b",
+  margin: "0 0 12px 0",
+  lineHeight: "18px",
+};
+
+const cancelButtonStyle = {
+  backgroundColor: "#ffffff",
+  border: "1px solid #cbd5e1",
+  borderRadius: "8px",
+  color: "#475569",
+  fontSize: "14px",
+  fontWeight: "600",
+  textDecoration: "none",
+  textAlign: "center",
+  display: "inline-block",
+  padding: "10px 20px",
 };

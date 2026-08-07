@@ -7,6 +7,7 @@ export default function ReservationArrivalReminderEmail({
   primaryColor,
   reservation = {},
   arrivalUrl,
+  notComingUrl,
   viewReservationUrl,
 }) {
   return React.createElement(ReservationEmailBase, {
@@ -18,7 +19,7 @@ export default function ReservationArrivalReminderEmail({
     customerName: reservation.customerName,
     intro: [
       `This is a friendly reminder about your upcoming reservation at ${businessName}.`,
-      "When you arrive, use the button below to let the restaurant know you're here.",
+      "When you arrive, use the button below to let us know you're here.",
     ],
     detailsTitle: "Reservation Details",
     details: [
@@ -34,10 +35,14 @@ export default function ReservationArrivalReminderEmail({
       { label: "Notes", value: reservation.specialRequest },
     ],
     callToAction: { text: "I'm Here", url: arrivalUrl },
-    secondaryAction: {
-      text: "View Reservation",
-      url: viewReservationUrl || arrivalUrl,
-    },
-    closing: ["We look forward to welcoming you."],
+    cancelAction: notComingUrl
+      ? {
+          label: "Can't make it?",
+          copy: "If your plans have changed, kindly let the restaurant know.",
+          text: "I Won't Be Coming",
+          url: notComingUrl,
+        }
+      : null,
+    closing: ["However, we look forward to welcoming you."],
   });
 }

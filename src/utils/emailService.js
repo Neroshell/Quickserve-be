@@ -512,6 +512,7 @@ export async function sendReservationArrivalReminderEmail({
   primaryColor,
   reservation,
   arrivalUrl,
+  notComingUrl,
   viewReservationUrl,
   idempotencyKey,
   returnResult = false,
@@ -526,6 +527,7 @@ export async function sendReservationArrivalReminderEmail({
         primaryColor,
         reservation,
         arrivalUrl,
+        notComingUrl,
         viewReservationUrl,
       },
     ));
