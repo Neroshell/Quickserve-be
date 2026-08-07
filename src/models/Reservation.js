@@ -255,7 +255,7 @@ const ReservationSchema = new mongoose.Schema(
     arrivedAt: { type: Date, default: null },
     arrivalSource: {
       type: String,
-      enum: ["email"],
+      enum: ["email", "staff"],
       default: null,
     },
     arrivalIp: { type: String, default: null, maxlength: 64, select: false },

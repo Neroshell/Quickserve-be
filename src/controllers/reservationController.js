@@ -43,12 +43,14 @@ const STAY_STATUS_TRANSITIONS = Object.freeze({
 });
 
 const TIMESLOT_STATUS_TRANSITIONS = Object.freeze({
-  pending: ["confirmed", "cancelled", "no_show"],
-  confirmed: ["arrived", "cancelled", "no_show"],
-  arrived: ["seated", "cancelled", "no_show"],
-  seated: ["completed", "cancelled", "no_show"],
+  pending: ["confirmed", "declined", "cancelled"],
+  confirmed: ["arrived", "no_show", "cancelled"],
+  arrived: ["cancelled"],
+  // seated and completed are terminal legacy states; no new transitions lead into them.
+  seated: [],
   completed: [],
   cancelled: [],
+  declined: [],
   no_show: [],
 });
 
@@ -208,11 +210,6 @@ export async function updateReservationStatus(req, res) {
         error: "Use the reservation check-in action and provide the guest's check-in code.",
       });
     }
-    if (status === "arrived") {
-      return res.status(400).json({
-        error: "Guest arrival must use the secure arrival check-in link.",
-      });
-    }
 
     const scope = reservationScope(req, id);
     if (!scope) {
@@ -232,7 +229,7 @@ export async function updateReservationStatus(req, res) {
     }
 
     // Basic status validation
-    const validStatuses = ["pending", "confirmed", "arrived", "cancelled", "seated", "completed", "no_show",
+    const validStatuses = ["pending", "confirmed", "arrived", "cancelled", "declined", "no_show",
       "accepted_awaiting_payment", "expired", "checked_out"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
@@ -292,7 +289,7 @@ export async function updateReservationStatus(req, res) {
             businessId: reservation.businessId,
             servicePointId: reservation.servicePointId,
             date: reservation.date,
-            status: { $in: ["confirmed", "arrived", "seated"] },
+            status: { $in: ["confirmed", "arrived"] },
             startTime: { $lt: reservation.endTime },
             endTime: { $gt: reservation.startTime },
             _id: { $ne: reservation._id }
@@ -360,6 +357,10 @@ export async function updateReservationStatus(req, res) {
         fields.checkedOutAt = now;
         if (actor) fields.checkedOutBy = actor;
       }
+      if (status === "arrived" && !isHotel && !reservation.arrivedAt) {
+        fields.arrivedAt = now;
+        fields.arrivalSource = "staff";
+      }
 
       reservation = await Reservation.findOneAndUpdate(
         {
@@ -394,17 +395,18 @@ export async function updateReservationStatus(req, res) {
         );
       }
 
-      if (status === "seated" && !isHotel) {
+      if (status === "arrived" && !isHotel) {
         const emit = req.app?.locals?.publishEvent || publishReservationEvent;
         try {
           await emit(
-            "reservation_seated",
+            "reservation_arrived",
             reservation.businessId,
             ["reservations"],
             {
               reservation: {
                 id: String(reservation._id),
                 status: reservation.status,
+                arrivedAt: reservation.arrivedAt,
                 customerName: reservation.customerName,
                 guestCount: reservation.guestCount,
                 date: reservation.date,
@@ -415,7 +417,7 @@ export async function updateReservationStatus(req, res) {
             },
           );
         } catch (error) {
-          console.error("[Reservation] Seated SSE publish failed", {
+          console.error("[Reservation] Arrived SSE publish failed", {
             reservationId: String(reservation._id),
             errorClass: error?.name || "Error",
           });

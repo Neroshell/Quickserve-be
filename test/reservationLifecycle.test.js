@@ -457,3 +457,156 @@ test("owner removal archives a terminal reservation instead of deleting it", asy
     assert.equal(update.archivedBy.userId, "staff_1")
     assert.match(res.body.message, /operational views/i)
 })
+
+// ─── Restaurant lifecycle transition matrix ────────────────────────────────────
+
+function restaurantReservation(overrides = {}) {
+    const reservation = {
+        _id: "res_1",
+        businessId: "restaurant_1",
+        status: "confirmed",
+        date: "2026-08-10",
+        startTime: "19:00",
+        endTime: "20:00",
+        confirmedAt: new Date(),
+        cancelledAt: null,
+        arrivedAt: null,
+        arrivalSource: null,
+        archivedAt: null,
+        email: null,
+        ...overrides,
+    }
+    reservation.toObject = () => ({ ...reservation })
+    return reservation
+}
+
+function mockRestaurantBusiness(t) {
+    t.mock.method(Business, "findOne", () => ({
+        lean: async () => ({
+            businessId: "restaurant_1",
+            businessType: "restaurant",
+            modules: ["foodService"],
+            ownerEmail: "chef@example.com",
+            operatingHours: {
+                Sunday: { enabled: true, openTime: "00:00", closeTime: "23:59" },
+                Monday: { enabled: true, openTime: "00:00", closeTime: "23:59" },
+                Tuesday: { enabled: true, openTime: "00:00", closeTime: "23:59" },
+                Wednesday: { enabled: true, openTime: "00:00", closeTime: "23:59" },
+                Thursday: { enabled: true, openTime: "00:00", closeTime: "23:59" },
+                Friday: { enabled: true, openTime: "00:00", closeTime: "23:59" },
+                Saturday: { enabled: true, openTime: "00:00", closeTime: "23:59" },
+            },
+        }),
+    }))
+}
+
+test("restaurant: valid forward transitions are allowed", () => {
+    const allowed = [
+        { from: "pending", to: "confirmed" },
+        { from: "pending", to: "declined" },
+        { from: "pending", to: "cancelled" },
+        { from: "confirmed", to: "arrived" },
+        { from: "confirmed", to: "no_show" },
+        { from: "confirmed", to: "cancelled" },
+        { from: "arrived", to: "cancelled" },
+    ]
+    for (const { from, to } of allowed) {
+        assert.equal(
+            isReservationStatusTransitionAllowed({ currentStatus: from, nextStatus: to, isStay: false }),
+            true,
+            `expected ${from} → ${to} to be allowed`
+        )
+    }
+})
+
+test("restaurant: invalid transitions are rejected", () => {
+    const blocked = [
+        { from: "confirmed", to: "seated" },
+        { from: "confirmed", to: "completed" },
+        { from: "arrived", to: "no_show" },
+        { from: "arrived", to: "confirmed" },
+        { from: "no_show", to: "arrived" },
+        { from: "cancelled", to: "confirmed" },
+        { from: "declined", to: "confirmed" },
+    ]
+    for (const { from, to } of blocked) {
+        assert.equal(
+            isReservationStatusTransitionAllowed({ currentStatus: from, nextStatus: to, isStay: false }),
+            false,
+            `expected ${from} → ${to} to be blocked`
+        )
+    }
+})
+
+test("restaurant: staff Mark Arrived writes arrivedAt and arrivalSource=staff", async (t) => {
+    mockRestaurantBusiness(t)
+    const reservation = restaurantReservation({ status: "confirmed" })
+    let captured
+    t.mock.method(Reservation, "findOne", async () => reservation)
+    t.mock.method(Reservation, "findOneAndUpdate", async (_filter, update) => {
+        captured = update.$set
+        return restaurantReservation({ status: "arrived", ...update.$set })
+    })
+    const res = response()
+
+    await updateReservationStatus(
+        {
+            params: { id: reservation._id },
+            body: { status: "arrived" },
+            session: { user: sessionUser({ businessId: "restaurant_1" }) },
+            app: { locals: { publishEvent: async () => {} } },
+        },
+        res
+    )
+
+    assert.equal(res.statusCode, 200)
+    assert.ok(captured.arrivedAt instanceof Date, "arrivedAt must be set")
+    assert.equal(captured.arrivalSource, "staff", "arrivalSource must be 'staff'")
+    assert.equal(captured.status, "arrived")
+})
+
+test("restaurant: arrived → no_show is rejected by the backend", async (t) => {
+    mockRestaurantBusiness(t)
+    const reservation = restaurantReservation({ status: "arrived", arrivedAt: new Date() })
+    t.mock.method(Reservation, "findOne", async () => reservation)
+    t.mock.method(Reservation, "findOneAndUpdate", async () => {
+        throw new Error("must not write invalid transition")
+    })
+    const res = response()
+
+    await updateReservationStatus(
+        {
+            params: { id: reservation._id },
+            body: { status: "no_show" },
+            session: { user: sessionUser({ businessId: "restaurant_1" }) },
+        },
+        res
+    )
+
+    assert.equal(res.statusCode, 409)
+    assert.match(res.body.error, /invalid reservation transition/i)
+})
+
+test("restaurant: pending → declined is allowed and hotel transitions are unaffected", () => {
+    // Restaurant allows pending → declined
+    assert.equal(
+        isReservationStatusTransitionAllowed({ currentStatus: "pending", nextStatus: "declined", isStay: false }),
+        true
+    )
+    // Hotel does not use declined transition
+    assert.equal(
+        isReservationStatusTransitionAllowed({ currentStatus: "pending", nextStatus: "declined", isStay: true }),
+        false
+    )
+    // Hotel confirmed → cancelled still works
+    assert.equal(
+        isReservationStatusTransitionAllowed({ currentStatus: "confirmed", nextStatus: "cancelled", isStay: true }),
+        true
+    )
+    // Hotel checked_in → checked_out still works
+    assert.equal(
+        isReservationStatusTransitionAllowed({ currentStatus: "checked_in", nextStatus: "checked_out", isStay: true }),
+        true
+    )
+})
+

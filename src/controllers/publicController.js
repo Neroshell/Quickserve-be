@@ -389,7 +389,7 @@ export async function createReservation(req, res) {
         businessId: business.businessId,
         servicePointId,
         date,
-        status: { $in: ["confirmed", "arrived", "seated"] },
+        status: { $in: ["confirmed", "arrived"] },
         startTime: { $lt: endTime },
         endTime: { $gt: startTime }
       }).lean();

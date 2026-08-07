@@ -37,7 +37,7 @@ function notComingOutcome(reservation, now) {
   if (reservation.status === "cancelled") {
     return "already_cancelled";
   }
-  if (["arrived", "seated", "checked_in"].includes(reservation.status) || reservation.arrivalTokenUsedAt) {
+  if (["arrived", "checked_in"].includes(reservation.status) || reservation.arrivalTokenUsedAt) {
     return "already_arrived";
   }
   if (INACTIVE_STATUSES.has(reservation.status)) return "inactive";

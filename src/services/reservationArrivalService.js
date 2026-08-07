@@ -294,7 +294,7 @@ export function toPublicArrivalReservation(reservation, business) {
 }
 
 function arrivalOutcome(reservation, now) {
-  if (["arrived", "seated"].includes(reservation.status) || reservation.arrivalTokenUsedAt) {
+  if (reservation.status === "arrived" || reservation.arrivalTokenUsedAt) {
     return "already_checked_in";
   }
   if (INACTIVE_STATUSES.has(reservation.status)) return "inactive";
