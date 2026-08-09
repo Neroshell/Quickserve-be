@@ -124,7 +124,26 @@ export async function getBusinessBySlug(req, res) {
       businessId: business.businessId, 
       isActive: { $ne: false }, 
       reservable: { $ne: false } 
-    }).select("servicePointId label capacity").lean();
+    })
+      .select([
+        "servicePointId",
+        "label",
+        "servicePointType",
+        "roomType",
+        "capacity",
+        "pricePerNight",
+        "currency",
+        "description",
+        "fullDescription",
+        "amenities",
+        "images",
+        "beds",
+        "bedType",
+        "bedConfiguration",
+        "viewType",
+        "maxGuests",
+      ].join(" "))
+      .lean();
 
     const publicDto = {
       businessId: business.businessId,

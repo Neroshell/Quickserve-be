@@ -17,7 +17,7 @@ const [
     updateOrderStatus,
   },
   { createCheckoutSession },
-  { getPublicBusinessConfig },
+  { getBusinessBySlug, getPublicBusinessConfig },
   { getMenuItems },
   { kitchenOrders },
   { barOrders },
@@ -264,6 +264,78 @@ test("public business config returns restaurant currency/timezone and blocks ina
     inactiveRes,
   );
   assert.equal(inactiveRes.statusCode, 404);
+});
+
+test("public hotel business payload exposes the active room showcase catalogue", async (t) => {
+  const hotel = createBusinessFixture({
+    businessId: "hotel-a",
+    slug: "catalogue-hotel",
+    countryCode: "mt",
+    businessType: "hotel",
+    modules: ["lodging"],
+  });
+  const room = {
+    servicePointId: "sp_room_101",
+    label: "Ocean King",
+    servicePointType: "room",
+    roomType: "Deluxe",
+    capacity: 2,
+    maxGuests: 2,
+    pricePerNight: 120,
+    currency: "EUR",
+    description: "Bright room with a balcony.",
+    fullDescription: "Bright room with a balcony and ocean views.",
+    amenities: ["Wi-Fi", "Balcony"],
+    images: ["https://example.test/room-101.jpg"],
+    beds: 1,
+    bedType: "King",
+    bedConfiguration: [{ bedType: "King", count: 1 }],
+    viewType: "Ocean View",
+  };
+  let servicePointFilter;
+  let servicePointProjection;
+
+  t.mock.method(Business, "findOne", (filter) => {
+    assert.deepEqual(filter, {
+      slug: "catalogue-hotel",
+      countryCode: "mt",
+    });
+    return mockQuery(hotel);
+  });
+  t.mock.method(ServicePoint, "find", (filter) => {
+    servicePointFilter = filter;
+    return {
+      select(projection) {
+        servicePointProjection = projection;
+        return this;
+      },
+      lean: async () => [room],
+    };
+  });
+
+  const response = createResponse();
+  await getBusinessBySlug(
+    {
+      params: {
+        countryCode: "mt",
+        slug: "catalogue-hotel",
+      },
+    },
+    response,
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(servicePointFilter, {
+    businessId: "hotel-a",
+    isActive: { $ne: false },
+    reservable: { $ne: false },
+  });
+  assert.match(servicePointProjection, /\broomType\b/);
+  assert.match(servicePointProjection, /\bpricePerNight\b/);
+  assert.match(servicePointProjection, /\bimages\b/);
+  assert.match(servicePointProjection, /\bbedConfiguration\b/);
+  assert.deepEqual(response.body.servicePoints, [room]);
+  assert.equal("stripeAccountId" in response.body, false);
 });
 
 test("public menu is tenant-scoped and hides unavailable items while owning staff can manage them", async (t) => {
