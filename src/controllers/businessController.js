@@ -1,6 +1,7 @@
 import Business from "../models/Business.js"
 import Order from "../models/order.js"
 import Plan from "../models/Plan.js"
+import ServicePoint, { normalizeRoomType } from "../models/ServicePoint.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
 import { generateSlugFromName } from "../utils/slugify.js"
@@ -10,6 +11,7 @@ import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, 
 import {
     attachBusinessCapabilities,
     getBusinessModuleCatalog,
+    resolveBusinessCapabilities,
     getDefaultBusinessModules,
     resolveBusinessModules,
     setBusinessModuleEnabled,
@@ -474,6 +476,157 @@ export async function updateTablePreferences(req, res) {
 
 const VALID_BUSINESS_TYPES = ["restaurant", "bar_lounge", "hotel"]
 const VALID_PLANS = ["basic", "starter", "growth", "pro"]
+
+export async function addHotelRoomType(req, res) {
+    try {
+        const { name } = req.body
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+
+        if (!name || typeof name !== "string" || name.trim() === "") {
+            return res.status(400).json({ message: "Room type name is required" })
+        }
+
+        const normalizedName = normalizeRoomType(name)
+        if (normalizedName.length > 80) {
+            return res.status(400).json({ message: "Room type name must not exceed 80 characters" })
+        }
+
+        const business = await Business.findOne({ businessId })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
+        }
+
+        if (resolveBusinessCapabilities(business).identity.shell !== "hotel") {
+            return res.status(403).json({ message: "Only hotels can manage room types" })
+        }
+
+        if (!business.hotelRoomTypes) {
+            business.hotelRoomTypes = []
+        }
+
+        // Room-type identity ignores case and repeated whitespace.
+        const existingIndex = business.hotelRoomTypes.findIndex(
+            rt => normalizeRoomType(rt.name)?.toLowerCase() === normalizedName.toLowerCase()
+        )
+
+        if (existingIndex !== -1) {
+            const existingRt = business.hotelRoomTypes[existingIndex]
+            if (existingRt.active) {
+                return res.status(400).json({ message: "A room type with this name already exists" })
+            } else {
+                // Reactivate previously deactivated room type
+                existingRt.active = true
+                await business.save()
+                return res.status(200).json({ roomType: existingRt })
+            }
+        }
+
+        const nextSortOrder = business.hotelRoomTypes.length > 0
+            ? Math.max(...business.hotelRoomTypes.map(rt => rt.sortOrder || 0)) + 1
+            : 1
+
+        const newRoomType = {
+            name: normalizedName,
+            sortOrder: nextSortOrder,
+            active: true,
+            isDefault: false
+        }
+
+        business.hotelRoomTypes.push(newRoomType)
+        await business.save()
+
+        return res.status(201).json({ roomType: business.hotelRoomTypes[business.hotelRoomTypes.length - 1] })
+    } catch (err) {
+        console.error("Add hotel room type error:", err)
+        return res.status(500).json({ message: "Server error" })
+    }
+}
+
+export async function removeHotelRoomType(req, res) {
+    try {
+        const { name } = req.query
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+
+        if (!name || typeof name !== "string" || name.trim() === "") {
+            return res.status(400).json({ message: "Room type name is required" })
+        }
+
+        const normalizedName = normalizeRoomType(name)
+        if (normalizedName.length > 80) {
+            return res.status(400).json({ message: "Room type name must not exceed 80 characters" })
+        }
+
+        const business = await Business.findOne({ businessId })
+        if (!business) {
+            return res.status(404).json({ message: "Business not found" })
+        }
+
+        if (resolveBusinessCapabilities(business).identity.shell !== "hotel") {
+            return res.status(403).json({ message: "Only hotels can manage room types" })
+        }
+
+        if (!business.hotelRoomTypes || business.hotelRoomTypes.length === 0) {
+            return res.status(404).json({ message: "Room type not found" })
+        }
+
+        const existingIndex = business.hotelRoomTypes.findIndex(
+            rt => normalizeRoomType(rt.name)?.toLowerCase() === normalizedName.toLowerCase()
+        )
+
+        if (existingIndex === -1) {
+            return res.status(404).json({ message: "Room type not found" })
+        }
+
+        const roomTypeObj = business.hotelRoomTypes[existingIndex]
+
+        // Rule: Default room types cannot be removed
+        if (roomTypeObj.isDefault) {
+            return res.status(400).json({ message: "Default room types cannot be removed" })
+        }
+
+        // Check if any ServicePoint for this business currently uses this roomType
+        const regexName = new RegExp(
+            `^${normalizedName
+                .split(" ")
+                .map(part => part.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&"))
+                .join("\\s+")}$`,
+            "i"
+        )
+        const inUseCount = await ServicePoint.countDocuments({
+            businessId,
+            roomType: regexName
+        })
+
+        if (inUseCount > 0) {
+            // Deactivate custom room type
+            business.hotelRoomTypes[existingIndex].active = false
+            await business.save()
+            return res.status(200).json({
+                message: `${roomTypeObj.name} is currently used by ${inUseCount} room(s). Removing it will hide it from future room-type selection, but existing rooms will keep their current room type.`,
+                deactivated: true,
+                inUseCount,
+                roomType: business.hotelRoomTypes[existingIndex]
+            })
+        } else {
+            // Hard remove from hotelRoomTypes
+            business.hotelRoomTypes.splice(existingIndex, 1)
+            await business.save()
+            return res.status(200).json({
+                message: "Room type removed successfully",
+                removed: true
+            })
+        }
+    } catch (err) {
+        console.error("Remove hotel room type error:", err)
+        return res.status(500).json({ message: "Server error" })
+    }
+}
 
 export async function createBusiness(req, res) {
     try {

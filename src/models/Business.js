@@ -4,6 +4,7 @@ import {
     getDefaultBusinessModules,
     validateBusinessModulesForType,
 } from "../services/businessCapabilityService.js"
+import { DEFAULT_HOTEL_ROOM_TYPES } from "../constants/hotelConstants.js"
 
 const OperatingDaySchema = new mongoose.Schema({
     enabled: { type: Boolean, default: true },
@@ -71,6 +72,13 @@ const BillingLifecycleClaimSchema = new mongoose.Schema({
     providerMessageId: { type: String, default: null },
 }, { _id: false })
 
+const HotelRoomTypeSchema = new mongoose.Schema({
+    name: { type: String, required: true, trim: true, maxlength: 80 },
+    sortOrder: { type: Number, default: 0 },
+    active: { type: Boolean, default: true },
+    isDefault: { type: Boolean, default: false }
+}, { _id: false })
+
 const BusinessSchema = new mongoose.Schema({
     businessId: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true },
@@ -126,6 +134,13 @@ const BusinessSchema = new mongoose.Schema({
     menuCategories: {
         type: [String],
         default: ["appetizers", "mains", "desserts", "beverages"]
+    },
+    hotelRoomTypes: {
+        type: [HotelRoomTypeSchema],
+        default: function defaultHotelRoomTypes() {
+            if (this.businessType !== "hotel") return undefined
+            return DEFAULT_HOTEL_ROOM_TYPES.map((type) => ({ ...type }))
+        }
     },
     // QuickServe MVP Billing & Plan Fields
     billingStatus: { 

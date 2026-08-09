@@ -5,6 +5,7 @@ import Plan from "../models/Plan.js";
 import { sendReservationRequestEmail, sendReservationRequestReceivedEmail } from "../utils/emailService.js";
 import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "../services/reservationPricingService.js";
 import { dispatchRestaurantReservationEmail } from "../services/email/emailDispatchService.js";
+import { validateReservationGuestCapacity } from "../services/reservationCapacityService.js";
 import { EMAIL_JOB_NAMES } from "../queues/index.js";
 
 const SERVABLE_STATUSES = ["active", "onboarding", "draft"];
@@ -373,6 +374,7 @@ export async function createReservation(req, res) {
     }
 
     // Validate + conflict-check for specific service points
+    let capacityServicePoints;
     if (servicePointId) {
       // The point must actually belong to this business and be reservable/active.
       const sp = await ServicePoint.findOne({
@@ -383,6 +385,18 @@ export async function createReservation(req, res) {
       }).lean();
       if (!sp) {
         return res.status(400).json({ error: "The selected service point is not available for reservations." });
+      }
+
+      capacityServicePoints = [sp];
+      const { capacity, valid } = validateReservationGuestCapacity({
+        guestCount: guests,
+        servicePoints: capacityServicePoints,
+        servicePointId,
+      });
+      if (!valid) {
+        return res.status(400).json({
+          error: "This service point accommodates a maximum of " + capacity + " guests.",
+        });
       }
 
       const existingReservation = await Reservation.findOne({
@@ -396,6 +410,22 @@ export async function createReservation(req, res) {
       
       if (existingReservation) {
         return res.status(409).json({ error: "This place is already booked for the selected date and time." });
+      }
+    } else {
+      capacityServicePoints = await ServicePoint.find({
+        businessId: business.businessId,
+        isActive: { $ne: false },
+        reservable: { $ne: false },
+      }).select("servicePointId capacity").lean();
+
+      const { capacity, valid } = validateReservationGuestCapacity({
+        guestCount: guests,
+        servicePoints: capacityServicePoints,
+      });
+      if (!valid) {
+        return res.status(400).json({
+          error: "Reservations cannot accommodate more than " + capacity + " guests.",
+        });
       }
     }
 

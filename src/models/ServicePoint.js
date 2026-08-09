@@ -73,7 +73,6 @@ const ServicePointSchema = new mongoose.Schema(
             type: Number,
             min: 1,
             default: null,
-            required: true,
         },
 
         // Whether this service point is currently in service
@@ -94,6 +93,11 @@ const ServicePointSchema = new mongoose.Schema(
         maxGuests: { type: Number, min: 1 },
         beds: { type: Number, min: 0 },
         bedType: { type: String, trim: true },
+        bedConfiguration: [{
+            bedType: { type: String, trim: true },
+            count: { type: Number, min: 1 }
+        }],
+        viewType: { type: String, trim: true },
         amenities: [{ type: String, trim: true }],
         images: [{ type: String, trim: true }],
     },

@@ -38,6 +38,26 @@ test("ServicePoint schema persists the canonical required type", () => {
     ])
 })
 
+test("ServicePoint capacity remains optional for hotel rooms", async () => {
+    const path = ServicePoint.schema.path("capacity")
+
+    assert.ok(path)
+    assert.notEqual(path.options.required, true)
+
+    const room = new ServicePoint({
+        servicePointId: "sp_room_without_capacity",
+        businessId: "hotel-1",
+        label: "Room 102",
+        code: "102",
+        servicePointType: "room",
+        roomType: "Deluxe",
+        maxGuests: 2,
+    })
+
+    await room.validate()
+    assert.equal(room.capacity, null)
+})
+
 test("room type is normalized and is valid only for room ServicePoints", async () => {
     assert.equal(
         normalizeRoomType("  Deluxe   Suite  "),
@@ -126,6 +146,9 @@ test("create ServicePoint persists the capability-resolved type", async () => {
             businessId: "hotel-1",
             businessType: "hotel",
             modules: ["lodging"],
+            hotelRoomTypes: [
+                { name: "Deluxe Suite", active: true },
+            ],
         }),
     })
     ServicePoint.findOne = async () => null
@@ -144,7 +167,8 @@ test("create ServicePoint persists the capability-resolved type", async () => {
                 body: {
                     label: "Room 101",
                     code: "101",
-                    capacity: 2,
+                    capacity: null,
+                    maxGuests: 2,
                     roomType: "  Deluxe   Suite ",
                 },
             },
@@ -154,6 +178,8 @@ test("create ServicePoint persists the capability-resolved type", async () => {
         assert.equal(response.statusCode, 201)
         assert.equal(created.servicePointType, "room")
         assert.equal(created.roomType, "Deluxe Suite")
+        assert.equal(created.capacity, 2)
+        assert.equal(created.maxGuests, 2)
         assert.equal(created.businessId, "hotel-1")
     } finally {
         Business.findOne = originalBusinessFindOne
@@ -174,6 +200,9 @@ test("update ServicePoint validates and persists a requested type", async () => 
             businessId: "hotel-1",
             businessType: "hotel",
             modules: ["lodging", "foodService"],
+            hotelRoomTypes: [
+                { name: "Junior Suite", active: true },
+            ],
         }),
     })
     ServicePoint.findOne = () => ({
@@ -203,6 +232,10 @@ test("update ServicePoint validates and persists a requested type", async () => 
                 body: {
                     servicePointType: "room",
                     roomType: "  Junior   Suite ",
+                    capacity: null,
+                    maxGuests: 3,
+                    bedConfiguration: [],
+                    viewType: null,
                 },
             },
             response
@@ -221,10 +254,117 @@ test("update ServicePoint validates and persists a requested type", async () => 
             captured.update.$set.roomType,
             "Junior Suite"
         )
+        assert.equal(captured.update.$set.capacity, 3)
+        assert.equal(captured.update.$set.maxGuests, 3)
+        assert.deepEqual(captured.update.$set.bedConfiguration, [])
+        assert.equal(captured.update.$set.beds, 0)
+        assert.equal(captured.update.$set.viewType, null)
     } finally {
         Business.findOne = originalBusinessFindOne
         ServicePoint.findOne = originalServicePointFindOne
         ServicePoint.findOneAndUpdate =
             originalFindOneAndUpdate
+    }
+})
+
+test("create ServicePoint rejects an unmanaged hotel room type", async () => {
+    const originalBusinessFindOne = Business.findOne
+    const originalServicePointFindOne = ServicePoint.findOne
+    let checkedForCollision = false
+
+    Business.findOne = () => ({
+        lean: async () => ({
+            businessId: "hotel-1",
+            businessType: "hotel",
+            modules: ["lodging"],
+            hotelRoomTypes: [
+                { name: "Deluxe", active: true },
+            ],
+        }),
+    })
+    ServicePoint.findOne = async () => {
+        checkedForCollision = true
+        return null
+    }
+
+    try {
+        const response = createResponse()
+        await createServicePoint(
+            {
+                session: {
+                    user: { businessId: "hotel-1" },
+                },
+                body: {
+                    label: "Room 102",
+                    code: "102",
+                    roomType: "Penthouse",
+                },
+            },
+            response
+        )
+
+        assert.equal(response.statusCode, 400)
+        assert.match(response.body.error, /active configured hotel room type/i)
+        assert.equal(checkedForCollision, false)
+    } finally {
+        Business.findOne = originalBusinessFindOne
+        ServicePoint.findOne = originalServicePointFindOne
+    }
+})
+
+test("update ServicePoint preserves its current inactive room type", async () => {
+    const originalBusinessFindOne = Business.findOne
+    const originalServicePointFindOne = ServicePoint.findOne
+    const originalFindOneAndUpdate = ServicePoint.findOneAndUpdate
+    let captured
+
+    Business.findOne = () => ({
+        lean: async () => ({
+            businessId: "hotel-1",
+            businessType: "hotel",
+            modules: ["lodging"],
+            hotelRoomTypes: [
+                { name: "Heritage Room", active: false },
+            ],
+        }),
+    })
+    ServicePoint.findOne = () => ({
+        lean: async () => ({
+            servicePointId: "sp_legacy",
+            businessId: "hotel-1",
+            servicePointType: "room",
+            roomType: "Heritage Room",
+        }),
+    })
+    ServicePoint.findOneAndUpdate = async (filter, update) => {
+        captured = { filter, update }
+        return { servicePointId: "sp_legacy", ...update.$set }
+    }
+
+    try {
+        const response = createResponse()
+        await updateServicePoint(
+            {
+                session: { user: { businessId: "hotel-1" } },
+                params: { servicePointId: "sp_legacy" },
+                body: {
+                    roomType: "  heritage   room ",
+                    maxGuests: 4,
+                },
+            },
+            response
+        )
+
+        assert.equal(response.statusCode, 200)
+        assert.equal(captured.update.$set.roomType, "Heritage Room")
+        assert.equal(captured.update.$set.capacity, 4)
+        assert.deepEqual(captured.filter, {
+            servicePointId: "sp_legacy",
+            businessId: "hotel-1",
+        })
+    } finally {
+        Business.findOne = originalBusinessFindOne
+        ServicePoint.findOne = originalServicePointFindOne
+        ServicePoint.findOneAndUpdate = originalFindOneAndUpdate
     }
 })

@@ -1,5 +1,5 @@
 import express from "express"
-import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory } from "../controllers/businessController.js"
+import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory, addHotelRoomType, removeHotelRoomType } from "../controllers/businessController.js"
 
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
 
@@ -193,5 +193,16 @@ router.post("/categories", requireManager, addCategory)
  *         description: Category removed successfully
  */
 router.delete("/categories", requireManager, removeCategory)
+
+/**
+ * @openapi
+ * /business/room-types:
+ *   post:
+ *     summary: Add a custom hotel room type (Owner only)
+ *     tags:
+ *       - Business Settings
+ */
+router.post("/room-types", requireOwner, addHotelRoomType)
+router.delete("/room-types", requireOwner, removeHotelRoomType)
 
 export default router

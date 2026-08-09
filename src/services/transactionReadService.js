@@ -56,8 +56,10 @@ export function buildTransactionFilters({ businessId, createdAt, search = "" }) 
 }
 
 export function toOrderTransaction(order) {
+    const servicePointId = order.servicePointId || order.servicePointLabel
     return {
         ...order,
+        ...(servicePointId ? { servicePointId } : {}),
         sourceType: "order",
         transactionId: order.orderId,
     }

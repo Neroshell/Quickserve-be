@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import Order from "../src/models/order.js"
 import Reservation from "../src/models/Reservation.js"
+import ReservationRefund from "../src/models/ReservationRefund.js"
 import ServicePoint from "../src/models/ServicePoint.js"
 import {
     ownerOrders,
@@ -76,7 +77,7 @@ test("owner transactions reshape orders without changing reservation labels or q
     }))
     t.mock.method(Reservation, "find", () => ({
         lean: async () => [{
-            _id: "reservation12345678",
+            _id: "64b000000000000000000001",
             publicReference: "BOOKING-123",
             servicePointId: "sp_suite_101",
             servicePointLabel: "Suite 101",
@@ -84,6 +85,9 @@ test("owner transactions reshape orders without changing reservation labels or q
             status: "confirmed",
             createdAt: new Date("2026-07-27T09:00:00.000Z"),
         }],
+    }))
+    t.mock.method(ReservationRefund, "find", () => ({
+        lean: async () => [],
     }))
     t.mock.method(ServicePoint, "find", () => {
         servicePointLookups += 1

@@ -27,6 +27,7 @@
     "migrate:collections": "node scripts/migrate-collection-names.js",
     "migrate:collections:rollback": "node scripts/rollback-collection-names.js",
     "modules:backfill": "node scripts/backfill-business-modules.js",
+    "backfill:hotel-room-types": "node scripts/backfill-hotel-room-types.js",
     "plan:seed": "npm run seed",
     "setup:payment-plans": "npm run seed && npm run billing:bootstrap",
     "setup:db": "npm run setup:payment-plans"

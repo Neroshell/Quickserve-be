@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { render } from "@react-email/render";
 import Stripe from "stripe";
+process.env.BULLMQ_EMAILS_ENABLED = "false";
 
 process.env.REDIS_URL = "";
 process.env.STRIPE_SECRET_KEY = "sk_test_order_receipt";

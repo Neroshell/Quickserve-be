@@ -30,6 +30,72 @@ export function resolveAllowedServicePointType(
         : null
 }
 
+function parseNumericField(value, field, { min, integer = false } = {}) {
+    if (value === null || value === "") return { value: null }
+
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) {
+        return { error: `${field} must be a valid number` }
+    }
+    if (integer && !Number.isInteger(parsed)) {
+        return { error: `${field} must be a whole number` }
+    }
+    if (min !== undefined && parsed < min) {
+        return { error: `${field} must be at least ${min}` }
+    }
+    return { value: parsed }
+}
+
+function normalizeOptionalText(value, field) {
+    if (value === null) return { value: null }
+    if (typeof value !== "string") {
+        return { error: `${field} must be a string` }
+    }
+    return { value: value.trim() || null }
+}
+
+function normalizeBedConfiguration(value) {
+    if (!Array.isArray(value)) {
+        return { error: "bedConfiguration must be an array" }
+    }
+
+    const seenBedTypes = new Set()
+    const normalized = []
+    for (const entry of value) {
+        if (!entry || typeof entry.bedType !== "string" || !entry.bedType.trim()) {
+            return { error: "Each bed configuration entry requires a bedType" }
+        }
+        const count = Number(entry.count)
+        if (!Number.isInteger(count) || count < 1) {
+            return { error: "Each bed configuration count must be a positive whole number" }
+        }
+
+        const bedType = entry.bedType.trim()
+        const bedTypeKey = bedType.toLowerCase()
+        if (seenBedTypes.has(bedTypeKey)) {
+            return { error: "bedConfiguration cannot contain duplicate bed types" }
+        }
+        seenBedTypes.add(bedTypeKey)
+        normalized.push({ bedType, count })
+    }
+
+    return { value: normalized }
+}
+
+function resolveManagedRoomType(business, requestedRoomType, currentRoomType = null) {
+    if (requestedRoomType === null) return null
+
+    const requestedKey = requestedRoomType.toLowerCase()
+    const configured = business.hotelRoomTypes?.find(
+        roomType => normalizeRoomType(roomType.name)?.toLowerCase() === requestedKey
+    )
+    if (configured && configured.active !== false) return configured.name
+    if (normalizeRoomType(currentRoomType)?.toLowerCase() === requestedKey) {
+        return currentRoomType
+    }
+
+    return undefined
+}
 // ─── Controllers ──────────────────────────────────────────────────────────────
 
 /**
@@ -108,15 +174,19 @@ export async function createServicePoint(req, res) {
             amenities,
             images,
             beds,
+            bedType,
+            bedConfiguration,
+            viewType,
+            maxGuests,
             roomType,
             servicePointType: requestedServicePointType,
         } = req.body
 
-        if (!label || !label.trim()) {
+        if (typeof label !== "string" || !label.trim()) {
             return res.status(400).json({ error: "label is required" })
         }
 
-        if (!code || !code.trim()) {
+        if (typeof code !== "string" || !code.trim()) {
             return res.status(400).json({ error: "code is required" })
         }
 
@@ -133,6 +203,9 @@ export async function createServicePoint(req, res) {
         if (!servicePointType) {
             return res.status(400).json({ error: "servicePointType is not enabled for this business" })
         }
+        if (roomType !== undefined && roomType !== null && typeof roomType !== "string") {
+            return res.status(400).json({ error: "roomType must be a string" })
+        }
         const normalizedRoomType = normalizeRoomType(roomType)
         if (
             servicePointType !== "room" &&
@@ -141,6 +214,15 @@ export async function createServicePoint(req, res) {
             return res.status(400).json({
                 error: "roomType is only available for room ServicePoints",
             })
+        }
+        let resolvedRoomType = null
+        if (servicePointType === "room" && normalizedRoomType !== null) {
+            resolvedRoomType = resolveManagedRoomType(business, normalizedRoomType)
+            if (resolvedRoomType === undefined) {
+                return res.status(400).json({
+                    error: "roomType must be an active configured hotel room type",
+                })
+            }
         }
 
         // Generate a unique stable ID (retry on collision)
@@ -157,23 +239,74 @@ export async function createServicePoint(req, res) {
             return res.status(500).json({ error: "Failed to generate service point ID" })
         }
 
+        const parsedCapacity = capacity !== undefined
+            ? parseNumericField(capacity, "capacity", { min: 1, integer: true })
+            : { value: undefined }
+        const parsedMaxGuests = maxGuests !== undefined
+            ? parseNumericField(maxGuests, "maxGuests", { min: 1, integer: true })
+            : { value: undefined }
+        const parsedPrice = pricePerNight !== undefined
+            ? parseNumericField(pricePerNight, "pricePerNight", { min: 0 })
+            : { value: undefined }
+        const parsedBeds = beds !== undefined
+            ? parseNumericField(beds, "beds", { min: 0, integer: true })
+            : { value: undefined }
+        const parsedBedConfiguration = bedConfiguration !== undefined
+            ? normalizeBedConfiguration(bedConfiguration)
+            : { value: undefined }
+        const parsedBedType = bedType !== undefined
+            ? normalizeOptionalText(bedType, "bedType")
+            : { value: undefined }
+        const parsedViewType = viewType !== undefined
+            ? normalizeOptionalText(viewType, "viewType")
+            : { value: undefined }
+        const parsedDescription = description !== undefined
+            ? normalizeOptionalText(description, "description")
+            : { value: undefined }
+
+        const validationError = [
+            parsedCapacity,
+            parsedMaxGuests,
+            parsedPrice,
+            parsedBeds,
+            parsedBedConfiguration,
+            parsedBedType,
+            parsedViewType,
+            parsedDescription,
+        ].find(result => result.error)?.error
+        if (validationError) {
+            return res.status(400).json({ error: validationError })
+        }
+
+        const resolvedCapacity = servicePointType === "room" && parsedMaxGuests.value != null
+            ? parsedMaxGuests.value
+            : capacity !== undefined && capacity !== null && capacity !== ""
+                ? parsedCapacity.value
+                : null
+
+        const resolvedBedConfiguration = parsedBedConfiguration.value
+        const resolvedBeds = resolvedBedConfiguration !== undefined
+            ? resolvedBedConfiguration.reduce((sum, entry) => sum + entry.count, 0)
+            : parsedBeds.value
+
         const sp = await ServicePoint.create({
             servicePointId,
             businessId,
             label: label.trim(),
             code: code?.trim() || "",
             servicePointType,
-            roomType:
-                servicePointType === "room"
-                    ? normalizedRoomType
-                    : null,
-            capacity: capacity ? Number(capacity) : null,
+            roomType: servicePointType === "room" ? resolvedRoomType : null,
+            capacity: resolvedCapacity,
             isActive: true,
-            pricePerNight: pricePerNight !== undefined ? Number(pricePerNight) : undefined,
-            fullDescription: description?.trim() || undefined,
+            pricePerNight: parsedPrice.value,
+            fullDescription: parsedDescription.value,
             amenities: Array.isArray(amenities) ? amenities : undefined,
             images: Array.isArray(images) ? images : undefined,
-            beds: beds !== undefined ? Number(beds) : undefined,
+            beds: resolvedBeds,
+            bedType: parsedBedType.value,
+            bedConfiguration: resolvedBedConfiguration,
+            viewType: parsedViewType.value,
+            maxGuests: parsedMaxGuests.value,
         })
 
         return res.status(201).json(sp)
@@ -207,27 +340,37 @@ export async function updateServicePoint(req, res) {
             amenities,
             images,
             beds,
+            bedType,
+            bedConfiguration,
+            viewType,
+            maxGuests,
             roomType,
             servicePointType: requestedServicePointType,
         } = req.body
 
         const updates = {}
         if (label !== undefined) {
-            if (!label.trim()) return res.status(400).json({ error: "label cannot be empty" })
+            if (typeof label !== "string" || !label.trim()) return res.status(400).json({ error: "label cannot be empty" })
             updates.label = label.trim()
         }
         if (code !== undefined) {
-            if (!code.trim()) return res.status(400).json({ error: "code cannot be empty" })
+            if (typeof code !== "string" || !code.trim()) return res.status(400).json({ error: "code cannot be empty" })
             updates.code = code.trim()
         }
         if (capacity !== undefined) {
-            updates.capacity = capacity === null || capacity === "" ? null : Number(capacity)
+            const parsed = parseNumericField(capacity, "capacity", { min: 1, integer: true })
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.capacity = parsed.value
         }
         if (pricePerNight !== undefined) {
-            updates.pricePerNight = pricePerNight === null || pricePerNight === "" ? null : Number(pricePerNight)
+            const parsed = parseNumericField(pricePerNight, "pricePerNight", { min: 0 })
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.pricePerNight = parsed.value
         }
         if (description !== undefined) {
-            updates.fullDescription = description.trim()
+            const parsed = normalizeOptionalText(description, "description")
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.fullDescription = parsed.value || ""
         }
         if (amenities !== undefined && Array.isArray(amenities)) {
             updates.amenities = amenities
@@ -235,8 +378,31 @@ export async function updateServicePoint(req, res) {
         if (images !== undefined && Array.isArray(images)) {
             updates.images = images
         }
-        if (beds !== undefined) {
-            updates.beds = beds === null || beds === "" ? null : Number(beds)
+        if (bedConfiguration !== undefined) {
+            const parsed = normalizeBedConfiguration(bedConfiguration)
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.bedConfiguration = parsed.value
+            updates.beds = parsed.value.reduce((sum, entry) => sum + entry.count, 0)
+        } else if (beds !== undefined) {
+            const parsed = parseNumericField(beds, "beds", { min: 0, integer: true })
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.beds = parsed.value
+        }
+        if (bedType !== undefined) {
+            const parsed = normalizeOptionalText(bedType, "bedType")
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.bedType = parsed.value
+        }
+        if (viewType !== undefined) {
+            const parsed = normalizeOptionalText(viewType, "viewType")
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.viewType = parsed.value
+        }
+        if (maxGuests !== undefined) {
+            const parsed = parseNumericField(maxGuests, "maxGuests", { min: 1, integer: true })
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.maxGuests = parsed.value
+            updates.capacity = updates.maxGuests
         }
         if (
             requestedServicePointType !== undefined ||
@@ -252,17 +418,18 @@ export async function updateServicePoint(req, res) {
                 })
             }
 
+            const business = await Business.findOne({
+                businessId,
+            }).lean()
+            if (!business) {
+                return res.status(404).json({
+                    error: "Business not found",
+                })
+            }
+
             let finalServicePointType =
                 current.servicePointType
             if (requestedServicePointType !== undefined) {
-                const business = await Business.findOne({
-                    businessId,
-                }).lean()
-                if (!business) {
-                    return res.status(404).json({
-                        error: "Business not found",
-                    })
-                }
                 finalServicePointType =
                     resolveAllowedServicePointType(
                         business,
@@ -278,6 +445,9 @@ export async function updateServicePoint(req, res) {
             }
 
             if (roomType !== undefined) {
+                if (roomType !== null && typeof roomType !== "string") {
+                    return res.status(400).json({ error: "roomType must be a string" })
+                }
                 const normalizedRoomType =
                     normalizeRoomType(roomType)
                 if (
@@ -288,10 +458,19 @@ export async function updateServicePoint(req, res) {
                         error: "roomType is only available for room ServicePoints",
                     })
                 }
-                updates.roomType =
-                    finalServicePointType === "room"
-                        ? normalizedRoomType
-                        : null
+                if (finalServicePointType === "room") {
+                    const managedRoomType = resolveManagedRoomType(
+                        business,
+                        normalizedRoomType,
+                        current.roomType
+                    )
+                    if (managedRoomType === undefined) {
+                        return res.status(400).json({ error: "roomType must be an active configured hotel room type" })
+                    }
+                    updates.roomType = managedRoomType
+                } else {
+                    updates.roomType = null
+                }
             } else if (
                 requestedServicePointType !== undefined &&
                 finalServicePointType !== "room"

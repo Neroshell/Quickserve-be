@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 process.env.REDIS_URL = "";
+process.env.BULLMQ_EMAILS_ENABLED = "false";
 process.env.STRIPE_SECRET_KEY = "sk_test_restaurant_flow";
 process.env.STRIPE_WEBHOOK_SECRET = "whsec_restaurant_flow";
 process.env.RESEND_API_KEY = "re_test_restaurant_flow";
