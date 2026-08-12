@@ -8,6 +8,7 @@ import { sendOnboardingVerificationCode } from '../utils/emailService.js'
 import { isCountryResolutionError, resolveCountryMetadata, validateCountryMetadataPayload } from '../utils/countryHelper.js'
 import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from '../utils/emailAvailability.js'
 import { getDefaultBusinessModules } from '../services/businessCapabilityService.js'
+import { establishOwnerSession } from './authController.js'
 
 const VERIFICATION_CODE_TTL_MS = 30 * 60 * 1000
 
@@ -395,20 +396,8 @@ export async function completeOnboarding(req, res) {
             // Post-signup Tracking
             onboardingCompleted: false, // Dashboard setup not yet finished
             onboardingStartedAt: session.createdAt,
-            onboardingCompletedAt: new Date(),
+            onboardingCompletedAt: null,
             
-            // Pre-fill setup checklist based on sensible defaults
-            setupChecklist: {
-                businessProfileCompleted: false,
-                operatingHoursCompleted: false,
-                preferencesCompleted: false,
-                billingCardCompleted: false,
-                stripeConnectCompleted: false,
-                servicePointsCompleted: false,
-                menuCompleted: false,
-                teamCompleted: false,
-                previewCompleted: false
-            },
             setupProgress: {
                 setupGuideDismissed: false
             }
@@ -417,11 +406,12 @@ export async function completeOnboarding(req, res) {
         // Clean up session
         await OnboardingSession.deleteOne({ _id: session._id })
 
-        return res.status(201).json({
+        return establishOwnerSession(req, res, business, {
+            success: true,
             message: "Business created successfully",
             businessId: business.businessId,
             slug: business.slug
-        })
+        });
     } catch (err) {
         console.error("Complete onboarding error:", err)
         return res.status(500).json({ message: "Server error creating business" })

@@ -10,6 +10,7 @@
     "test:capabilities": "node --test test/businessCapabilityService.test.js",
     "test:pricing": "node --test test/pricingService.test.js test/hotelPricingEmail.test.js",
     "test:hotel-flow": "node --test test/hotelReservationFlow.test.js",
+    "test:phase1": "node --test test/phase1SetupProgress.test.js",
     "test:order-receipt": "node --test test/orderReceiptFlow.test.js",
     "test:restaurant-flow": "node --test test/restaurantFlow.test.js test/orderReceiptFlow.test.js",
     "test:lodging-analytics": "node --test test/lodgingAnalyticsService.test.js",

@@ -274,12 +274,14 @@ const BusinessSchema = new mongoose.Schema({
     hotelSettings: { type: HotelSettingsSchema, default: () => ({}) },
     
     // Post-signup Onboarding Tracking
+    // Note: onboardingCompleted represents 'required operational setup complete'. 
     onboardingCompleted: { type: Boolean, default: false },
     onboardingStep: { type: String, default: null },
     onboardingStartedAt: { type: Date, default: null },
     onboardingCompletedAt: { type: Date, default: null },
    
-    
+    // @deprecated - Phase 1 roadmap: setupChecklist is dead. 
+    // Data is preserved for backward compatibility but no longer updated.
     setupChecklist: {
         businessProfileCompleted: { type: Boolean, default: false },
         operatingHoursCompleted: { type: Boolean, default: false },

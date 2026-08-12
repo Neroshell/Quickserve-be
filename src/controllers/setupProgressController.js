@@ -3,26 +3,18 @@ import MenuItem from "../models/menuItem.js"
 import Order from "../models/order.js"
 import ServicePoint from "../models/ServicePoint.js"
 import Staff from "../models/Staff.js"
-
-const BRANDING_PLANS = new Set(["growth", "pro"])
-
-const DEFAULT_BRANDING = {
-    primaryColor: "#EA601A",
-    secondaryColor: "#2B304C",
-    accentColor: "#FB923C",
-    backgroundColor: "#F8F9FA"
-}
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 
 const BUSINESS_SELECT = [
     "businessId",
+    "businessType",
     "currentPlan",
     "plan",
     "stripeOnboardingComplete",
     "stripeChargesEnabled",
     "stripePayoutsEnabled",
     "defaultPaymentMethodId",
-    "logoUrl",
-    "branding",
+    "operatingHours",
     "setupProgress"
 ].join(" ")
 
@@ -30,148 +22,216 @@ function hasText(value) {
     return typeof value === "string" && value.trim().length > 0
 }
 
-function normalizePlan(business) {
-    return String(business.currentPlan || business.plan || "basic").toLowerCase()
-}
+function buildTasks(business, counts, capabilities) {
+    const isHotel = capabilities.identity.shell === "hotel";
+    const hasFoodService = capabilities.visibleModules.includes("foodService");
 
-function hasChangedBrandColor(branding = {}) {
-    return Object.entries(DEFAULT_BRANDING).some(([field, defaultValue]) => {
-        return hasText(branding[field]) && branding[field] !== defaultValue
-    })
-}
+    const stripeConnected = business.stripeOnboardingComplete === true ||
+        (business.stripeChargesEnabled === true && business.stripePayoutsEnabled === true);
+    
+    const offlinePaymentsConfigured = hasText(business.defaultPaymentMethodId);
 
-function hasConfiguredBranding(business) {
-    const branding = business.branding || {}
+    const tasks = [];
+    let stage = 1;
 
-    return Boolean(
-        hasText(business.logoUrl) ||
-        hasText(branding.logoUrl) ||
-        hasText(branding.coverImageUrl) ||
-        hasChangedBrandColor(branding)
-    )
-}
+    // 1. Where customers order
+    const servicePointLabel = isHotel ? "room" : "table";
+    tasks.push({
+        id: "service_point",
+        stage: stage++,
+        title: `Add your first ${servicePointLabel}`,
+        description: `Customers need a ${servicePointLabel} before they can start an order.`,
+        href: "/owner/service-points?create=1",
+        classification: "required",
+        completed: counts.servicePointCount > 0
+    });
 
-function buildSetupProgressResponse(business, counts) {
-    const plan = normalizePlan(business)
-    const brandingEligible = BRANDING_PLANS.has(plan)
-
-    const tasks = {
-        stripeConnected: business.stripeOnboardingComplete === true ||
-            (business.stripeChargesEnabled === true && business.stripePayoutsEnabled === true),
-        billingCardAdded: hasText(business.defaultPaymentMethodId),
-        menuItemAdded: counts.menuItemCount > 0,
-        servicePointCreated: counts.servicePointCount > 0,
-        brandingConfigured: brandingEligible && hasConfiguredBranding(business),
-        staffInvited: counts.staffCount > 0,
-        firstOrderPlaced: counts.orderCount > 0
+    // 2. Readiness / Menu
+    if (hasFoodService) {
+        tasks.push({
+            id: "menu_item",
+            stage: stage++,
+            title: "Create your first menu item",
+            description: "Add items for your customers to order.",
+            href: "/owner/menu?create=1",
+            classification: "required",
+            completed: counts.menuItemCount > 0
+        });
+    } else if (isHotel) {
+        tasks.push({
+            id: "room_readiness",
+            stage: stage++,
+            title: "Set your room pricing",
+            description: "Rooms must have pricing and capacity to be booked.",
+            href: "/owner/service-points",
+            classification: "required",
+            completed: counts.readyRoomCount > 0
+        });
     }
 
-    const eligibleTaskKeys = [
-        "stripeConnected",
-        "billingCardAdded",
-        "menuItemAdded",
-        "servicePointCreated",
-        ...(brandingEligible ? ["brandingConfigured"] : []),
-        "staffInvited",
-        "firstOrderPlaced"
-    ]
+    // 3. Team (restaurant only)
+    if (!isHotel) {
+        tasks.push({
+            id: "team",
+            stage: stage++,
+            title: "Create your first staff member",
+            description: "Add your team members to help manage orders.",
+            href: "/owner/staff?create=1",
+            classification: "recommended",
+            completed: counts.staffCount > 0
+        });
+    }
 
-    const completedCount = eligibleTaskKeys.filter((key) => tasks[key]).length
-    const totalEligibleTasks = eligibleTaskKeys.length
+    // 4. Offline Payments (restaurant only)
+    if (!isHotel) {
+        tasks.push({
+            id: "payments_offline",
+            stage: stage++,
+            title: "Set up offline payments",
+            description: "Add a card to receive offline commission invoices.",
+            href: "/owner/billing?action=add-card",
+            classification: "recommended",
+            completed: offlinePaymentsConfigured
+        });
+    }
+
+    // 5. Online Payments
+    tasks.push({
+        id: "payments_online",
+        stage: stage++,
+        title: "Set up online payments",
+        description: "Connect your bank to receive online payments.",
+        href: "/owner/billing?tab=payouts",
+        classification: isHotel ? "required" : "recommended",
+        completed: stripeConnected
+    });
+
+    // Hotel only: Verify booking
+    if (isHotel) {
+        tasks.push({
+            id: "verify",
+            stage: stage++,
+            title: "Test your first booking",
+            description: "Make sure everything works by placing a test booking.",
+            href: "/",
+            classification: "verification",
+            completed: counts.orderCount > 0
+        });
+    }
+
+    return tasks;
+}
+
+function buildSetupProgressResponse(business, counts, capabilities) {
+    const tasks = buildTasks(business, counts, capabilities);
+
+    const requiredTasks = tasks.filter(t => t.classification === "required");
+    const completedRequiredCount = requiredTasks.filter(t => t.completed).length;
+    
+    // The tracker visually represents all core steps in the sequence
+    const totalCoreCount = tasks.length;
+    const completedCoreCount = tasks.filter(t => t.completed).length;
+    
+    // Completion of the setup journey requires ALL tasks in the sequence to be done
+    const complete = completedCoreCount === totalCoreCount;
+    
+    let nextAction = null;
+    // Next action points to the first uncompleted task in the entire journey
+    for (const task of tasks) {
+        if (!task.completed) {
+            nextAction = task;
+            break;
+        }
+    }
 
     return {
-        title: "Business Setup",
+        title: "Setup Progress",
         subtitle: "Get Ready to Accept Orders",
-        estimatedSetupTime: "5-10 minutes",
-        plan,
         tasks,
-        eligibility: {
-            branding: brandingEligible
-        },
-        lockedTasks: {
-            branding: brandingEligible ? null : {
-                reason: "Growth or Pro required",
-                actionLabel: "Upgrade Plan"
-            }
-        },
-        completedCount,
-        totalEligibleTasks,
-        progressPercent: totalEligibleTasks === 0
-            ? 0
-            : Math.round((completedCount / totalEligibleTasks) * 100),
-        complete: completedCount === totalEligibleTasks,
+        nextAction,
+        completedRequiredCount,
+        totalRequiredCount: requiredTasks.length,
+        completedCoreCount,
+        totalCoreCount,
+        progressPercent: totalCoreCount === 0 ? 100 : Math.round((completedCoreCount / totalCoreCount) * 100),
+        complete,
         dismissed: business.setupProgress?.setupGuideDismissed === true,
         counts
-    }
+    };
 }
 
 async function getSetupProgressData(businessId) {
-    const business = await Business.findOne({ businessId }).select(BUSINESS_SELECT).lean()
+    const business = await Business.findOne({ businessId }).select(BUSINESS_SELECT).lean();
     if (!business) {
-        return null
+        return null;
     }
 
+    const capabilities = resolveBusinessCapabilities(business);
+    
     const [
         menuItemCount,
         servicePointCount,
+        readyRoomCount,
         staffCount,
         orderCount
     ] = await Promise.all([
         MenuItem.countDocuments({ businessId }),
         ServicePoint.countDocuments({ businessId }),
+        ServicePoint.countDocuments({ businessId, servicePointType: "room", pricePerNight: { $gt: 0 }, maxGuests: { $gt: 0 } }),
         Staff.countDocuments({ businessId, accountStatus: { $ne: "disabled" } }),
         Order.countDocuments({ businessId })
-    ])
+    ]);
 
     const counts = {
         menuItemCount,
         servicePointCount,
+        readyRoomCount,
         staffCount,
         orderCount
-    }
+    };
 
     return {
         business,
-        progress: buildSetupProgressResponse(business, counts)
-    }
+        progress: buildSetupProgressResponse(business, counts, capabilities)
+    };
 }
 
 export async function getSetupProgress(req, res) {
     try {
-        const businessId = req.session?.user?.businessId
+        const businessId = req.session?.user?.businessId;
         if (!businessId) {
-            return res.status(401).json({ error: "Unauthorized" })
+            return res.status(401).json({ error: "Unauthorized" });
         }
 
-        const data = await getSetupProgressData(businessId)
+        const data = await getSetupProgressData(businessId);
         if (!data) {
-            return res.status(404).json({ error: "Business not found" })
+            return res.status(404).json({ error: "Business not found" });
         }
 
-        return res.json(data.progress)
+        return res.json(data.progress);
     } catch (err) {
-        console.error("[getSetupProgress]", err)
-        return res.status(500).json({ error: "Server error fetching setup progress" })
+        console.error("[getSetupProgress]", err);
+        return res.status(500).json({ error: "Server error fetching setup progress" });
     }
 }
 
 export async function dismissSetupGuide(req, res) {
     try {
-        const businessId = req.session?.user?.businessId
+        const businessId = req.session?.user?.businessId;
         if (!businessId) {
-            return res.status(401).json({ error: "Unauthorized" })
+            return res.status(401).json({ error: "Unauthorized" });
         }
 
-        const data = await getSetupProgressData(businessId)
+        const data = await getSetupProgressData(businessId);
         if (!data) {
-            return res.status(404).json({ error: "Business not found" })
+            return res.status(404).json({ error: "Business not found" });
         }
 
         if (!data.progress.complete) {
             return res.status(400).json({
-                error: "Setup guide can only be dismissed after all eligible tasks are complete",
+                error: "Setup guide can only be dismissed after all required tasks are complete",
                 setupProgress: data.progress
-            })
+            });
         }
 
         await Business.updateOne(
@@ -184,15 +244,15 @@ export async function dismissSetupGuide(req, res) {
                     onboardingCompletedAt: new Date()
                 }
             }
-        )
+        );
 
-        const updatedData = await getSetupProgressData(businessId)
+        const updatedData = await getSetupProgressData(businessId);
         return res.json({
             message: "Setup guide dismissed",
             setupProgress: updatedData.progress
-        })
+        });
     } catch (err) {
-        console.error("[dismissSetupGuide]", err)
-        return res.status(500).json({ error: "Server error dismissing setup guide" })
+        console.error("[dismissSetupGuide]", err);
+        return res.status(500).json({ error: "Server error dismissing setup guide" });
     }
 }

@@ -174,6 +174,44 @@ export async function setupStaffPassword(req, res) {
     }
 }
 
+export function establishOwnerSession(req, res, business, successResponse = null) {
+    const userObj = {
+        type: "owner",
+        userId: business._id.toString(),
+        name: business.ownerName,
+        email: business.ownerEmail,
+        role: "owner",
+        businessId: business.businessId || business.businessId
+    };
+
+    return new Promise((resolve, reject) => {
+        req.session.regenerate((err) => {
+            if (err) {
+                console.error("[session] Regenerate error:", err.message);
+                return reject(err);
+            }
+            req.session.user = userObj;
+            req.session.save((err) => {
+                if (err) {
+                    console.error("[session] Save error:", err.message);
+                    return reject(err);
+                }
+                
+                const responsePayload = successResponse || {
+                    message: "Login successful",
+                    type: "owner",
+                    businessId: business.businessId || business.businessId,
+                    ownerName: business.ownerName,
+                    ownerEmail: business.ownerEmail,
+                    displayName: business.displayName
+                };
+                
+                resolve(res.json(responsePayload));
+            });
+        });
+    });
+}
+
 /**
  * Unified login for both owners and staff
  * POST /auth/login
@@ -200,38 +238,14 @@ export async function loginUser(req, res) {
                 return res.status(401).json({ message: "Invalid credentials" });
             }
 
-            const userObj = {
+            return establishOwnerSession(req, res, business, {
+                message: "Login successful",
                 type: "owner",
-                userId: business._id.toString(),
-                name: business.ownerName,
-                email: business.ownerEmail,
-                role: "owner",
-                businessId: business.businessId || business.businessId
-            };
-
-            return new Promise((resolve, reject) => {
-                req.session.regenerate((err) => {
-                    if (err) {
-                        console.error("[login] Session regenerate error:", err.message);
-                        return reject(err);
-                    }
-                    req.session.user = userObj;
-                    req.session.save((err) => {
-                        if (err) {
-                            console.error("[login] Session save error:", err.message);
-                            return reject(err);
-                        }
-                        resolve(res.json({
-                            message: "Login successful",
-                            type: "owner",
-                            businessId: business.businessId || business.businessId,
-                            businessId: business.businessId || business.businessId,
-                            ownerName: business.ownerName,
-                            ownerEmail: business.ownerEmail,
-                            displayName: business.displayName
-                        }));
-                    });
-                });
+                businessId: business.businessId || business.businessId,
+                businessId: business.businessId || business.businessId,
+                ownerName: business.ownerName,
+                ownerEmail: business.ownerEmail,
+                displayName: business.displayName
             });
         }
 
