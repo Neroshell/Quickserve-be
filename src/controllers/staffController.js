@@ -3,6 +3,7 @@ import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
 import { hashToken } from "../utils/tokenHash.js"
 import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
+import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
 
@@ -179,6 +180,8 @@ export async function createStaff(req, res) {
             inviteTokenExpires
         })
 
+        await invalidateSetupProgress(businessId)
+
         // Send invitation email
         const frontendUrl = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
         const inviteLink = `${frontendUrl}/staff/setup-account?token=${inviteToken}`
@@ -227,6 +230,8 @@ export async function deleteStaff(req, res) {
         if (!result) {
             return res.status(404).json({ error: "Staff member not found" })
         }
+
+        await invalidateSetupProgress(businessId)
 
         return res.json({ message: "Staff member removed successfully" })
     } catch (err) {

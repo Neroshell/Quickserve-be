@@ -4,6 +4,17 @@ import ServicePoint, {
 } from "../models/ServicePoint.js"
 import Business from "../models/Business.js"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
+import {
+    invalidatePublicBusinessForBusinessId,
+    invalidatePublicBusinessRoute,
+    invalidateSetupProgress,
+} from "../services/cacheInvalidationService.js"
+
+const PUBLIC_SERVICE_POINT_SOURCE_FIELDS = new Set([
+    "label", "servicePointType", "roomType", "capacity", "pricePerNight",
+    "currency", "description", "fullDescription", "amenities", "images", "beds",
+    "bedType", "bedConfiguration", "viewType", "maxGuests",
+])
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -309,6 +320,11 @@ export async function createServicePoint(req, res) {
             maxGuests: parsedMaxGuests.value,
         })
 
+        await Promise.all([
+            invalidateSetupProgress(businessId),
+            invalidatePublicBusinessRoute(business.countryCode, business.slug),
+        ])
+
         return res.status(201).json(sp)
     } catch (err) {
         console.error("[createServicePoint]", err)
@@ -404,6 +420,7 @@ export async function updateServicePoint(req, res) {
             updates.maxGuests = parsed.value
             updates.capacity = updates.maxGuests
         }
+        let businessForPublicRoute = null
         if (
             requestedServicePointType !== undefined ||
             roomType !== undefined
@@ -426,6 +443,7 @@ export async function updateServicePoint(req, res) {
                     error: "Business not found",
                 })
             }
+            businessForPublicRoute = business
 
             let finalServicePointType =
                 current.servicePointType
@@ -493,6 +511,21 @@ export async function updateServicePoint(req, res) {
             return res.status(404).json({ error: "Service point not found" })
         }
 
+        const affectsPublicBusiness = Object.keys(updates).some(field =>
+            PUBLIC_SERVICE_POINT_SOURCE_FIELDS.has(field)
+        )
+        await Promise.all([
+            invalidateSetupProgress(businessId),
+            affectsPublicBusiness
+                ? businessForPublicRoute
+                    ? invalidatePublicBusinessRoute(
+                        businessForPublicRoute.countryCode,
+                        businessForPublicRoute.slug,
+                    )
+                    : invalidatePublicBusinessForBusinessId(businessId)
+                : Promise.resolve(true),
+        ])
+
         return res.json(sp)
     } catch (err) {
         console.error("[updateServicePoint]", err)
@@ -522,6 +555,11 @@ export async function toggleServicePoint(req, res) {
 
         current.isActive = !current.isActive
         await current.save()
+
+        await Promise.all([
+            invalidateSetupProgress(businessId),
+            invalidatePublicBusinessForBusinessId(businessId),
+        ])
 
         return res.json({
             servicePointId: current.servicePointId,
@@ -557,6 +595,11 @@ export async function toggleReservableServicePoint(req, res) {
         current.reservable = !current.reservable
         await current.save()
 
+        await Promise.all([
+            invalidateSetupProgress(businessId),
+            invalidatePublicBusinessForBusinessId(businessId),
+        ])
+
         return res.json({
             servicePointId: current.servicePointId,
             reservable: current.reservable,
@@ -586,6 +629,11 @@ export async function deleteServicePoint(req, res) {
         if (!sp) {
             return res.status(404).json({ error: "Service point not found" })
         }
+
+        await Promise.all([
+            invalidateSetupProgress(businessId),
+            invalidatePublicBusinessForBusinessId(businessId),
+        ])
 
         return res.json({ success: true, message: "Service point deleted successfully" })
     } catch (err) {

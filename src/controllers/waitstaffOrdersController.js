@@ -13,6 +13,7 @@ import { calculateOfflinePricing } from "../services/pricingService.js"
 import { validateTrackedStock, deductTrackedStock, restoreTrackedStock } from "../services/inventoryService.js"
 import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
 import { normalizeTip } from "../utils/tips.js"
+import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 // Restaurant-flow defect safeguards for waiter-created orders:
 // keep cart validation, business feature checks, payment rules, and currency
 // consistent with the guest and online-checkout order paths.
@@ -681,6 +682,8 @@ export async function createWaiterOrder(req, res) {
       createdBy: "staff",
       createdByStaffId: staffId
     })
+
+    await invalidateSetupProgress(businessId)
 
     // --- Offline Inventory Deduction ---
     try {

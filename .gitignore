@@ -67,3 +67,6 @@ docker-data/
 
 test/*
 !test/hotelRoomTypes.test.js
+!test/responseCache.test.js
+!test/stage1ResponseCaching.test.js
+!test/stage2PublicBusinessCaching.test.js

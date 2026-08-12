@@ -4,6 +4,10 @@ import Plan from "../models/Plan.js"
 import Order from "../models/order.js"
 import BillingInvoice from "../models/BillingInvoice.js"
 import { getPlanOfflineCommissionRate } from "../utils/platformFee.js"
+import {
+    invalidateBusinessConfiguration,
+    invalidatePublicBusinessConfig,
+} from "../services/cacheInvalidationService.js"
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 
@@ -1308,6 +1312,8 @@ export async function verifyPaymentMethod(req, res) {
             { new: true }
         ).lean()
 
+        await invalidateBusinessConfiguration(businessId)
+
         const verifyPaymentMethodBillingPeriod = await getCurrentBillingPeriod(biz)
 
         // Return the updated billing overview
@@ -1380,6 +1386,8 @@ export async function deletePaymentMethod(req, res) {
         biz.billingStatus = "incomplete"
         biz.billingEnabled = false
         await biz.save()
+
+        await invalidateBusinessConfiguration(businessId)
 
         res.json({
             message: "Payment method removed successfully.",
@@ -1541,6 +1549,8 @@ export async function updatePlan(req, res) {
             },
             { new: true }
         )
+
+        await invalidateBusinessConfiguration(businessId)
 
         const responseMessage = downgradeScheduled
             ? `Downgrade to ${planSlug} scheduled for ${subscriptionPeriod.invoiceAt.toISOString()}.`
@@ -1808,6 +1818,8 @@ export async function updatePlatformFeeSettings(req, res) {
         ).lean()
 
         if (!biz) return res.status(404).json({ message: "Business not found" })
+
+        await invalidatePublicBusinessConfig(businessId)
 
         // Look up the plan rate to return to the frontend
         const currentPlan = biz.currentPlan || "basic"

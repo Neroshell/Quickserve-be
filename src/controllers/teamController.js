@@ -4,6 +4,7 @@ import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
 import { hashToken } from "../utils/tokenHash.js"
 import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
+import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 
 function resolveBusinessId(req) {
     return req.session?.user?.businessId || req.query.businessId
@@ -97,6 +98,8 @@ export async function inviteCoOwner(req, res) {
             inviteTokenExpires
         })
 
+        await invalidateSetupProgress(businessId)
+
         const frontendUrl = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
         const inviteLink = `${frontendUrl}/staff/setup-account?token=${inviteToken}`
 
@@ -135,6 +138,8 @@ export async function removeCoOwner(req, res) {
         if (!result) {
             return res.status(404).json({ error: "Co-Owner not found" })
         }
+
+        await invalidateSetupProgress(businessId)
 
         return res.json({ message: "Co-Owner removed successfully" })
     } catch (err) {

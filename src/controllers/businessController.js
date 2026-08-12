@@ -17,6 +17,12 @@ import {
     setBusinessModuleEnabled,
     validateBusinessModulesForType,
 } from "../services/businessCapabilityService.js"
+import {
+    invalidateAllBusinessReadCaches,
+    invalidateBusinessConfiguration,
+    invalidatePublicBusinessRoute,
+    invalidatePublicBusinessRoutes,
+} from "../services/cacheInvalidationService.js"
 
 function generateBusinessId() {
     return `biz_${crypto.randomBytes(7).toString("hex")}`
@@ -52,6 +58,18 @@ const ALLOWED_SETTINGS_UPDATE_FIELDS = [
     "logoUrl", "logoPublicId", "platformFeeLabel", "passPlatformFeeToCustomer",
     "menuCategories",
 ]
+
+const PUBLIC_BUSINESS_SOURCE_FIELDS = new Set([
+    "businessId", "slug", "name", "displayName", "address", "phoneNumber",
+    "country", "countryCode", "currency", "timezone", "logoUrl", "branding",
+    "operatingHours", "settings", "hotelSettings", "businessType", "modules",
+])
+
+function changesPublicBusinessDto(update) {
+    return Object.keys(update || {}).some(path =>
+        PUBLIC_BUSINESS_SOURCE_FIELDS.has(path.split(".")[0])
+    )
+}
 
 function isValidTimeString(value) {
     return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
@@ -258,6 +276,11 @@ export async function updateSettings(req, res) {
             }
         }
 
+        const publicBusinessChanged = changesPublicBusinessDto(updateObj)
+        const previousPublicRoute = publicBusinessChanged
+            ? await Business.findOne({ businessId }).select("countryCode slug").lean()
+            : null
+
         const business = await Business.findOneAndUpdate(
             { businessId },
             { $set: updateObj },
@@ -267,6 +290,13 @@ export async function updateSettings(req, res) {
         if (!business) {
             return res.status(404).json({ message: "Business not found" })
         }
+
+        await Promise.all([
+            invalidateBusinessConfiguration(businessId),
+            publicBusinessChanged
+                ? invalidatePublicBusinessRoutes([previousPublicRoute, business])
+                : Promise.resolve(true),
+        ])
 
         return res.json(business)
     } catch (err) {
@@ -312,6 +342,11 @@ export async function updateOwnerBusinessModules(req, res) {
 
         await business.save()
 
+        await Promise.all([
+            invalidateBusinessConfiguration(businessId),
+            invalidatePublicBusinessRoute(business.countryCode, business.slug),
+        ])
+
         const updatedBusiness = attachBusinessCapabilities(business)
         return res.json({
             modules: updatedBusiness.modules,
@@ -343,6 +378,11 @@ export async function updateOperatingHours(req, res) {
         if (!business) {
             return res.status(404).json({ message: "Business not found" })
         }
+
+        await Promise.all([
+            invalidateBusinessConfiguration(businessId),
+            invalidatePublicBusinessRoute(business.countryCode, business.slug),
+        ])
 
         return res.json(business)
     } catch (err) {
@@ -389,6 +429,13 @@ export async function updateOrderingPreferences(req, res) {
             return res.status(404).json({ message: "Business not found" })
         }
 
+        await Promise.all([
+            invalidateBusinessConfiguration(businessId),
+            Object.keys(safePrefs).some(path => path.startsWith("settings."))
+                ? invalidatePublicBusinessRoute(business.countryCode, business.slug)
+                : Promise.resolve(true),
+        ])
+
         return res.json({ orderingPreferences: business.orderingPreferences })
     } catch (err) {
         console.error("Update ordering preferences error:", err)
@@ -423,6 +470,8 @@ export async function updatePaymentPreferences(req, res) {
         if (!business) {
             return res.status(404).json({ message: "Business not found" })
         }
+
+        await invalidateBusinessConfiguration(businessId)
 
         return res.json({ paymentPreferences: business.paymentPreferences })
     } catch (err) {
@@ -948,7 +997,7 @@ export async function updateAdminBusiness(req, res) {
 
         const existingBusinessForUpdate = await Business.findOne({
             $or: [{ businessId: paramId }, { businessId: paramId }]
-        }).select("_id businessId businessId businessType modules countryCode").lean()
+        }).select("_id businessId businessId businessType modules countryCode slug").lean()
         if (!existingBusinessForUpdate) {
             return res.status(404).json({ message: "Business not found" })
         }
@@ -1028,6 +1077,16 @@ export async function updateAdminBusiness(req, res) {
         if (!business) {
             return res.status(404).json({ message: "Business not found" })
         }
+
+        await Promise.all([
+            invalidateBusinessConfiguration(existingBusinessForUpdate.businessId),
+            business.businessId === existingBusinessForUpdate.businessId
+                ? Promise.resolve(true)
+                : invalidateBusinessConfiguration(business.businessId),
+            changesPublicBusinessDto(updateData) || Object.hasOwn(updateData, "status")
+                ? invalidatePublicBusinessRoutes([existingBusinessForUpdate, business])
+                : Promise.resolve(true),
+        ])
 
         return res.json(sanitizeBusiness(business))
     } catch (err) {
@@ -1224,6 +1283,8 @@ export async function addCategory(req, res) {
             return res.status(404).json({ message: "Business not found" })
         }
 
+        await invalidateBusinessConfiguration(businessId)
+
         return res.json(business.menuCategories)
     } catch (err) {
         console.error("Add category error:", err)
@@ -1260,6 +1321,8 @@ export async function removeCategory(req, res) {
             return res.status(404).json({ message: "Business not found" })
         }
 
+        await invalidateBusinessConfiguration(businessId)
+
         return res.json(business.menuCategories)
     } catch (err) {
         console.error("Remove category error:", err)
@@ -1280,6 +1343,10 @@ export async function deleteAdminBusiness(req, res) {
         if (!deletedBusiness) {
             return res.status(404).json({ message: "Business not found" });
         }
+
+        await invalidateAllBusinessReadCaches(deletedBusiness.businessId, {
+            publicBusinessRoutes: [deletedBusiness],
+        })
 
         return res.json({ message: "Business successfully deleted", businessId: paramId });
     } catch (err) {

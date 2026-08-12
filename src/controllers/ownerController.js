@@ -8,6 +8,10 @@ import Feedback from "../models/Feedback.js"
 import Staff from "../models/Staff.js"
 import MenuItem from "../models/menuItem.js"
 import { readOwnerTransactions } from "../services/transactionReadService.js"
+import {
+    invalidatePublicBusinessConfig,
+    invalidatePublicBusinessRoute,
+} from "../services/cacheInvalidationService.js"
 const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
 const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
 
@@ -591,6 +595,11 @@ export async function updateBranding(req, res) {
         }
 
         await business.save()
+
+        await Promise.all([
+            invalidatePublicBusinessConfig(businessId),
+            invalidatePublicBusinessRoute(business.countryCode, business.slug),
+        ])
 
         return res.json({ message: "Branding updated successfully", branding: business.branding })
     } catch (err) {

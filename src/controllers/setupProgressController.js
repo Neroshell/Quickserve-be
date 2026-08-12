@@ -5,6 +5,13 @@ import ServicePoint from "../models/ServicePoint.js"
 import Staff from "../models/Staff.js"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 
+import {
+    CACHE_TTL_SECONDS,
+    cacheKeys,
+    responseCache,
+} from "../services/responseCacheService.js"
+import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
+
 const BUSINESS_SELECT = [
     "businessId",
     "businessType",
@@ -15,6 +22,7 @@ const BUSINESS_SELECT = [
     "stripePayoutsEnabled",
     "defaultPaymentMethodId",
     "operatingHours",
+    "modules",
     "setupProgress"
 ].join(" ")
 
@@ -203,10 +211,27 @@ export async function getSetupProgress(req, res) {
             return res.status(401).json({ error: "Unauthorized" });
         }
 
+        const cacheKey = cacheKeys.setupProgress(businessId)
+        const cached = await responseCache.get(cacheKey)
+        if (
+            cached.hit &&
+            cached.value &&
+            typeof cached.value === "object" &&
+            !Array.isArray(cached.value)
+        ) {
+            return res.json(cached.value)
+        }
+
         const data = await getSetupProgressData(businessId);
         if (!data) {
             return res.status(404).json({ error: "Business not found" });
         }
+
+        await responseCache.set(
+            cacheKey,
+            data.progress,
+            CACHE_TTL_SECONDS.TENANT_STABLE,
+        )
 
         return res.json(data.progress);
     } catch (err) {
@@ -245,6 +270,8 @@ export async function dismissSetupGuide(req, res) {
                 }
             }
         );
+
+        await invalidateSetupProgress(businessId)
 
         const updatedData = await getSetupProgressData(businessId);
         return res.json({

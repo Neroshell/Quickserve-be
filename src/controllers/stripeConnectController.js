@@ -1,6 +1,7 @@
 import Stripe from "stripe"
 import Business from "../models/Business.js"
 import { isCountryResolutionError, resolveCountryMetadata } from "../utils/countryHelper.js"
+import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
@@ -62,6 +63,8 @@ export async function connectAccount(req, res) {
 
       business.stripeAccountId = account.id
       await business.save()
+
+      await invalidateSetupProgress(businessId)
 
       console.log(
         `[stripeConnect] Created Express account ${account.id} for businessId=${businessId}`
@@ -126,6 +129,8 @@ export async function getStripeStatus(req, res) {
     business.stripePayoutsEnabled = payoutsEnabled
     business.stripeOnboardingComplete = onboardingComplete
     await business.save()
+
+    await invalidateSetupProgress(businessId)
 
     return res.json({
       connected: true,

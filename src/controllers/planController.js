@@ -1,4 +1,6 @@
 import Plan from "../models/Plan.js"
+import Business from "../models/Business.js"
+import { invalidatePublicBusinessConfigs } from "../services/cacheInvalidationService.js"
 
 export async function getPlans(req, res) {
     try {
@@ -31,6 +33,23 @@ export async function updatePlan(req, res) {
 
         if (!plan) {
             return res.status(404).json({ message: "Plan not found" })
+        }
+
+        // Public business config embeds the plan commission rate. Plan edits
+        // are rare platform-admin operations, so invalidate every tenant's
+        // public config without introducing wildcard cache deletion.
+        try {
+            const businesses = await Business.find({})
+                .select("businessId")
+                .lean()
+            await invalidatePublicBusinessConfigs(
+                businesses.map(business => business.businessId)
+            )
+        } catch (invalidationError) {
+            console.error(
+                "[Cache] Failed to enumerate public-config keys after plan update",
+                invalidationError?.code || invalidationError?.name || "invalidation_error",
+            )
         }
 
         return res.json(plan)

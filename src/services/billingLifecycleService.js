@@ -3,6 +3,7 @@ import Stripe from "stripe";
 import Business from "../models/Business.js";
 import { BILLING_JOB_NAMES, enqueueBillingJob } from "../queues/index.js";
 import { sendEmailWithResult } from "../utils/emailService.js";
+import { invalidatePublicBusinessConfig } from "./cacheInvalidationService.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
@@ -551,6 +552,11 @@ export async function processBillingLifecycleAction({
     }
 
     try {
+        const publicConfigChanged =
+            (jobName === BILLING_JOB_NAMES.RESTRICT_SERVICE &&
+                claimed.offlineServiceRestricted !== true) ||
+            (jobName === BILLING_JOB_NAMES.RESTORE_SERVICE &&
+                claimed.offlineServiceRestricted === true);
         const transitioned = await applyStateTransition({
             jobName,
             business: claimed,
@@ -570,6 +576,10 @@ export async function processBillingLifecycleAction({
                 businessModel,
             });
             return { skipped: true, reason: "state_changed" };
+        }
+
+        if (publicConfigChanged) {
+            await invalidatePublicBusinessConfig(businessId);
         }
 
         const recipient = getRecipient(transitioned);

@@ -1,5 +1,11 @@
 import MenuItem from "../models/menuItem.js"
 import Order from "../models/order.js"
+import {
+    CACHE_TTL_SECONDS,
+    cacheKeys,
+    responseCache,
+} from "../services/responseCacheService.js"
+import { invalidateMenuMutation } from "../services/cacheInvalidationService.js"
 
 /** Accept businessId with fallback to legacy businessId */
 function resolveBusinessId(req) {
@@ -29,12 +35,28 @@ export async function getMenuItems(req, res) {
 
         const isOwningStaff =
             req.session?.user?.businessId === businessId
+        const cacheKey = cacheKeys.menuItems(businessId, { owner: isOwningStaff })
+        const cached = await responseCache.get(cacheKey)
+        if (cached.hit && Array.isArray(cached.value)) {
+            return res.json(cached.value)
+        }
+
         const filter = { businessId }
         if (!isOwningStaff) filter.isAvailable = true
 
         const items = await MenuItem.find(filter).sort({ createdAt: -1 })
 
-        return res.json(items)
+        const payload = items.map(item =>
+            typeof item?.toJSON === "function" ? item.toJSON() : item
+        )
+
+        await responseCache.set(
+            cacheKey,
+            payload,
+            CACHE_TTL_SECONDS.TENANT_STABLE,
+        )
+
+        return res.json(payload)
     } catch (err) {
         console.error("[getMenuItems]", err)
         return res.status(500).json({ error: "Failed to fetch menu items" })
@@ -80,6 +102,8 @@ export async function createMenuItem(req, res) {
         })
 
         await newItem.save()
+
+        await invalidateMenuMutation(businessId)
 
         return res.status(201).json(newItem)
     } catch (err) {
@@ -132,6 +156,8 @@ export async function updateMenuItem(req, res) {
             return res.status(404).json({ error: "Menu item not found or unauthorized" })
         }
 
+        await invalidateMenuMutation(businessId)
+
         return res.json(item)
     } catch (err) {
         console.error("[updateMenuItem]", err)
@@ -154,6 +180,8 @@ export async function deleteMenuItem(req, res) {
         if (!deletedItem) {
             return res.status(404).json({ error: "Menu item not found or unauthorized" })
         }
+
+        await invalidateMenuMutation(businessId)
 
         return res.json({ message: "Menu item deleted successfully" })
     } catch (err) {
@@ -182,6 +210,8 @@ export async function toggleMenuItemAvailability(req, res) {
         if (!item) {
             return res.status(404).json({ error: "Menu item not found or unauthorized" })
         }
+
+        await invalidateMenuMutation(businessId)
 
         return res.json(item)
     } catch (err) {

@@ -1,5 +1,6 @@
 import MenuItem from "../models/menuItem.js";
 import Order from "../models/order.js";
+import { invalidateMenuItems } from "./cacheInvalidationService.js";
 
 /**
  * Validates that requested items have enough stock.
@@ -63,6 +64,10 @@ export async function deductTrackedStock(order) {
             }
         }
         
+        if (itemsDeductedCount > 0) {
+            await invalidateMenuItems(order.businessId);
+        }
+
         return itemsDeductedCount > 0;
     } catch (err) {
         console.error(`[deductTrackedStock] ❌ Failed to deduct stock for order ${order.orderId}:`, err);
@@ -103,6 +108,10 @@ export async function restoreTrackedStock(order) {
                 }
             }
         }
+        if (itemsRestoredCount > 0) {
+            await invalidateMenuItems(order.businessId);
+        }
+
         return itemsRestoredCount > 0;
     } catch (err) {
         console.error(`[restoreTrackedStock] ❌ Failed to restore stock for order ${order.orderId}:`, err);

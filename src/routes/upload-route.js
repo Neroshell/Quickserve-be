@@ -2,6 +2,11 @@ import express from "express"
 import multer from "multer"
 import Business from "../models/Business.js"
 import MenuItem from "../models/menuItem.js"
+import {
+  invalidateMenuItems,
+  invalidatePublicBusinessConfig,
+  invalidatePublicBusinessRoute,
+} from "../services/cacheInvalidationService.js"
 import { uploadToCloudinary, deleteFromCloudinary } from "../utils/uploadToCloudinary.js"
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
 
@@ -136,6 +141,11 @@ router.post("/business-logo", upload.single("image"), async (req, res) => {
     business.logoPublicId = public_id
     await business.save()
 
+    await Promise.all([
+      invalidatePublicBusinessConfig(businessId),
+      invalidatePublicBusinessRoute(business.countryCode, business.slug),
+    ])
+
     return res.json({ logoUrl: secure_url, publicId: public_id })
   } catch (err) {
     console.error("[upload/business-logo]", err)
@@ -208,6 +218,8 @@ router.post("/menu-item", upload.single("image"), async (req, res) => {
     menuItem.imageUrl = secure_url
     menuItem.imagePublicId = public_id
     await menuItem.save()
+
+    await invalidateMenuItems(businessId)
 
     return res.json({ imageUrl: secure_url, publicId: public_id })
   } catch (err) {

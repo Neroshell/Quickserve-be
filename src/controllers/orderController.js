@@ -28,6 +28,7 @@ import {
   getCustomerPricingBreakdown,
 } from "../services/pricingService.js"
 import { dispatchAutomaticOrderReceipt } from "../services/email/emailDispatchService.js"
+import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 // Restaurant-flow defect safeguards for direct/offline orders:
 // validate and normalize the cart, enforce business ordering/payment settings,
 // and derive currency from the business instead of accepting client values.
@@ -339,6 +340,8 @@ export async function createOrder(req, res) {
       orderSource: isWaiter ? "waitstaff" : "self",
     })
 
+    await invalidateSetupProgress(businessId)
+
     // --- Offline Inventory Deduction ---
     try {
       const inventoryDeducted = await deductTrackedStock(saved)
@@ -441,6 +444,10 @@ export async function deleteOrdersBySession(req, res) {
     }
 
     const result = await Order.deleteMany({ sessionId, businessId })
+
+    if (result.deletedCount > 0) {
+      await invalidateSetupProgress(businessId)
+    }
 
     return res.json({
       message: "Order history cleared",

@@ -17,6 +17,7 @@
     "test:bullmq": "node --test test/bullmqInfrastructure.test.js test/bullmqEmailDelivery.test.js test/bullmqPhase2Reservation.test.js test/bullmqPhase2Billing.test.js test/bullmqPhase3PostPayment.test.js test/bullmqWorkerRuntime.test.js test/reservationArrival.test.js",
     "test:restaurant-arrival": "node --test test/reservationArrival.test.js",
     "test:collections": "node --test test/collectionNameMigration.test.js",
+    "test:cache": "node --test test/responseCache.test.js test/stage1ResponseCaching.test.js test/stage2PublicBusinessCaching.test.js",
     "start": "node server.js",
     "worker": "node src/workers/index.js",
     "worker:dev": "node --watch src/workers/index.js",

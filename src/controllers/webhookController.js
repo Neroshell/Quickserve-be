@@ -36,6 +36,10 @@ import {
     claimStripeWebhookEvent,
     completeStripeWebhookEvent,
 } from "../services/stripeWebhookEventService.js";
+import {
+    invalidateBusinessConfiguration,
+    invalidateSetupProgress,
+} from "../services/cacheInvalidationService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -199,7 +203,7 @@ export async function handleStripeWebhook(req, res) {
             const chargesEnabled = account.charges_enabled === true;
             const payoutsEnabled = account.payouts_enabled === true;
 
-            await Business.findOneAndUpdate(
+            const business = await Business.findOneAndUpdate(
                 { stripeAccountId: account.id },
                 {
                     stripeChargesEnabled: chargesEnabled,
@@ -207,6 +211,10 @@ export async function handleStripeWebhook(req, res) {
                     stripeOnboardingComplete: chargesEnabled && payoutsEnabled,
                 }
             );
+
+            if (business) {
+                await invalidateSetupProgress(business.businessId);
+            }
 
             return res.status(200).send();
         }
@@ -299,6 +307,8 @@ export async function handleStripeWebhook(req, res) {
                         }
                     }
 
+                    await invalidateBusinessConfiguration(biz.businessId);
+
                     if (!biz.offlineServiceRestricted) {
                         const recipient = biz.ownerEmail || biz.contactEmail || null;
                         if (recipient) {
@@ -350,11 +360,17 @@ export async function handleStripeWebhook(req, res) {
                         },
                     }
                 );
+                let fallbackBiz = null;
                 if (!stamped) {
-                    await Business.updateOne(
+                    fallbackBiz = await Business.findOneAndUpdate(
                         { stripeSubscriptionId: invoice.subscription },
                         { $set: { billingStatus: 'past_due' } },
                     );
+                }
+
+                const affectedBusiness = stamped || fallbackBiz;
+                if (affectedBusiness) {
+                    await invalidateBusinessConfiguration(affectedBusiness.businessId);
                 }
             }
             return res.status(200).send();
@@ -386,6 +402,7 @@ export async function handleStripeWebhook(req, res) {
                 if (subscription.status === "active") {
                     await restoreBusinessAfterDurableBillingUpdate(biz);
                 }
+                await invalidateBusinessConfiguration(biz.businessId);
             }
             return res.status(200).send();
         }
@@ -948,6 +965,8 @@ export async function handleStripeWebhook(req, res) {
                 crmProcessingStatus: customerEmail ? "pending" : null,
                 crmProcessingRetryable: true,
             });
+
+            await invalidateSetupProgress(businessId);
 
             console.log(`[webhook] Order created: orderId=${orderId}, businessId=${businessId}`);
 

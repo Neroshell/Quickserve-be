@@ -7,8 +7,42 @@ import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "
 import { dispatchRestaurantReservationEmail } from "../services/email/emailDispatchService.js";
 import { validateReservationGuestCapacity } from "../services/reservationCapacityService.js";
 import { EMAIL_JOB_NAMES } from "../queues/index.js";
+import {
+  CACHE_TTL_SECONDS,
+  cacheKeys,
+  responseCache,
+} from "../services/responseCacheService.js";
 
 const SERVABLE_STATUSES = ["active", "onboarding", "draft"];
+const PUBLIC_BUSINESS_FIELDS = new Set([
+  "businessId", "slug", "name", "displayName", "address", "phoneNumber",
+  "country", "currency", "timezone", "logoUrl", "branding", "operatingHours",
+  "settings", "hotelSettings", "businessType", "modules", "servicePoints",
+]);
+const PUBLIC_SERVICE_POINT_FIELDS = new Set([
+  "_id", "servicePointId", "label", "servicePointType", "roomType", "capacity",
+  "pricePerNight", "currency", "description", "fullDescription", "amenities",
+  "images", "beds", "bedType", "bedConfiguration", "viewType", "maxGuests",
+]);
+
+function isSafePublicBusinessDto(value, expectedSlug) {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof value.businessId === "string" &&
+    typeof value.slug === "string" &&
+    value.slug.toLowerCase() === expectedSlug &&
+    Array.isArray(value.servicePoints) &&
+    Object.keys(value).every(field => PUBLIC_BUSINESS_FIELDS.has(field)) &&
+    value.servicePoints.every(servicePoint =>
+      servicePoint &&
+      typeof servicePoint === "object" &&
+      !Array.isArray(servicePoint) &&
+      Object.keys(servicePoint).every(field => PUBLIC_SERVICE_POINT_FIELDS.has(field))
+    )
+  );
+}
 
 /**
  * GET /public/business-config?businessId=...
@@ -22,9 +56,24 @@ const SERVABLE_STATUSES = ["active", "onboarding", "draft"];
  */
 export async function getPublicBusinessConfig(req, res) {
   try {
-    const businessId = req.query.businessId || req.query.restaurantId;
+    const canonicalBusinessId = req.query.businessId;
+    const businessId = canonicalBusinessId || req.query.restaurantId;
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" });
+    }
+
+    if (canonicalBusinessId) {
+      const requestedCacheKey = cacheKeys.publicBusinessConfig(canonicalBusinessId);
+      const cached = await responseCache.get(requestedCacheKey);
+      if (
+        cached.hit &&
+        cached.value &&
+        typeof cached.value === "object" &&
+        !Array.isArray(cached.value) &&
+        cached.value.businessId === canonicalBusinessId
+      ) {
+        return res.json(cached.value);
+      }
     }
 
     const business = await Business.findOne({
@@ -50,9 +99,11 @@ export async function getPublicBusinessConfig(req, res) {
 
     // Offline availability as a boolean only — never expose the underlying billing details.
     const offlinePaymentsAvailable =
-      business.billingStatus === "active" && !!business.defaultPaymentMethodId;
+      business.billingStatus === "active" &&
+      business.offlineServiceRestricted !== true &&
+      !!business.defaultPaymentMethodId;
 
-    return res.json({
+    const publicConfig = {
       businessId: business.businessId,
       name: business.name,
       displayName: business.displayName,
@@ -79,7 +130,18 @@ export async function getPublicBusinessConfig(req, res) {
       menuCategories: business.menuCategories,
       branding,
       brandingAccess: { canUseBranding, canRemoveQuickServeBranding },
-    });
+    };
+
+    // Only populate a key built from the canonical ID returned by MongoDB. A
+    // legacy restaurantId lookup remains supported but intentionally does not
+    // create an alias key that could weaken tenant-key isolation.
+    await responseCache.set(
+      cacheKeys.publicBusinessConfig(business.businessId),
+      publicConfig,
+      CACHE_TTL_SECONDS.TENANT_STABLE,
+    );
+
+    return res.json(publicConfig);
   } catch (error) {
     console.error("[publicController.getPublicBusinessConfig] Error:", error);
     res.status(500).json({ error: "Server error" });
@@ -94,14 +156,26 @@ export async function getBusinessBySlug(req, res) {
     const { slug, countryCode } = req.params;
     if (!slug) return res.status(400).json({ error: "Slug is required" });
 
+    const normalizedSlug = slug.trim().toLowerCase();
+    const normalizedCountryCode = countryCode?.trim().toLowerCase();
+    if (!normalizedSlug) return res.status(400).json({ error: "Slug is required" });
+
+    if (normalizedCountryCode) {
+      const cacheKey = cacheKeys.publicBusiness(normalizedCountryCode, normalizedSlug);
+      const cached = await responseCache.get(cacheKey);
+      if (cached.hit && isSafePublicBusinessDto(cached.value, normalizedSlug)) {
+        return res.json(cached.value);
+      }
+    }
+
     let business;
   
 
-    if (countryCode) {
-      business = await Business.findOne({ slug: slug.toLowerCase(), countryCode: countryCode.toLowerCase() }).lean();
+    if (normalizedCountryCode) {
+      business = await Business.findOne({ slug: normalizedSlug, countryCode: normalizedCountryCode }).lean();
     } else {
       // Legacy route: find all matching slugs
-      const businesses = await Business.find({ slug: slug.toLowerCase() }).lean();
+      const businesses = await Business.find({ slug: normalizedSlug }).lean();
       if (businesses.length === 1) {
         business = businesses[0];
         redirectUrl = `/b/${business.countryCode || 'mt'}/${business.slug}`;
@@ -165,7 +239,15 @@ export async function getBusinessBySlug(req, res) {
       servicePoints: servicePoints,
     };
 
-    res.json(publicDto);
+    if (normalizedCountryCode) {
+      await responseCache.set(
+        cacheKeys.publicBusiness(normalizedCountryCode, normalizedSlug),
+        publicDto,
+        CACHE_TTL_SECONDS.TENANT_STABLE,
+      );
+    }
+
+    return res.json(publicDto);
   } catch (error) {
     console.error("[publicController.getBusinessBySlug] Error:", error);
     res.status(500).json({ error: "Server error" });
