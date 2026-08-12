@@ -357,7 +357,10 @@ export async function getDashboardData(req, res) {
         ])
 
         const tableIds = sessions.map(s => s._id)
-        const servicePoints = await ServicePoint.find({ servicePointId: { $in: tableIds } }, "servicePointId label").lean()
+        // Also collect service point IDs from today's orders so the activity feed can resolve labels
+        const orderSpIds = [...new Set(todayOrdersRaw.map(o => o.servicePointLabel).filter(Boolean))]
+        const allSpIds = [...new Set([...tableIds, ...orderSpIds])]
+        const servicePoints = await ServicePoint.find({ servicePointId: { $in: allSpIds } }, "servicePointId label").lean()
         const labelMap = {}
         for (const sp of servicePoints) {
             labelMap[sp.servicePointId] = sp.label
@@ -454,7 +457,8 @@ export async function getDashboardData(req, res) {
             .slice(0, 8)
 
         for (const o of latestOrders) {
-            const label = o.servicePointLabel || ""
+            const rawSpId = o.servicePointLabel || ""
+            const label = labelMap[rawSpId] || rawSpId
             if (o.paymentStatus === "paid") {
                 recentActivity.push({ type: "payment", icon: "💳", message: `Order ${o.orderId} paid`, sub: label, time: o.createdAt })
             } else {
@@ -499,6 +503,7 @@ export async function getDashboardData(req, res) {
             feedbackPreview,
             hourlyRevenue,
             reconciliationCount,
+            sessionOverview,
         })
 
     } catch (err) {

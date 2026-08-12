@@ -12,7 +12,7 @@ const TableSessionSchema = new mongoose.Schema(
     // TTL: Mongo will auto-delete after expiresAt passes
     expiresAt: { type: Date, required: true },
   },
-  { timestamps: true }
+  { timestamps: true, collection: "tablesessions" }
 )
 
 // TTL index (Mongo deletes docs when expiresAt < now)
