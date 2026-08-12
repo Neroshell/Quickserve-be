@@ -308,7 +308,7 @@ export async function getDashboardData(req, res) {
             { $set: { status: "missed", missedAt: now } }
         )
 
-        // â”€â”€ Run all queries in parallel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ─── Run all queries in parallel ─────────────────────────────────────────
         const [
             todayOrdersRaw,
             business,
@@ -318,13 +318,14 @@ export async function getDashboardData(req, res) {
             missedWaiterCalls,
             totalMenuItems,
             reconciliationCount,
+            sessions,
         ] = await Promise.all([
             Order.find({
                 ...dateFilter,
                 status: { $in: ["placed", "in_progress", "ready", "completed"] }
-            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, servicePointLabel: 1, servicePointLabel: 1, orderType: 1, paymentChannel: 1, tipAmount: 1 }).lean(),
+            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, servicePointLabel: 1, orderType: 1, paymentChannel: 1, tipAmount: 1 }).lean(),
 
-            Business.findOne({ businessId }).lean(),
+            Business.findOne({ businessId }).select('stripeChargesEnabled billingStatus currency timezone').lean(),
 
             Feedback.find({ businessId })
                 .sort({ createdAt: -1 })
@@ -346,10 +347,33 @@ export async function getDashboardData(req, res) {
                     { status: { $in: ["placed", "in_progress", "ready"] } },
                     { paymentChannel: "offline", paymentStatus: { $ne: "paid" }, status: { $ne: "cancelled" } }
                 ]
-            })
+            }),
+
+            GuestSession.aggregate([
+                { $match: { businessId, expiresAt: { $gt: now } } },
+                { $group: { _id: "$servicePointId", activeDevices: { $sum: 1 } } },
+                { $sort: { activeDevices: -1, _id: 1 } }
+            ])
         ])
 
-        // â”€â”€ Today's KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        const tableIds = sessions.map(s => s._id)
+        const servicePoints = await ServicePoint.find({ servicePointId: { $in: tableIds } }, "servicePointId label").lean()
+        const labelMap = {}
+        for (const sp of servicePoints) {
+            labelMap[sp.servicePointId] = sp.label
+        }
+
+        const activeSessionsNow = sessions.reduce((acc, curr) => acc + curr.activeDevices, 0)
+        const activeTablesNow = sessions.length
+        const tables = sessions.map(s => ({
+            servicePointLabel: s._id,
+            label: labelMap[s._id] || s._id,
+            activeDevices: s.activeDevices
+        }))
+
+        const sessionOverview = { activeSessionsNow, activeTablesNow, tables }
+
+        // ─── Today's KPIs ───────────────────────────────────────────────────────────
         const completedOrders = todayOrdersRaw.filter(o => o.status === "completed")
         const paidOrders      = todayOrdersRaw.filter(o => o.paymentStatus === "paid")
         const todayRevenue    = paidOrders.reduce((sum, o) => sum + Number(((o.total || 0) - Number(o.tipAmount || 0)).toFixed(2)), 0)
@@ -357,7 +381,7 @@ export async function getDashboardData(req, res) {
         const tablesServed    = completedOrders.length
         const activeOrders    = todayOrdersRaw.filter(o => ["placed","in_progress","ready"].includes(o.status)).length
 
-        // â”€â”€ Hourly Revenue (today) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ─── Hourly Revenue (today) ─────────────────────────────────────────────────
         const hourlyMap = new Map()
         for (let i = 0; i < 24; i++) {
             const h = i > 12 ? i - 12 : (i === 0 ? 12 : i)
@@ -371,13 +395,13 @@ export async function getDashboardData(req, res) {
         }
         const hourlyRevenue = Array.from(hourlyMap.entries()).map(([hour, revenue]) => ({ hour, revenue }))
 
-        // â”€â”€ Business Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ─── Business Health ────────────────────────────────────────────────────────
         const onlinePaymentsOk  = business?.stripeChargesEnabled === true
         const billingStatus     = business?.billingStatus || "incomplete"
-        const hasMenu           = true // Placeholder â€” could query MenuItem count
+        const hasMenu           = true // Placeholder — could query MenuItem count
         const staffOnlineCount  = activeStaff.length
 
-        // â”€â”€ Action Items â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ─── Action Items ───────────────────────────────────────────────────────────
         const actionItems = []
 
         if (billingStatus === "incomplete") {
@@ -421,7 +445,7 @@ export async function getDashboardData(req, res) {
             actionItems.push({ type: "staff", severity: "info", message: "No staff members are currently active.", href: "/owner/staff" })
         }
 
-        // â”€â”€ Recent Activity (latest orders + feedback) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ─── Recent Activity (latest orders + feedback) ──────────────────────────
         const recentActivity = []
 
         // Latest 10 orders as activity events
@@ -432,16 +456,16 @@ export async function getDashboardData(req, res) {
         for (const o of latestOrders) {
             const label = o.servicePointLabel || ""
             if (o.paymentStatus === "paid") {
-                recentActivity.push({ type: "payment", icon: "ðŸ’³", message: `Order ${o.orderId} paid`, sub: label, time: o.createdAt })
+                recentActivity.push({ type: "payment", icon: "💳", message: `Order ${o.orderId} paid`, sub: label, time: o.createdAt })
             } else {
-                const statusEmoji = { placed: "ðŸ†•", in_progress: "ðŸ³", ready: "âœ…", completed: "ðŸŽ‰" }
-                recentActivity.push({ type: "order", icon: statusEmoji[o.status] || "ðŸ“‹", message: `Order ${o.orderId} ${o.status.replace("_", " ")}`, sub: label ? `${label} Â· ${o.orderType}` : o.orderType, time: o.createdAt })
+                const statusEmoji = { placed: "🆕", in_progress: "🍳", ready: "✅", completed: "🎉" }
+                recentActivity.push({ type: "order", icon: statusEmoji[o.status] || "📋", message: `Order ${o.orderId} ${o.status.replace("_", " ")}`, sub: label ? `${label} · ${o.orderType}` : o.orderType, time: o.createdAt })
             }
         }
 
         // Recent feedback as activity events
         for (const f of recentFeedback.slice(0, 3)) {
-            recentActivity.push({ type: "feedback", icon: "â­", message: `New feedback received (${f.overallRating}â˜…)`, sub: f.comment ? f.comment.slice(0, 60) : "No comment", time: f.createdAt })
+            recentActivity.push({ type: "feedback", icon: "⭐", message: `New feedback received (${f.overallRating}★)`, sub: f.comment ? f.comment.slice(0, 60) : "No comment", time: f.createdAt })
         }
 
         // Sort and cap at 10

@@ -359,7 +359,9 @@ export async function getMe(req, res) {
 
         // Optionally, grab fresh data from DB to ensure user isn't disabled
         if (role === 'owner') {
-            const business = await Business.findOne({ ownerEmail: email, ownerStatus: "active" }).select('-ownerPasswordHash');
+            const business = await Business.findOne({ ownerEmail: email, ownerStatus: "active" })
+                .select('ownerEmail ownerName displayName businessType modules capabilities currency taxRate timezone ownerStatus')
+                .lean();
             if (!business) return res.status(401).json({ message: "Account disabled or not found." });
             return res.json({ 
                 ...req.session.user, 
@@ -367,19 +369,22 @@ export async function getMe(req, res) {
                 name: business.ownerName,
                 businessType: business.businessType || "restaurant",
                 modules: resolveBusinessModules(business),
-                capabilities: resolveBusinessCapabilities(business)
+                capabilities: resolveBusinessCapabilities(business),
+                currency: business.currency || "USD",
+                taxRate: business.taxRate || 0,
+                timezone: business.timezone || "UTC"
             });
         } else {
             const staff = await Staff.findOne({ email, accountStatus: "active" }).select('-passwordHash');
             if (!staff) return res.status(401).json({ message: "Account disabled or not found." });
             
-            // Also fetch business to get businessType
+            // Also fetch business to get businessType and currency
             const business = await Business.findOne({ 
                 $or: [
                     { businessId: staff.businessId },
                     { businessId: staff.businessId }
                 ]
-            }).select('businessType modules').lean();
+            }).select('businessType modules currency taxRate timezone').lean();
 
             return res.json({ 
                 ...req.session.user, 
@@ -387,7 +392,10 @@ export async function getMe(req, res) {
                 staffId: staff.staffId,
                 businessType: business?.businessType || "restaurant",
                 modules: resolveBusinessModules(business),
-                capabilities: resolveBusinessCapabilities(business)
+                capabilities: resolveBusinessCapabilities(business),
+                currency: business?.currency || "USD",
+                taxRate: business?.taxRate || 0,
+                timezone: business?.timezone || "UTC"
             });
         }
     } catch (err) {
