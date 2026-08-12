@@ -24,19 +24,26 @@ import GuestSession from "../models/GuestSession.js"
 // The channel is derived from the session role — NOT the client-supplied query —
 // so a kitchen/bar staffer can't spoof role=waiter to read the full order stream.
 // (Staff role enum is waiter/kitchen/manager/bartender/co_owner/owner; the SSE
-// channel names are kitchen/bar/waitstaff — note bartender → "bar".)
+// channel names are kitchen/bar/waiter/owner — note bartender → "bar".)
 const SSE_CHANNELS_BY_ROLE = {
     kitchen: ["kitchen"],
     bartender: ["bar"],
     waiter: ["waiter", "reservations"],
-    manager: ["kitchen", "bar", "waiter", "reservations"],
-    owner: ["kitchen", "bar", "waiter", "reservations"],
-    co_owner: ["kitchen", "bar", "waiter", "reservations"],
-    admin: ["kitchen", "bar", "waiter", "reservations"],
+    manager: ["kitchen", "bar", "waiter", "owner", "reservations"],
+    owner: ["kitchen", "bar", "waiter", "owner", "reservations"],
+    co_owner: ["kitchen", "bar", "waiter", "owner", "reservations"],
+    admin: ["kitchen", "bar", "waiter", "owner", "reservations"],
 }
 
 // Customer-facing SSE roles — these streams are scoped to a single table.
 const CUSTOMER_ROLES = new Set(["table", "anon", "customer"])
+
+// Owner/dashboard SSE clients receive all staff-targeted operational events
+// (order_created, order_updated, waiter_call_*) regardless of which specific
+// staff channel (kitchen/bar/waiter) the event was published to. This is safe
+// because the owner dashboard uses events purely as invalidation signals and
+// ignores event payloads. Tenant isolation (businessId) is still enforced.
+const SSE_DASHBOARD_ROLES = new Set(["owner"])
 
 // ── Local client registry ────────────────────────────────────────────────────
 const clients = new Set()
@@ -162,8 +169,10 @@ export function broadcastLocal(msg) {
         // Business isolation — strict
         if (client.businessId !== businessId) continue
 
-        // Role targeting — if targets is null/empty every role passes
-        if (targets && targets.length > 0 && !targets.includes(client.role)) continue
+        // Role targeting — if targets is null/empty every role passes.
+        // Dashboard roles (owner) bypass target filtering to receive all
+        // staff-targeted operational events as invalidation signals.
+        if (targets && targets.length > 0 && !targets.includes(client.role) && !SSE_DASHBOARD_ROLES.has(client.role)) continue
 
         // Per-table isolation for customer streams: a diner only receives events
         // for their own table. Staff channels (kitchen/bar/waitstaff/owner) are
@@ -225,4 +234,3 @@ export async function publishEvent(event, businessId, targets, payload) {
         broadcastLocal(msg)
     }
 }
-
