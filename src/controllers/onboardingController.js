@@ -9,6 +9,7 @@ import { isCountryResolutionError, resolveCountryMetadata, validateCountryMetada
 import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from '../utils/emailAvailability.js'
 import { getDefaultBusinessModules } from '../services/businessCapabilityService.js'
 import { establishOwnerSession } from './authController.js'
+import { normalizeInternationalPhoneNumber } from '../utils/phoneNumber.js'
 
 const VERIFICATION_CODE_TTL_MS = 30 * 60 * 1000
 
@@ -244,10 +245,19 @@ export async function updateSession(req, res) {
             session.currentStep = currentStep
         }
         
-        if (businessData) {
+        let normalizedBusinessData = businessData
+        if (businessData && Object.prototype.hasOwnProperty.call(businessData, "phoneNumber")) {
+            const phoneNumber = normalizeInternationalPhoneNumber(businessData.phoneNumber)
+            if (!phoneNumber) {
+                return res.status(400).json({ message: "Enter a complete, valid phone number" })
+            }
+            normalizedBusinessData = { ...businessData, phoneNumber }
+        }
+
+        if (normalizedBusinessData) {
             session.businessData = {
                 ...session.businessData,
-                ...businessData
+                ...normalizedBusinessData
             }
         }
 
@@ -310,7 +320,10 @@ export async function completeOnboarding(req, res) {
         const businessSlug = data.slug.trim().toLowerCase()
         const businessCountry = data.country.trim()
         const businessAddress = data.address.trim()
-        const businessPhoneNumber = data.phoneNumber.trim()
+        const businessPhoneNumber = normalizeInternationalPhoneNumber(data.phoneNumber)
+        if (!businessPhoneNumber) {
+            return res.status(400).json({ message: "Enter a complete, valid phone number" })
+        }
         const businessContactEmail = data.contactEmail.trim().toLowerCase()
 
         let countryMetadata

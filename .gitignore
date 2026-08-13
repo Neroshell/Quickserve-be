@@ -70,3 +70,4 @@ test/*
 !test/responseCache.test.js
 !test/stage1ResponseCaching.test.js
 !test/stage2PublicBusinessCaching.test.js
+!test/phoneNumber.test.js

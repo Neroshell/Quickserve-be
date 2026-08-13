@@ -3,8 +3,10 @@ import test from "node:test"
 
 import {
     CACHE_NAMESPACE,
+    DEFAULT_CACHE_COMMAND_TIMEOUT_MS,
     cacheKeys,
     createResponseCache,
+    resolveCacheCommandTimeoutMs,
 } from "../src/services/responseCacheService.js"
 
 class FakeRedis {
@@ -104,9 +106,9 @@ test("Redis errors and unavailable clients fail open for every cache operation",
     assert.deepEqual(await cache.get("key"), { hit: false, value: null })
     assert.equal(await cache.set("key", { value: 1 }, 60), false)
     assert.equal(await cache.del("key"), false)
-    assert.ok(logger.messages.some(message => message.includes("GET failure")))
-    assert.ok(logger.messages.some(message => message.includes("SET failure")))
-    assert.ok(logger.messages.some(message => message.includes("invalidation failure")))
+    assert.ok(logger.messages.some(message => message.includes("command=GET failure")))
+    assert.ok(logger.messages.some(message => message.includes("command=SET failure")))
+    assert.ok(logger.messages.some(message => message.includes("command=DEL failure")))
 
     const unavailable = createResponseCache({
         client: new FakeRedis({ ready: false }),
@@ -117,19 +119,125 @@ test("Redis errors and unavailable clients fail open for every cache operation",
     assert.equal(await unavailable.del("key"), false)
 })
 
-test("a stalled Redis command times out and becomes a cache miss", async () => {
+test("cache command timeout uses the 500ms default and a positive env override", () => {
+    assert.equal(DEFAULT_CACHE_COMMAND_TIMEOUT_MS, 500)
+    assert.equal(resolveCacheCommandTimeoutMs({}), 500)
+    assert.equal(resolveCacheCommandTimeoutMs({ CACHE_COMMAND_TIMEOUT_MS: "750" }), 750)
+    assert.equal(resolveCacheCommandTimeoutMs({ CACHE_COMMAND_TIMEOUT_MS: "0" }), 500)
+    assert.equal(resolveCacheCommandTimeoutMs({ CACHE_COMMAND_TIMEOUT_MS: "invalid" }), 500)
+})
+
+test("a Redis GET under the threshold returns a HIT", async () => {
     const cache = createResponseCache({
         client: {
             isReady: true,
-            get() { return new Promise(() => {}) },
+            async get() {
+                await new Promise(resolve => setTimeout(resolve, 5))
+                return JSON.stringify({ source: "cache" })
+            },
         },
         logger: captureLogger(),
+        commandTimeoutMs: 50,
+    })
+
+    assert.deepEqual(await cache.get("quickserve:v1:business:biz_alpha:menu-items"), {
+        hit: true,
+        value: { source: "cache" },
+    })
+})
+
+test("a stalled Redis GET times out once, aborts queued work, and fails open to the database", async () => {
+    let getCalls = 0
+    let aborts = 0
+    let databaseReads = 0
+    const client = {
+        isReady: true,
+        withAbortSignal(signal) {
+            return {
+                get() {
+                    getCalls += 1
+                    return new Promise((_, reject) => {
+                        signal.addEventListener("abort", () => {
+                            aborts += 1
+                            reject(Object.assign(new Error("aborted"), { name: "AbortError" }))
+                        }, { once: true })
+                    })
+                },
+            }
+        },
+    }
+    const logger = captureLogger()
+    const cache = createResponseCache({
+        client,
+        logger,
         commandTimeoutMs: 10,
     })
 
     const startedAt = Date.now()
-    assert.deepEqual(await cache.get("slow-key"), { hit: false, value: null })
+    const cached = await cache.get("quickserve:v1:business:biz_alpha:menu-items")
+    const value = cached.hit ? cached.value : await (async () => {
+        databaseReads += 1
+        return { source: "database" }
+    })()
+
+    assert.deepEqual(value, { source: "database" })
     assert.ok(Date.now() - startedAt < 250)
+    assert.equal(getCalls, 1)
+    assert.equal(aborts, 1)
+    assert.equal(databaseReads, 1)
+    assert.ok(logger.messages.some(message =>
+        message.includes("command=GET failure") &&
+        message.includes("domain=menu-items") &&
+        message.includes("timeoutMs=10") &&
+        message.includes("reason=CACHE_COMMAND_TIMEOUT")
+    ))
+})
+
+test("repeated identical timeouts are rate-limited without retrying commands", async () => {
+    let getCalls = 0
+    const logger = captureLogger()
+    const cache = createResponseCache({
+        client: {
+            isReady: true,
+            get() {
+                getCalls += 1
+                return new Promise(() => {})
+            },
+        },
+        logger,
+        commandTimeoutMs: 5,
+    })
+
+    await cache.get("quickserve:v1:business:biz_alpha:menu-items")
+    await cache.get("quickserve:v1:business:biz_beta:menu-items")
+    await new Promise(resolve => setTimeout(resolve, 15))
+
+    assert.equal(getCalls, 2, "one client command should be issued per caller; no retries")
+    assert.equal(
+        logger.messages.filter(message => message.includes("reason=CACHE_COMMAND_TIMEOUT")).length,
+        1,
+        "identical command/domain timeout warnings should be rate-limited",
+    )
+})
+
+test("Redis SET and DEL failures stay fail-open for the authoritative request path", async () => {
+    let authoritativeWrites = 0
+    const cache = createResponseCache({
+        client: {
+            isReady: true,
+            async set() { throw Object.assign(new Error("set down"), { code: "ECONNRESET" }) },
+            async del() { throw Object.assign(new Error("del down"), { code: "ECONNRESET" }) },
+        },
+        logger: captureLogger(),
+    })
+
+    authoritativeWrites += 1
+    const cacheStored = await cache.set("quickserve:v1:business:biz_alpha:menu-items", { fresh: true }, 60)
+    const cacheInvalidated = await cache.del("quickserve:v1:business:biz_alpha:menu-items")
+
+    assert.equal(authoritativeWrites, 1)
+    assert.equal(cacheStored, false)
+    assert.equal(cacheInvalidated, false)
 })
 
 test("invalid JSON is treated as a miss so MongoDB can heal the cache", async () => {
@@ -139,5 +247,5 @@ test("invalid JSON is treated as a miss so MongoDB can heal the cache", async ()
     const cache = createResponseCache({ client, logger })
 
     assert.deepEqual(await cache.get("bad-key"), { hit: false, value: null })
-    assert.ok(logger.messages.some(message => message.includes("GET failure")))
+    assert.ok(logger.messages.some(message => message.includes("command=GET failure")))
 })
