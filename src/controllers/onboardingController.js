@@ -10,6 +10,7 @@ import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse 
 import { getDefaultBusinessModules } from '../services/businessCapabilityService.js'
 import { establishOwnerSession } from './authController.js'
 import { normalizeInternationalPhoneNumber } from '../utils/phoneNumber.js'
+import { PlacesServiceError, resolveGooglePlace, searchGooglePlaces } from '../services/googlePlacesService.js'
 
 const VERIFICATION_CODE_TTL_MS = 30 * 60 * 1000
 
@@ -46,6 +47,26 @@ function getMissingBusinessFields(data) {
     return requiredFields
         .filter(([field]) => !hasRequiredText(data?.[field]))
         .map(([field, label]) => ({ field, label }))
+}
+
+export async function getAddressSuggestions(req, res) {
+    try {
+        const { sessionId } = req.params
+        const hasVerifiedSession = await OnboardingSession.exists({ sessionId, emailVerified: true })
+        if (!hasVerifiedSession) {
+            return res.status(404).json({ message: "Onboarding session not found" })
+        }
+
+        const { input, countryCode, sessionToken } = req.query
+        const suggestions = await searchGooglePlaces({ input, countryCode, sessionToken })
+        return res.json({ suggestions })
+    } catch (err) {
+        if (err instanceof PlacesServiceError) {
+            return res.status(err.status).json({ message: err.message })
+        }
+        console.error("Address suggestions error:", err)
+        return res.status(502).json({ message: "Address search is temporarily unavailable" })
+    }
 }
 
 /**
@@ -254,6 +275,64 @@ export async function updateSession(req, res) {
             normalizedBusinessData = { ...businessData, phoneNumber }
         }
 
+        const currentBusinessData = session.businessData?.toObject?.() ?? session.businessData ?? {}
+        const submittedCountryValue = normalizedBusinessData?.countryCode || normalizedBusinessData?.country
+        const submittedCountryCode = submittedCountryValue
+            ? resolveCountryMetadata(submittedCountryValue).countryCode
+            : currentBusinessData.countryCode
+        const changesValidatedAddressCountry = Boolean(
+            currentBusinessData.addressPlaceId &&
+            submittedCountryCode &&
+            submittedCountryCode !== currentBusinessData.countryCode
+        )
+        const includesAddressData = normalizedBusinessData && ([
+            "address",
+            "addressPlaceId",
+            "addressSessionToken",
+            "latitude",
+            "longitude"
+        ].some((field) => Object.prototype.hasOwnProperty.call(normalizedBusinessData, field)) || changesValidatedAddressCountry)
+
+        if (includesAddressData) {
+            const countryMetadata = resolveCountryMetadata(
+                normalizedBusinessData.countryCode || normalizedBusinessData.country
+            )
+            const addressPlaceId = normalizedBusinessData.addressPlaceId?.trim()
+            const addressSessionToken = normalizedBusinessData.addressSessionToken?.trim()
+
+            if (addressPlaceId && addressSessionToken) {
+                const selectedAddress = await resolveGooglePlace({
+                    placeId: addressPlaceId,
+                    countryCode: countryMetadata.countryCode,
+                    sessionToken: addressSessionToken
+                })
+                normalizedBusinessData = { ...normalizedBusinessData, ...selectedAddress }
+            } else {
+                const isPreviouslyValidatedAddress = Boolean(
+                    currentBusinessData.addressPlaceId &&
+                    normalizedBusinessData.address === currentBusinessData.address &&
+                    normalizedBusinessData.addressPlaceId === currentBusinessData.addressPlaceId &&
+                    countryMetadata.countryCode === currentBusinessData.countryCode &&
+                    Number.isFinite(currentBusinessData.latitude) &&
+                    Number.isFinite(currentBusinessData.longitude)
+                )
+
+                if (!isPreviouslyValidatedAddress) {
+                    return res.status(400).json({ message: "Select a valid address from the suggestions" })
+                }
+
+                normalizedBusinessData = {
+                    ...normalizedBusinessData,
+                    address: currentBusinessData.address,
+                    addressPlaceId: currentBusinessData.addressPlaceId,
+                    latitude: currentBusinessData.latitude,
+                    longitude: currentBusinessData.longitude
+                }
+            }
+
+            delete normalizedBusinessData.addressSessionToken
+        }
+
         if (normalizedBusinessData) {
             session.businessData = {
                 ...session.businessData,
@@ -286,6 +365,12 @@ export async function updateSession(req, res) {
             businessData: session.businessData
         })
     } catch (err) {
+        if (err instanceof PlacesServiceError) {
+            return res.status(err.status).json({ message: err.message })
+        }
+        if (isCountryResolutionError(err)) {
+            return res.status(400).json({ message: err.message })
+        }
         console.error("Update session error:", err)
         return res.status(500).json({ message: "Server error updating session" })
     }
@@ -320,6 +405,19 @@ export async function completeOnboarding(req, res) {
         const businessSlug = data.slug.trim().toLowerCase()
         const businessCountry = data.country.trim()
         const businessAddress = data.address.trim()
+        const businessLatitude = Number(data.latitude)
+        const businessLongitude = Number(data.longitude)
+        if (
+            !hasRequiredText(data.addressPlaceId) ||
+            !Number.isFinite(businessLatitude) ||
+            businessLatitude < -90 ||
+            businessLatitude > 90 ||
+            !Number.isFinite(businessLongitude) ||
+            businessLongitude < -180 ||
+            businessLongitude > 180
+        ) {
+            return res.status(400).json({ message: "Select a valid address from the suggestions" })
+        }
         const businessPhoneNumber = normalizeInternationalPhoneNumber(data.phoneNumber)
         if (!businessPhoneNumber) {
             return res.status(400).json({ message: "Enter a complete, valid phone number" })
@@ -387,6 +485,9 @@ export async function completeOnboarding(req, res) {
             businessType: resolvedBusinessType,
             modules: getDefaultBusinessModules(resolvedBusinessType),
             address: businessAddress,
+            addressPlaceId: data.addressPlaceId.trim(),
+            latitude: businessLatitude,
+            longitude: businessLongitude,
             phoneNumber: businessPhoneNumber,
             contactEmail: businessContactEmail,
             country: countryMetadata.country,

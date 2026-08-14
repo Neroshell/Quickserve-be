@@ -9,6 +9,9 @@ const BusinessDataSchema = new mongoose.Schema({
     country: { type: String },
     countryCode: { type: String },
     address: { type: String },
+    addressPlaceId: { type: String },
+    latitude: { type: Number, min: -90, max: 90 },
+    longitude: { type: Number, min: -180, max: 180 },
     contactEmail: { type: String },
     phoneNumber: { type: String },
     

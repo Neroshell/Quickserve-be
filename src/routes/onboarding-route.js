@@ -1,8 +1,15 @@
 import express from "express"
-import { startSignup, resendVerificationEmail, verifyEmail, getSession, updateSession, completeOnboarding } from "../controllers/onboardingController.js"
+import rateLimit from "express-rate-limit"
+import { startSignup, resendVerificationEmail, verifyEmail, getSession, updateSession, completeOnboarding, getAddressSuggestions } from "../controllers/onboardingController.js"
 import Plan from "../models/Plan.js"
 
 const router = express.Router()
+const addressSearchLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 60,
+    standardHeaders: "draft-8",
+    legacyHeaders: false
+})
 
 /**
  * @swagger
@@ -14,6 +21,7 @@ const router = express.Router()
 router.post("/signup", startSignup)
 router.post("/resend-verification", resendVerificationEmail)
 router.post("/verify-email", verifyEmail)
+router.get("/session/:sessionId/address-suggestions", addressSearchLimiter, getAddressSuggestions)
 router.get("/session/:sessionId", getSession)
 router.patch("/session/:sessionId", updateSession)
 router.post("/session/:sessionId/complete", completeOnboarding)

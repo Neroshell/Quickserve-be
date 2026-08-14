@@ -94,6 +94,9 @@ const BusinessSchema = new mongoose.Schema({
         match: /^[a-z0-9-]+$/
     },
     address: { type: String, default: "" },
+    addressPlaceId: { type: String, default: "" },
+    latitude: { type: Number, min: -90, max: 90, default: null },
+    longitude: { type: Number, min: -180, max: 180, default: null },
     phoneNumber: { type: String, default: "" },
     contactEmail: { type: String, default: "" },
     currency: { type: String, default: "EUR" },
