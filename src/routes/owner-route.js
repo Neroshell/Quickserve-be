@@ -34,6 +34,7 @@ import {
 import { cancelOwnerHotelReservation } from "../controllers/reservationCancellationController.js"
 
 import { requireAuth, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
+import { requireEntitlement } from "../middleware/subscriptionMiddleware.js"
 import { connectAccount, getStripeStatus, getStripeDashboardLink, getPayoutSummary } from "../controllers/stripeConnectController.js"
 import {
     getBillingOverview,
@@ -138,7 +139,7 @@ router.post("/setup-progress/dismiss", requirePrimaryOwner, dismissSetupGuide)
  *       200:
  *         description: Analytical graphs and stats
  */
-router.get("/analytics", ownerAnalytics)
+router.get("/analytics", requireEntitlement("advancedAnalytics"), ownerAnalytics)
 
 /**
  * @openapi

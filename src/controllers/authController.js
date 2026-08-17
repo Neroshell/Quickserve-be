@@ -6,7 +6,7 @@ import { sendAuthEmail, sendEmailChangeVerification, sendEmailChangeNotification
 import { hashToken } from "../utils/tokenHash.js";
 import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from "../utils/emailAvailability.js";
 import { resolveBusinessCapabilities, resolveBusinessModules } from "../services/businessCapabilityService.js";
-
+import { resolveSubscriptionEntitlements } from "../services/subscriptionEntitlementService.js";
 /**
  * Validate an invitation token
  * GET /auth/invite/validate?token=...
@@ -360,7 +360,7 @@ export async function getMe(req, res) {
         // Optionally, grab fresh data from DB to ensure user isn't disabled
         if (role === 'owner') {
             const business = await Business.findOne({ ownerEmail: email, ownerStatus: "active" })
-                .select('ownerEmail ownerName displayName businessType modules capabilities currency taxRate timezone ownerStatus')
+                .select('ownerEmail ownerName displayName businessType modules capabilities currency taxRate timezone ownerStatus currentPlan billingStatus')
                 .lean();
             if (!business) return res.status(401).json({ message: "Account disabled or not found." });
             return res.json({ 
@@ -370,6 +370,7 @@ export async function getMe(req, res) {
                 businessType: business.businessType || "restaurant",
                 modules: resolveBusinessModules(business),
                 capabilities: resolveBusinessCapabilities(business),
+                entitlements: resolveSubscriptionEntitlements(business),
                 currency: business.currency || "USD",
                 taxRate: business.taxRate || 0,
                 timezone: business.timezone || "UTC"
@@ -384,7 +385,7 @@ export async function getMe(req, res) {
                     { businessId: staff.businessId },
                     { businessId: staff.businessId }
                 ]
-            }).select('businessType modules currency taxRate timezone').lean();
+            }).select('businessType modules currency taxRate timezone currentPlan billingStatus').lean();
 
             return res.json({ 
                 ...req.session.user, 
@@ -393,6 +394,7 @@ export async function getMe(req, res) {
                 businessType: business?.businessType || "restaurant",
                 modules: resolveBusinessModules(business),
                 capabilities: resolveBusinessCapabilities(business),
+                entitlements: resolveSubscriptionEntitlements(business),
                 currency: business?.currency || "USD",
                 taxRate: business?.taxRate || 0,
                 timezone: business?.timezone || "UTC"

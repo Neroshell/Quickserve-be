@@ -1,5 +1,6 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
+import { resolveSubscriptionEntitlements } from "../services/subscriptionEntitlementService.js"
 import GuestSession from "../models/GuestSession.js"
 import ServicePoint from "../models/ServicePoint.js"
 import ServiceRequest from "../models/ServiceRequest.js"
@@ -576,23 +577,45 @@ export async function updateBranding(req, res) {
             return res.status(400).json({ error: "Invalid cover image URL" })
         }
 
-        const currentPlan = business.currentPlan || "basic";
-        const canUseBranding = ["growth", "pro"].includes(currentPlan)
+        const entitlements = resolveSubscriptionEntitlements(business);
+        const hasAdvancedBranding = entitlements.advancedBranding;
 
-        if (!canUseBranding) {
-            return res.status(403).json({ error: "Branding is available on Growth and Pro plans." })
+        // If the user does NOT have advanced branding, ensure they aren't trying to change advanced fields
+        if (!hasAdvancedBranding) {
+            const currentBranding = business.branding || {};
+            const attemptedAdvancedChange = 
+                (primaryColor !== undefined && primaryColor !== currentBranding.primaryColor && primaryColor !== "#EA601A") ||
+                (secondaryColor !== undefined && secondaryColor !== currentBranding.secondaryColor && secondaryColor !== "#2B304C") ||
+                (accentColor !== undefined && accentColor !== currentBranding.accentColor && accentColor !== "#FB923C") ||
+                (backgroundColor !== undefined && backgroundColor !== currentBranding.backgroundColor && backgroundColor !== "#F8F9FA") ||
+                (removeQuickServeBranding !== undefined && removeQuickServeBranding !== currentBranding.removeQuickServeBranding && removeQuickServeBranding !== false);
+
+            if (attemptedAdvancedChange) {
+                return res.status(403).json({
+                    error: "ENTITLEMENT_REQUIRED",
+                    feature: "advancedBranding",
+                    requiredPlan: "growth",
+                    message: "This feature is available on the Growth plan."
+                });
+            }
         }
 
-        business.branding = {
+        const newBranding = {
             enabled: typeof enabled === "boolean" ? enabled : business.branding?.enabled || false,
-            logoUrl: logoUrl || null,
-            coverImageUrl: coverImageUrl || null,
-            primaryColor: primaryColor || "#EA601A",
-            secondaryColor: secondaryColor || "#2B304C",
-            accentColor: accentColor || "#FB923C",
-            backgroundColor: backgroundColor || "#F8F9FA",
-            removeQuickServeBranding: currentPlan === "pro" && removeQuickServeBranding === true
+            logoUrl: logoUrl !== undefined ? logoUrl : business.branding?.logoUrl || null,
+            coverImageUrl: coverImageUrl !== undefined ? coverImageUrl : business.branding?.coverImageUrl || null,
+            primaryColor: primaryColor !== undefined ? primaryColor : business.branding?.primaryColor || "#EA601A",
+            secondaryColor: secondaryColor !== undefined ? secondaryColor : business.branding?.secondaryColor || "#2B304C",
+            accentColor: accentColor !== undefined ? accentColor : business.branding?.accentColor || "#FB923C",
+            backgroundColor: backgroundColor !== undefined ? backgroundColor : business.branding?.backgroundColor || "#F8F9FA",
+            removeQuickServeBranding: removeQuickServeBranding !== undefined ? removeQuickServeBranding : business.branding?.removeQuickServeBranding || false
+        };
+
+        if (newBranding.removeQuickServeBranding === true && !hasAdvancedBranding) {
+            newBranding.removeQuickServeBranding = false;
         }
+
+        business.branding = newBranding;
 
         await business.save()
 
