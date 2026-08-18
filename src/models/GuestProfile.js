@@ -83,4 +83,21 @@ const guestProfileSchema = new mongoose.Schema(
 // Compound unique index so an email can only have one profile per business
 guestProfileSchema.index({ businessId: 1, email: 1 }, { unique: true })
 
+// ─── Cursor-pagination compound indexes ──────────────────────────────────────
+// Each index supports a specific CRM segment → sort combination used by
+// readOwnerGuestsPage.  The _id tiebreaker guarantees deterministic ordering.
+
+// Customers default, consent_only, no_consent, recent, inactive segments
+// all sort by lastVisitAt DESC.
+guestProfileSchema.index({ businessId: 1, guestStatus: 1, lastVisitAt: -1, _id: -1 })
+
+// top_spenders segment sorts by totalSpendCents DESC.
+guestProfileSchema.index({ businessId: 1, guestStatus: 1, totalSpendCents: -1, _id: -1 })
+
+// most_orders segment sorts by orderCount DESC.
+guestProfileSchema.index({ businessId: 1, guestStatus: 1, orderCount: -1, _id: -1 })
+
+// highest_visits segment sorts by visitCount DESC.
+guestProfileSchema.index({ businessId: 1, guestStatus: 1, visitCount: -1, _id: -1 })
+
 export default mongoose.models.GuestProfile || mongoose.model("GuestProfile", guestProfileSchema)
