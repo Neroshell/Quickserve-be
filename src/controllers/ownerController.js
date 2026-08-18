@@ -8,7 +8,7 @@ import Business from "../models/Business.js"
 import Feedback from "../models/Feedback.js"
 import Staff from "../models/Staff.js"
 import MenuItem from "../models/menuItem.js"
-import { readOwnerTransactions } from "../services/transactionReadService.js"
+import { readOwnerTransactionsPage, aggregateTransactionSummary } from "../services/ownerTransactionsReadService.js"
 import {
     OwnerOrdersCursorError,
     readOwnerOrdersPage,
@@ -581,7 +581,16 @@ export async function updateBranding(req, res) {
 // Unified transaction read model for food-service orders and hotel reservations.
 export async function ownerTransactions(req, res) {
     try {
-        const { range = "today", from, to, search = "" } = req.query
+        const {
+            range = "today",
+            from,
+            to,
+            search = "",
+            cursor,
+            direction = "next",
+            module: txnModule = "overview",
+            filterBy = "all",
+        } = req.query
         const businessId = req.session?.user?.businessId
 
         if (!businessId) {
@@ -631,18 +640,32 @@ export async function ownerTransactions(req, res) {
                 break
         }
 
-        const transactions = await readOwnerTransactions({
-            businessId,
-            createdAt: { $gte: startDateJS, $lt: endDateJS },
-            search,
-        })
+        const dateRangeBounds = { $gte: startDateJS, $lt: endDateJS }
 
-        const displayTransactions = transactions.map((transaction) => {
+        const [pageResult, summary] = await Promise.all([
+            readOwnerTransactionsPage({
+                businessId,
+                dateRangeBounds,
+                search,
+                module: txnModule,
+                filterBy,
+                limit: 25,
+                cursor: cursor || null,
+                direction,
+            }),
+            aggregateTransactionSummary({
+                businessId,
+                dateRangeBounds,
+                search,
+                module: txnModule,
+            }),
+        ])
+
+        const displayTransactions = pageResult.transactions.map((transaction) => {
             if (transaction.sourceType === "reservation") return transaction
 
             return {
                 ...transaction,
-                
                 servicePointLabel:
                     transaction.displayLabel ||
                     transaction.servicePointLabel ||
@@ -650,8 +673,16 @@ export async function ownerTransactions(req, res) {
             }
         })
 
-        return res.json({ range, transactions: displayTransactions })
+        return res.json({
+            range,
+            transactions: displayTransactions,
+            summary,
+            pagination: pageResult.pagination,
+        })
     } catch (err) {
+        if (err.status === 400) {
+            return res.status(400).json({ error: err.message })
+        }
         console.error("[ownerTransactions]", err)
         return res.status(500).json({ error: "Failed to fetch owner transactions" })
     }

@@ -344,6 +344,8 @@ ReservationSchema.index({
   checkOutDate: 1,
   status: 1,
 });
+// Supports stable owner-transaction cursor pagination (createdAt DESC, _id DESC).
+ReservationSchema.index({ businessId: 1, createdAt: -1, _id: -1 });
 
 // Cross-field validation: the start/end time range is the source of truth and
 // must stay consistent with durationMinutes. Runs on every save (no exemptions).
