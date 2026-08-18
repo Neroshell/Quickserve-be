@@ -103,12 +103,56 @@ router.patch("/branding", updateBranding)
  * @openapi
  * /owner/orders:
  *   get:
- *     summary: Get all orders for the owner's business
+ *     summary: Get a cursor-paginated page of orders for the owner's business
  *     tags:
  *       - Owner Core
+ *     parameters:
+ *       - in: query
+ *         name: range
+ *         schema:
+ *           type: string
+ *           enum: [today, yesterday, 7days, thisMonth, custom]
+ *       - in: query
+ *         name: from
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: to
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [all, placed, in_progress, ready, completed]
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: cursor
+ *         description: Opaque cursor returned by a previous response
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: direction
+ *         schema:
+ *           type: string
+ *           enum: [next, previous]
+ *           default: next
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 25
+ *           maximum: 25
  *     responses:
  *       200:
- *         description: List of orders
+ *         description: Orders, global status counts, and cursor metadata
+ *       400:
+ *         description: Invalid date range or malformed cursor
  */
 router.get("/orders", ownerOrders)
 router.get("/transactions", ownerTransactions)

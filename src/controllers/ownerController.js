@@ -10,6 +10,10 @@ import Staff from "../models/Staff.js"
 import MenuItem from "../models/menuItem.js"
 import { readOwnerTransactions } from "../services/transactionReadService.js"
 import {
+    OwnerOrdersCursorError,
+    readOwnerOrdersPage,
+} from "../services/ownerOrdersReadService.js"
+import {
     invalidatePublicBusinessConfig,
     invalidatePublicBusinessRoute,
 } from "../services/cacheInvalidationService.js"
@@ -33,10 +37,19 @@ function getBusinessDayRange() {
     }
 }
 
-// GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...
+// GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...&cursor=...&direction=next|previous&limit=25
 export async function ownerOrders(req, res) {
     try {
-        const { range = "today", from, to, status = "all", search = "" } = req.query
+        const {
+            range = "today",
+            from,
+            to,
+            status = "all",
+            search = "",
+            cursor,
+            direction = "next",
+            limit,
+        } = req.query
         const businessId = req.session?.user?.businessId
 
         if (!businessId) {
@@ -87,88 +100,16 @@ export async function ownerOrders(req, res) {
                 endDateJS = todayEnd.toJSDate()
         }
 
-        // 2. Build MongoDB Query
-        const filter = {
+        const { rawOrders, counts, pagination } = await readOwnerOrdersPage({
             businessId,
-            createdAt: { $gte: startDateJS, $lt: endDateJS },
-        }
-
-        const WAITER_STATUSES = ["placed", "in_progress", "ready", "completed"]
-
-        // Status filtering internally applies to counts visually in FE but API dictates exact dataset
-        if (status !== "all" && WAITER_STATUSES.includes(status)) {
-            filter.status = status
-        } else {
-            filter.status = { $in: WAITER_STATUSES }
-        }
-
-        // If we strictly want search DB-side we can implement it, OR we fetch the array and the frontend trims. 
-        // Frontend search is generally fine for <1000 orders/day, but doing it backend scales better. (Regex on orderId/servicePointLabel).
-        if (search) {
-            const escapeRegex = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const searchRegex = new RegExp(escapeRegex(search), "i")
-            filter.$or = [
-                { orderId: { $regex: searchRegex } },
-                { servicePointLabel: { $regex: searchRegex } }
-            ]
-        }
-
-
-        // 3. Fetch Orders
-        const rawOrders = await Order.find(
-            filter,
-            {
-                _id: 0,
-                orderId: 1,
-                servicePointId: 1,
-                servicePointLabel: 1,
-                displayLabel: 1,
-                orderType: 1,
-                status: 1,
-                createdAt: 1,
-                updatedAt: 1,
-                readyAt: 1,
-                items: 1,
-                total: 1,
-                currency: 1,
-                paymentChannel: 1,
-                paymentStatus: 1,
-                paidVia: 1,
-                receiptEmail: 1,
-                receiptSent: 1,
-                receiptSentAt: 1,
-                completedBy: 1,
-                subtotal: 1,
-                taxAmount: 1,
-                platformFeeTotal: 1,
-                tipAmount: 1,
-                tipType: 1,
-                tipPercentage: 1,
-                platformFeeCents: 1,
-                customerPlatformFeeCents: 1,
-                businessAbsorbedPlatformFeeCents: 1,
-            }
-        )
-            .sort({ updatedAt: -1, createdAt: -1 })
-            .lean()
-
-        // 4. Calculate Status Counts across the ACTIVE date range
-        // Note: Counts ignore the current 'status' or 'search' filter so UI tabs show total accurate pool volume
-        const countsFilter = {
-            businessId,
-            createdAt: { $gte: startDateJS, $lt: endDateJS },
-            status: { $in: WAITER_STATUSES }
-        }
-
-        const countsAgg = await Order.aggregate([
-            { $match: countsFilter },
-            { $group: { _id: "$status", count: { $sum: 1 } } },
-        ])
-
-        const counts = { placed: 0, in_progress: 0, ready: 0, completed: 0 }
-        for (const row of countsAgg) {
-            if (row?._id && counts[row._id] !== undefined) counts[row._id] = row.count
-        }
+            startDate: startDateJS,
+            endDate: endDateJS,
+            status,
+            search,
+            cursor,
+            direction,
+            limit,
+        })
 
         // 5. Shape output equivalent to Waiter formatting
         const orders = rawOrders.map((o) => {
@@ -228,10 +169,15 @@ export async function ownerOrders(req, res) {
         return res.json({
             range,
             counts,
-            orders
+            orders,
+            pagination,
         })
 
     } catch (err) {
+        if (err instanceof OwnerOrdersCursorError) {
+            return res.status(err.statusCode).json({ error: err.message })
+        }
+
         console.error("[ownerOrders]", err)
         return res.status(500).json({ error: "Failed to fetch owner orders" })
     }

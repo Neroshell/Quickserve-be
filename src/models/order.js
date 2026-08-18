@@ -172,6 +172,10 @@ OrderSchema.index({ businessId: 1, orderId: 1 }, { unique: true })
 OrderSchema.index({ businessId: 1, paymentStatus: 1, paidAt: 1 })
 // Supports tenant-scoped operational analytics over order creation and status.
 OrderSchema.index({ businessId: 1, createdAt: 1, status: 1 })
+// Supports stable owner-order cursor pagination without a status filter.
+OrderSchema.index({ businessId: 1, createdAt: -1, _id: -1 })
+// Supports stable owner-order cursor pagination for a selected status.
+OrderSchema.index({ businessId: 1, status: 1, createdAt: -1, _id: -1 })
 OrderSchema.index({
   businessId: 1,
   paymentStatus: 1,
