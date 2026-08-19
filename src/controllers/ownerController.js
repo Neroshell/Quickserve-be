@@ -7,6 +7,7 @@ import ServiceRequest from "../models/ServiceRequest.js"
 import Business from "../models/Business.js"
 import Feedback from "../models/Feedback.js"
 import Staff from "../models/Staff.js"
+import { getStaffPresence } from "../services/presenceService.js"
 import MenuItem from "../models/menuItem.js"
 import { readOwnerTransactionsPage, aggregateTransactionSummary } from "../services/ownerTransactionsReadService.js"
 import {
@@ -283,7 +284,7 @@ export async function getDashboardData(req, res) {
                 .limit(5)
                 .lean(),
 
-            Staff.find({ businessId, $or: [{ presenceStatus: "active" }, { status: "active" }] }).lean(),
+            Staff.find({ businessId, role: { $in: ["waiter", "kitchen", "manager", "bartender"] } }, "_id").lean(),
 
             ServiceRequest.find({ businessId, status: "pending", createdAt: { $gte: startDateJS, $lt: endDateJS } }).lean(),
 
@@ -353,7 +354,10 @@ export async function getDashboardData(req, res) {
         const onlinePaymentsOk  = business?.stripeChargesEnabled === true
         const billingStatus     = business?.billingStatus || "incomplete"
         const hasMenu           = true // Placeholder — could query MenuItem count
-        const staffOnlineCount  = activeStaff.length
+        
+        const staffIds = activeStaff.map(s => s._id.toString())
+        const presenceMap = await getStaffPresence(businessId, staffIds)
+        const staffOnlineCount = Object.values(presenceMap).filter(p => p.status === "active").length
 
         // ─── Action Items ───────────────────────────────────────────────────────────
         const actionItems = []

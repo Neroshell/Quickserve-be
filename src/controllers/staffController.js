@@ -4,6 +4,7 @@ import { sendOnboardingEmail } from "../utils/emailService.js"
 import { hashToken } from "../utils/tokenHash.js"
 import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
+import { getStaffPresence } from "../services/presenceService.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
 
@@ -63,10 +64,8 @@ export async function getStaff(req, res) {
             filter.role = { $in: ALLOWED_ROLES }
         }
 
-        // Presence status filter
-        if (status && status !== "all") {
-            filter.presenceStatus = status
-        }
+        // Presence status filter is NOT applied to Mongo; Redis is the source of truth.
+        // We will apply it in-memory after fetching.
 
         const staff = await Staff.find(filter, {
             __v: 0,
@@ -75,20 +74,34 @@ export async function getStaff(req, res) {
             inviteTokenExpires: 0
         }).sort({ createdAt: -1 })
 
+        // Fetch authoritative realtime presence from Redis
+        const staffIds = staff.map(s => s._id.toString());
+        const presenceMap = await getStaffPresence(businessId, staffIds);
+
         // Shape response: always expose staffId, role on each record
-        const result = staff.map((s) => ({
-            staffId: s.staffId,
-            staffId: s.staffId,   // backward compat
-            role: s.role,
-            name: s.name,
-            email: s.email,
-            accountStatus: s.accountStatus,
-            presenceStatus: s.presenceStatus,
-            businessId: s.businessId,
-            businessId: s.businessId, // legacy alias
-            createdAt: s.createdAt,
-            updatedAt: s.updatedAt
-        }))
+        let result = staff.map((s) => {
+            const presenceData = presenceMap[s._id.toString()] || { status: "offline", lastSeenAt: null };
+            return {
+                _id: s._id.toString(),
+                staffId: s.staffId,
+                staffId: s.staffId,   // backward compat
+                role: s.role,
+                name: s.name,
+                email: s.email,
+                accountStatus: s.accountStatus,
+                presenceStatus: presenceData.status,
+                lastSeenAt: presenceData.lastSeenAt,
+                businessId: s.businessId,
+                businessId: s.businessId, // legacy alias
+                createdAt: s.createdAt,
+                updatedAt: s.updatedAt
+            };
+        });
+
+        // Apply presence status filter in-memory if requested
+        if (status && status !== "all") {
+            result = result.filter(s => s.presenceStatus === status);
+        }
 
         return res.json(result)
     } catch (err) {

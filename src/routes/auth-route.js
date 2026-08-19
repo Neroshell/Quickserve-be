@@ -134,7 +134,23 @@ router.post("/login", authLimiter, loginUser);
  */
 router.get("/me", getMe);
 
-import { validateStaffToken, setupStaffPassword, logoutUser } from "../controllers/authController.js";
+import { validateStaffToken, setupStaffPassword, logoutUser, staffHeartbeat } from "../controllers/authController.js";
+import { requireAuth } from "../middleware/authMiddleware.js";
+
+/**
+ * @openapi
+ * /auth/heartbeat:
+ *   post:
+ *     summary: Refresh staff presence TTL
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Heartbeat received successfully
+ *       401:
+ *         description: Unauthorized
+ */
+router.post("/heartbeat", requireAuth, staffHeartbeat);
 
 /**
  * @openapi

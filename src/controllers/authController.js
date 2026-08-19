@@ -7,6 +7,7 @@ import { hashToken } from "../utils/tokenHash.js";
 import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from "../utils/emailAvailability.js";
 import { resolveBusinessCapabilities, resolveBusinessModules } from "../services/businessCapabilityService.js";
 import { resolveSubscriptionEntitlements } from "../services/subscriptionEntitlementService.js";
+import { markStaffActive, markStaffOffline } from "../services/presenceService.js";
 /**
  * Validate an invitation token
  * GET /auth/invite/validate?token=...
@@ -265,11 +266,13 @@ export async function loginUser(req, res) {
             staff.presenceStatus = "active";
             staff.status = "active"; // sync legacy field
             await staff.save();
+            await markStaffActive(staff.businessId, staff._id);
 
             const userObj = {
                 type: "staff",
                 role: staff.role || "waiter",
                 staffId: staff.staffId,
+                staffObjectId: staff._id.toString(), // canonical Mongo _id for presence keys
                 name: staff.name,
                 email: staff.email,
                 businessId: staff.businessId || staff.businessId
@@ -320,6 +323,7 @@ export async function logoutUser(req, res) {
                     staff.presenceStatus = "offline";
                     staff.status = "offline";
                     await staff.save();
+                    await markStaffOffline(staff.businessId, staff._id);
                 }
             } catch (dbErr) {
                 console.error("Logout: failed to set presence offline:", dbErr.message);
@@ -346,6 +350,43 @@ export async function logoutUser(req, res) {
         // Still attempt to clear cookie and return success to the client
         res.clearCookie("qs_dashboard_session");
         return res.json({ message: "Logged out" });
+    }
+}
+
+/**
+ * Refresh staff presence TTL
+ * POST /auth/heartbeat
+ */
+export async function staffHeartbeat(req, res) {
+    try {
+        const sessionUser = req.session?.user;
+        const STAFF_ROLES = ["waiter", "staff", "kitchen", "bartender", "manager", "co_owner"];
+        
+        if (!sessionUser || !STAFF_ROLES.includes(sessionUser.role)) {
+            return res.status(403).json({ message: "Forbidden: Only operational staff can send heartbeats." });
+        }
+        
+        // Refresh Redis TTL using canonical Mongo _id.
+        // staffObjectId is stored in session at login. For sessions created
+        // before this change, fall back to a lightweight DB lookup.
+        let staffMongoId = sessionUser.staffObjectId;
+        if (!staffMongoId) {
+            const Staff = (await import("../models/Staff.js")).default;
+            const staffDoc = await Staff.findOne(
+                { email: sessionUser.email, businessId: sessionUser.businessId },
+                "_id"
+            ).lean();
+            if (!staffDoc) {
+                return res.status(404).json({ message: "Staff record not found." });
+            }
+            staffMongoId = staffDoc._id.toString();
+        }
+        await markStaffActive(sessionUser.businessId, staffMongoId);
+        
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error("Heartbeat error:", err);
+        return res.status(500).json({ message: "Server error processing heartbeat" });
     }
 }
 
