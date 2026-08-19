@@ -346,6 +346,10 @@ ReservationSchema.index({
 });
 // Supports stable owner-transaction cursor pagination (createdAt DESC, _id DESC).
 ReservationSchema.index({ businessId: 1, createdAt: -1, _id: -1 });
+// Phase 4: Supports bounding and list filtering for timeslot reservations
+ReservationSchema.index({ businessId: 1, archivedAt: 1, date: 1, status: 1 });
+// Phase 4: Supports bounding and list filtering for stay reservations
+ReservationSchema.index({ businessId: 1, archivedAt: 1, checkInDate: 1, status: 1 });
 
 // Cross-field validation: the start/end time range is the source of truth and
 // must stay consistent with durationMinutes. Runs on every save (no exemptions).

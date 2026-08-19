@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Reservation from "../models/Reservation.js";
 import Business from "../models/Business.js";
 import ServicePoint from "../models/ServicePoint.js";
@@ -161,11 +162,24 @@ export function toOwnerReservationResponse(reservation) {
  */
 export async function getReservations(req, res) {
   try {
-    const { businessId } = req.query;
+    const {
+      businessId,
+      view,
+      cursor,
+      previousCursor,
+      limit: reqLimit,
+      status,
+      date,
+      month,
+      search,
+      clientToday,
+    } = req.query;
     
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" });
     }
+
+    const limit = parseInt(reqLimit, 10) || 25;
 
     // Ensure the business belongs to this owner
     const business = await Business.findOne({ businessId, ownerEmail: req.session.user.email }).lean();
@@ -173,18 +187,207 @@ export async function getReservations(req, res) {
       return res.status(403).json({ error: "Unauthorized access to this business" });
     }
 
+    const caps = resolveBusinessCapabilities(business)?.reservations;
+    const isHotel = caps && caps.primaryMode === "stay";
+
     // Keep the owner view synchronized with the same persisted expiry state as
     // the scheduled job, without client-side polling or duplicate UI state.
     await expireAwaitingPaymentReservations({ businessId });
 
-    // Optional filtering by status, date, etc.
-    const { status, date } = req.query;
-    const query = { businessId, archivedAt: null };
-    if (status) query.status = status;
-    if (date) query.date = date;
+    const baseQuery = { businessId, archivedAt: null };
 
-    const reservations = await Reservation.find(query).sort({ date: 1, time: 1 }).lean();
+    // =========================================================================
+    // 1. NON-PAGINATED VIEWS: CALENDAR AND DAY
+    // =========================================================================
+
+    if (view === "calendar") {
+      if (!month) return res.status(400).json({ error: "month (YYYY-MM) is required for calendar view" });
+      const monthStart = `${month}-01`;
+      const nextMonthDate = new Date(`${month}-01T00:00:00Z`);
+      nextMonthDate.setUTCMonth(nextMonthDate.getUTCMonth() + 1);
+      const monthEnd = nextMonthDate.toISOString().split("T")[0];
+
+      if (isHotel) {
+        baseQuery.checkInDate = { $lt: monthEnd };
+        baseQuery.checkOutDate = { $gt: monthStart };
+      } else {
+        baseQuery.date = { $regex: `^${month}` };
+      }
+      const reservations = await Reservation.find(baseQuery).lean();
+      return res.json(reservations.map(toOwnerReservationResponse));
+    }
+
+    if (view === "day") {
+      if (!date) return res.status(400).json({ error: "date (YYYY-MM-DD) is required for day view" });
+
+      if (isHotel) {
+        baseQuery.checkInDate = { $lte: date };
+        baseQuery.checkOutDate = { $gt: date };
+      } else {
+        baseQuery.date = date;
+      }
+      const reservations = await Reservation.find(baseQuery).lean();
+      return res.json(reservations.map(toOwnerReservationResponse));
+    }
+
+    // =========================================================================
+    // 2. PAGINATED VIEW: LIST (OR LEGACY FALLBACK)
+    // =========================================================================
     
+    const activeQuery = { ...baseQuery };
+    if (status && status !== "all") activeQuery.status = status;
+    if (date) {
+      if (isHotel) {
+        activeQuery.checkInDate = date;
+      } else {
+        activeQuery.date = date;
+      }
+    }
+    
+    if (search) {
+      const queryRegex = new RegExp(search, "i");
+      activeQuery.$or = [
+        { customerName: queryRegex },
+        { email: queryRegex },
+        { phone: queryRegex }
+      ];
+    }
+
+    if (view === "list") {
+      // A. Calculate Global Stats and Total Count
+      const todayStr = clientToday || new Date().toISOString().split("T")[0];
+      
+      const [statsResult, totalCount] = await Promise.all([
+        Reservation.aggregate([
+          { $match: baseQuery }, // Global to the business, unaffected by activeQuery filters
+          {
+            $group: {
+              _id: null,
+              today: {
+                $sum: {
+                  $cond: [
+                    { $eq: [{ $ifNull: ["$checkInDate", "$date"] }, todayStr] },
+                    1, 0
+                  ]
+                }
+              },
+              upcoming: {
+                $sum: {
+                  $cond: [
+                    { $gt: [{ $ifNull: ["$checkInDate", "$date"] }, todayStr] },
+                    1, 0
+                  ]
+                }
+              },
+              pending: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] } },
+              confirmed: { $sum: { $cond: [{ $eq: ["$status", "confirmed"] }, 1, 0] } },
+              arrived: { $sum: { $cond: [{ $eq: ["$status", "arrived"] }, 1, 0] } }
+            }
+          }
+        ]),
+        Reservation.countDocuments(activeQuery)
+      ]);
+
+      const stats = statsResult[0] || { today: 0, upcoming: 0, pending: 0, confirmed: 0, arrived: 0 };
+      delete stats._id;
+
+      // B. Build Cursor Traversal
+      // Sort semantics: Pending first (statusRank 0), then Date ASC, Time ASC, _id ASC.
+      const sortAsc = { statusRank: 1, sortDate: 1, sortTime: 1, _id: 1 };
+      const sortDesc = { statusRank: -1, sortDate: -1, sortTime: -1, _id: -1 };
+      
+      let cursorMatch = null;
+      let isReversing = false;
+
+      if (previousCursor) {
+        isReversing = true;
+        const c = JSON.parse(Buffer.from(previousCursor, "base64url").toString("utf-8"));
+        cursorMatch = {
+          $or: [
+            { statusRank: { $lt: c.statusRank } },
+            { statusRank: c.statusRank, sortDate: { $lt: c.sortDate } },
+            { statusRank: c.statusRank, sortDate: c.sortDate, sortTime: { $lt: c.sortTime } },
+            { statusRank: c.statusRank, sortDate: c.sortDate, sortTime: c.sortTime, _id: { $lt: new mongoose.Types.ObjectId(c._id) } }
+          ]
+        };
+      } else if (cursor) {
+        const c = JSON.parse(Buffer.from(cursor, "base64url").toString("utf-8"));
+        cursorMatch = {
+          $or: [
+            { statusRank: { $gt: c.statusRank } },
+            { statusRank: c.statusRank, sortDate: { $gt: c.sortDate } },
+            { statusRank: c.statusRank, sortDate: c.sortDate, sortTime: { $gt: c.sortTime } },
+            { statusRank: c.statusRank, sortDate: c.sortDate, sortTime: c.sortTime, _id: { $gt: new mongoose.Types.ObjectId(c._id) } }
+          ]
+        };
+      }
+
+      const pipeline = [
+        { $match: activeQuery },
+        {
+          $addFields: {
+            statusRank: { $cond: [{ $eq: ["$status", "pending"] }, 0, 1] },
+            sortDate: { $ifNull: ["$checkInDate", "$date", ""] },
+            sortTime: { $ifNull: ["$time", ""] }
+          }
+        }
+      ];
+
+      if (cursorMatch) pipeline.push({ $match: cursorMatch });
+      pipeline.push({ $sort: isReversing ? sortDesc : sortAsc });
+      pipeline.push({ $limit: limit + 1 });
+
+      let rawReservations = await Reservation.aggregate(pipeline);
+
+      let hasNextPage = false;
+      let hasPreviousPage = false;
+
+      if (isReversing) {
+        hasPreviousPage = rawReservations.length > limit;
+        if (hasPreviousPage) rawReservations.pop();
+        rawReservations.reverse();
+        hasNextPage = true;
+      } else {
+        hasNextPage = rawReservations.length > limit;
+        if (hasNextPage) rawReservations.pop();
+        hasPreviousPage = Boolean(cursor);
+      }
+
+      const encodeCursor = (doc) => {
+        if (!doc) return null;
+        return Buffer.from(
+          JSON.stringify({
+            statusRank: doc.statusRank,
+            sortDate: doc.sortDate,
+            sortTime: doc.sortTime,
+            _id: doc._id.toString()
+          })
+        ).toString("base64url");
+      };
+
+      const nextCursorVal = hasNextPage && rawReservations.length > 0
+        ? encodeCursor(rawReservations[rawReservations.length - 1])
+        : null;
+        
+      const previousCursorVal = hasPreviousPage && rawReservations.length > 0
+        ? encodeCursor(rawReservations[0])
+        : null;
+
+      return res.json({
+        reservations: rawReservations.map(toOwnerReservationResponse),
+        pagination: {
+          hasNextPage,
+          hasPreviousPage,
+          nextCursor: nextCursorVal,
+          previousCursor: previousCursorVal,
+          totalCount
+        },
+        stats
+      });
+    }
+
+    // Legacy unpaginated fallback (if UI hasn't been updated yet or view is omitted)
+    const reservations = await Reservation.find(activeQuery).sort({ date: 1, time: 1 }).lean();
     res.json(reservations.map(toOwnerReservationResponse));
   } catch (error) {
     console.error("[reservationController.getReservations] Error:", error);
