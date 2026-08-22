@@ -4,6 +4,7 @@ export function resolveSubscriptionEntitlements(business) {
         crm: false,
         advancedAnalytics: false,
         advancedBranding: false,
+        aiBusinessAnalyst: false,
     };
 
     if (!business) {
@@ -15,11 +16,13 @@ export function resolveSubscriptionEntitlements(business) {
     const { currentPlan } = businessObject;
 
     // We grant Growth entitlements solely based on the currentPlan.
-    // Offline payment failure or past_due billingStatus does not remove CRM or Analytics.
+    // Offline payment failure or past_due billingStatus does not remove
+    // CRM, Analytics, Branding, or AI Business Analyst.
     if (currentPlan === 'growth') {
         entitlements.crm = true;
         entitlements.advancedAnalytics = true;
         entitlements.advancedBranding = true;
+        entitlements.aiBusinessAnalyst = true;
     }
 
     return entitlements;

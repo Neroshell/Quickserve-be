@@ -16,7 +16,7 @@ const REQUIRED_MODULES_BY_BUSINESS_TYPE = DEFAULT_MODULES_BY_BUSINESS_TYPE
 const RESTAURANT_NAVIGATION = Object.freeze([
     Object.freeze({ id: "operations", label: "Operations", items: Object.freeze(["orders", "transactions", "reservations"]) }),
     Object.freeze({ id: "management", label: "Management", items: Object.freeze(["menu", "servicePoints", "staff"]) }),
-    Object.freeze({ id: "insights", label: "Insights", items: Object.freeze(["analytics", "feedback", "guests"]) }),
+    Object.freeze({ id: "insights", label: "Insights", items: Object.freeze(["analytics", "feedback", "guests", "aiBusinessAnalyst"]) }),
     Object.freeze({ id: "account", label: "Account", items: Object.freeze(["billing", "branding", "settings"]) }),
 ])
 
@@ -26,7 +26,7 @@ const HOTEL_NAVIGATION_BASE = Object.freeze([
 
 const HOTEL_NAVIGATION_COMMON = Object.freeze([
     Object.freeze({ id: "management", label: "Management", items: Object.freeze(["staff"]) }),
-    Object.freeze({ id: "insights", label: "Insights", items: Object.freeze(["analytics", "feedback", "guests"]) }),
+    Object.freeze({ id: "insights", label: "Insights", items: Object.freeze(["analytics", "feedback", "guests", "aiBusinessAnalyst"]) }),
     Object.freeze({ id: "account", label: "Account", items: Object.freeze(["billing", "branding", "settings"]) }),
 ])
 

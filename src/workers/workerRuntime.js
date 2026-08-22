@@ -13,11 +13,13 @@ import {
     QUEUE_NAMES,
 } from "../queues/index.js";
 import { isBullMqEmailsEnabled } from "../services/email/emailDispatchService.js";
+import { isAiAnalystWeeklyEnabled } from "../queues/aiAnalystQueue.js";
 import { processBillingJob } from "./processors/billingProcessor.js";
 import { processDiagnosticJob } from "./processors/diagnosticProcessor.js";
 import { processEmailJob } from "./processors/emailProcessor.js";
 import { processPostPaymentJob } from "./processors/postPaymentProcessor.js";
 import { processReservationJob } from "./processors/reservationProcessor.js";
+import { processAiAnalystJob } from "./processors/aiAnalystProcessor.js";
 
 const WORKER_DEFINITIONS = Object.freeze([
     Object.freeze({
@@ -70,6 +72,15 @@ const WORKER_DEFINITIONS = Object.freeze([
         enabled: isPostPaymentQueueEnabled,
         processor: processPostPaymentJob,
         getEntityId: (job) => job.data?.orderId || null,
+    }),
+    Object.freeze({
+        feature: "aiAnalyst",
+        queueName: QUEUE_NAMES.AI_ANALYST,
+        flagName: "AI_ANALYST_WEEKLY_ENABLED",
+        concurrency: 1,
+        enabled: isAiAnalystWeeklyEnabled,
+        processor: processAiAnalystJob,
+        getEntityId: (job) => job.data?.businessId || null,
     }),
 ]);
 

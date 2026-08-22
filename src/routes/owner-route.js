@@ -1,5 +1,6 @@
 import express from "express"
 import { ownerOrders, ownerTransactions, getTableSessionsOverview, getDashboardData, getBranding, updateBranding } from "../controllers/ownerController.js"
+import { getLatestReport, getReportHistory, getReportByPeriod } from "../controllers/ownerAnalystReportController.js"
 import { ownerAnalytics } from "../controllers/ownerAnalyticsController.js"
 import { dismissSetupGuide, getSetupProgress } from "../controllers/setupProgressController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
@@ -958,5 +959,25 @@ router.patch("/billing/platform-fee-settings", requirePrimaryOwner, updatePlatfo
  *         description: Usage reported successfully
  */
 router.post("/billing/report-usage", requirePrimaryOwner, reportOfflineUsage)
+
+// ─── AI Business Analyst ───────────────────────────────────────────────────
+
+router.get(
+    "/ai-business-analyst/latest",
+    requireEntitlement("aiBusinessAnalyst"),
+    getLatestReport,
+)
+
+router.get(
+    "/ai-business-analyst/history",
+    requireEntitlement("aiBusinessAnalyst"),
+    getReportHistory,
+)
+
+router.get(
+    "/ai-business-analyst/:periodKey",
+    requireEntitlement("aiBusinessAnalyst"),
+    getReportByPeriod,
+)
 
 export default router

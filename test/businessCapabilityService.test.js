@@ -33,7 +33,7 @@ test("restaurant capabilities preserve the existing owner navigation", () => {
         [
             { id: "operations", items: ["orders", "transactions", "reservations"] },
             { id: "management", items: ["menu", "servicePoints", "staff"] },
-            { id: "insights", items: ["analytics", "feedback", "guests"] },
+            { id: "insights", items: ["analytics", "feedback", "guests", "aiBusinessAnalyst"] },
             { id: "account", items: ["billing", "branding", "settings"] },
         ]
     )

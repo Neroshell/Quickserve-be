@@ -4,6 +4,7 @@ export const QUEUE_NAMES = Object.freeze({
     RESERVATIONS: "reservations",
     BILLING: "billing",
     POST_PAYMENT: "post-payment",
+    AI_ANALYST: "ai-analyst",
 });
 
 export const DIAGNOSTIC_JOB_NAME = "diagnostic-ping";
@@ -35,4 +36,9 @@ export const BILLING_JOB_NAMES = Object.freeze({
 export const POST_PAYMENT_JOB_NAMES = Object.freeze({
     CRM_ORDER: "crm-order",
     CRM_ORDER_REPAIR_SCAN: "crm-order-repair-scan",
+});
+
+export const AI_ANALYST_JOB_NAMES = Object.freeze({
+    WEEKLY_SCAN: "ai-analyst-weekly-scan",
+    GENERATE_REPORT: "ai-analyst-generate-report",
 });

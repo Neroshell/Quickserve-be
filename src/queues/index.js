@@ -12,6 +12,7 @@ export {
     QUEUE_NAMES,
     POST_PAYMENT_JOB_NAMES,
     RESERVATION_JOB_NAMES,
+    AI_ANALYST_JOB_NAMES,
 } from "./queueNames.js";
 export {
     buildEmailJobId,
@@ -42,3 +43,12 @@ export {
     isPostPaymentQueueEnabled,
     validateCrmOrderPayload,
 } from "./postPaymentQueue.js";
+export {
+    AI_ANALYST_JOB_OPTIONS,
+    buildAiAnalystJobId,
+    enqueueAiAnalystGenerate,
+    enqueueAiAnalystScan,
+    isAiAnalystWeeklyEnabled,
+    validateAiAnalystGeneratePayload,
+    validateAiAnalystScanPayload,
+} from "./aiAnalystQueue.js";
