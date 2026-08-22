@@ -21,6 +21,18 @@ import { processPostPaymentJob } from "./processors/postPaymentProcessor.js";
 import { processReservationJob } from "./processors/reservationProcessor.js";
 import { processAiAnalystJob } from "./processors/aiAnalystProcessor.js";
 
+/**
+ * AI Analyst jobs call Cloudflare Workers AI which can legitimately take
+ * 10–60 seconds. The BullMQ default lockDuration of 30s is insufficient:
+ * a valid long-running generation job would trigger a false stall, causing
+ * a retry and a duplicate Cloudflare call.
+ *
+ * 120 seconds comfortably exceeds the 60s Cloudflare HTTP timeout configured
+ * in .env (CLOUDFLARE_AI_TIMEOUT_MS). BullMQ will auto-renew the lock every
+ * lockDuration/2 = 60s, so even jobs approaching the upper bound are safe.
+ */
+export const AI_ANALYST_LOCK_DURATION = 120_000;
+
 const WORKER_DEFINITIONS = Object.freeze([
     Object.freeze({
         feature: "diagnostic",
@@ -78,6 +90,7 @@ const WORKER_DEFINITIONS = Object.freeze([
         queueName: QUEUE_NAMES.AI_ANALYST,
         flagName: "AI_ANALYST_WEEKLY_ENABLED",
         concurrency: 1,
+        lockDuration: AI_ANALYST_LOCK_DURATION,
         enabled: isAiAnalystWeeklyEnabled,
         processor: processAiAnalystJob,
         getEntityId: (job) => job.data?.businessId || null,
@@ -177,14 +190,18 @@ export async function createWorkerRuntime({
 
             const connection = createConnection({ env });
             unownedConnection = connection;
+            const workerOpts = {
+                connection,
+                concurrency: definition.concurrency,
+                autorun: false,
+            };
+            if (definition.lockDuration !== undefined) {
+                workerOpts.lockDuration = definition.lockDuration;
+            }
             const worker = new WorkerClass(
                 definition.queueName,
                 definition.processor,
-                {
-                    connection,
-                    concurrency: definition.concurrency,
-                    autorun: false,
-                },
+                workerOpts,
             );
             registerWorkerLogging(
                 worker,
