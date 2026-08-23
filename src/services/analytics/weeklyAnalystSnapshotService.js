@@ -227,7 +227,7 @@ export async function generateWeeklySnapshot({
     const periodKey = isoWeekKey(s, tz)
 
     // 3. ranges
-    const ranges = resolveAnalyticsDomainRanges({ preset: "custom", from: s, to: e, now, timezone: tz })
+    const ranges = resolveAnalyticsDomainRanges({ preset: "custom", from: s, to: e, now, timezone: tz, business: biz })
     const fR = ranges.foodOperationalRange
     const lR = ranges.lodgingCalendarRange
     const payable = modules.filter(m => ["foodService", "lodging"].includes(m))

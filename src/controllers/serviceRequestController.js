@@ -59,25 +59,7 @@ async function resolveCallBusinessId(req, token) {
   }
 }
 
-const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
-const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
-
-function getBusinessDayRange() {
-  const now = DateTime.now().setZone(BUSINESS_TZ)
-  const isBeforeRollover = now.hour < ROLLOVER_HOUR
-  const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
-
-  const start = baseDay
-    .startOf("day")
-    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-
-  const end = start.plus({ days: 1 })
-
-  return {
-    startJS: start.toJSDate(),
-    endJS: end.toJSDate(),
-  }
-}
+import { resolveBusinessDay } from "../utils/businessDate.js"
 
 /**
  * Expects a stable per-device waiter id in header:
@@ -248,15 +230,37 @@ export async function listWaiterCalls(req, res) {
       filter.servicePointId = trustedTableServicePointId
     }
 
-    if (status === "active") {
-      filter.status = { $in: ["pending", "acknowledged"] }
-    } else if (["pending", "acknowledged", "resolved", "missed"].includes(String(status))) {
-      filter.status = String(status)
+    const business = await Business.findOne({ businessId }).lean()
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
     }
-    // if status === "all", we don't set filter.status so it fetches everything
 
-    const { startJS, endJS } = getBusinessDayRange()
-    filter.createdAt = { $gte: startJS, $lt: endJS }
+    const { startUtc, endUtcExclusive } = resolveBusinessDay(business)
+
+    const ACTIVE_STATUSES = ["pending", "acknowledged"]
+
+    if (status === "active") {
+      filter.$or = [
+        { createdAt: { $gte: startUtc, $lt: endUtcExclusive }, status: { $in: ACTIVE_STATUSES } },
+        { status: { $in: ACTIVE_STATUSES } }
+      ]
+    } else if (["pending", "acknowledged", "resolved", "missed"].includes(String(status))) {
+      if (ACTIVE_STATUSES.includes(String(status))) {
+        filter.$or = [
+          { createdAt: { $gte: startUtc, $lt: endUtcExclusive }, status: String(status) },
+          { status: String(status) }
+        ]
+      } else {
+        filter.status = String(status)
+        filter.createdAt = { $gte: startUtc, $lt: endUtcExclusive }
+      }
+    } else {
+      // all
+      filter.$or = [
+        { createdAt: { $gte: startUtc, $lt: endUtcExclusive } },
+        { status: { $in: ACTIVE_STATUSES } }
+      ]
+    }
 
     const calls = await ServiceRequest.find(filter, {
       __v: 0,

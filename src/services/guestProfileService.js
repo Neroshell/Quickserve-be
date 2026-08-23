@@ -6,6 +6,7 @@ import GuestProfile from "../models/GuestProfile.js";
 import GuestVisit from "../models/GuestVisit.js";
 import Order from "../models/order.js";
 import { enqueueCrmOrder } from "../queues/postPaymentQueue.js";
+import { resolveBusinessDay } from "../utils/businessDate.js";
 
 export const CRM_ORDER_CLAIM_LEASE_MS = 2 * 60 * 1000;
 export const CRM_REPAIR_THRESHOLD_MS = 5 * 60 * 1000;
@@ -23,15 +24,6 @@ function finiteInteger(value, fallback = 0) {
 
 function safeError(error) {
   return String(error?.message || error?.code || "crm_processing_failed").slice(0, 500);
-}
-
-function localVisitDate(date, timezone = "UTC") {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
 }
 
 function orderSpendCents(order) {
@@ -81,7 +73,7 @@ export function buildCrmLedgerContribution({ order, business, email }) {
     orderId,
     email: ownerEmail,
     orderDate,
-    localVisitDate: localVisitDate(orderDate, business?.timezone || "UTC"),
+    localVisitDate: resolveBusinessDay(business || { timezone: "UTC" }, orderDate).businessDay,
     spendCents: orderSpendCents(order),
     items: aggregateOrderItems(order.items),
   };

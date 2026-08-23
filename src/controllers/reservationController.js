@@ -174,7 +174,7 @@ export async function getReservations(req, res) {
       search,
       clientToday,
     } = req.query;
-    
+
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" });
     }
@@ -233,7 +233,7 @@ export async function getReservations(req, res) {
     // =========================================================================
     // 2. PAGINATED VIEW: LIST (OR LEGACY FALLBACK)
     // =========================================================================
-    
+
     const activeQuery = { ...baseQuery };
     if (status && status !== "all") activeQuery.status = status;
     if (date) {
@@ -243,7 +243,7 @@ export async function getReservations(req, res) {
         activeQuery.date = date;
       }
     }
-    
+
     if (search) {
       const queryRegex = new RegExp(search, "i");
       activeQuery.$or = [
@@ -256,7 +256,7 @@ export async function getReservations(req, res) {
     if (view === "list") {
       // A. Calculate Global Stats and Total Count
       const todayStr = clientToday || new Date().toISOString().split("T")[0];
-      
+
       const [statsResult, totalCount] = await Promise.all([
         Reservation.aggregate([
           { $match: baseQuery }, // Global to the business, unaffected by activeQuery filters
@@ -295,7 +295,7 @@ export async function getReservations(req, res) {
       // Sort semantics: Pending first (statusRank 0), then Date ASC, Time ASC, _id ASC.
       const sortAsc = { statusRank: 1, sortDate: 1, sortTime: 1, _id: 1 };
       const sortDesc = { statusRank: -1, sortDate: -1, sortTime: -1, _id: -1 };
-      
+
       let cursorMatch = null;
       let isReversing = false;
 
@@ -368,7 +368,7 @@ export async function getReservations(req, res) {
       const nextCursorVal = hasNextPage && rawReservations.length > 0
         ? encodeCursor(rawReservations[rawReservations.length - 1])
         : null;
-        
+
       const previousCursorVal = hasPreviousPage && rawReservations.length > 0
         ? encodeCursor(rawReservations[0])
         : null;
@@ -587,7 +587,7 @@ export async function updateReservationStatus(req, res) {
 
     if (statusChanged) {
       console.log("[Reservation] Status change:", previousStatus, "->", status);
-      
+
       const reservationObj = reservation.toObject();
 
       if (status === "confirmed" && !isHotel) {
@@ -598,33 +598,31 @@ export async function updateReservationStatus(req, res) {
         );
       }
 
-      if (status === "arrived" && !isHotel) {
+      // Emit real-time event for every status transition so the dashboard
+      // updates without a manual refresh.
+      {
+        const eventName = `reservation_${status}`;
         const emit = req.app?.locals?.publishEvent || publishReservationEvent;
-        try {
-          await emit(
-            "reservation_arrived",
-            reservation.businessId,
-            ["reservations"],
-            {
-              reservation: {
-                id: String(reservation._id),
-                status: reservation.status,
-                arrivedAt: reservation.arrivedAt,
-                customerName: reservation.customerName,
-                guestCount: reservation.guestCount,
-                date: reservation.date,
-                startTime: reservation.startTime,
-                endTime: reservation.endTime,
-                servicePointLabel: reservation.servicePointLabel || null,
-              },
-            },
-          );
-        } catch (error) {
-          console.error("[Reservation] Arrived SSE publish failed", {
-            reservationId: String(reservation._id),
-            errorClass: error?.name || "Error",
-          });
-        }
+        emit(eventName, reservation.businessId, ["reservations", "owner"], {
+          reservation: {
+            id: String(reservation._id),
+            status: reservation.status,
+            previousStatus,
+            customerName: reservation.customerName,
+            guestCount: reservation.guestCount,
+            date: isHotel ? null : reservation.date,
+            checkInDate: isHotel ? reservation.checkInDate : null,
+            checkOutDate: isHotel ? reservation.checkOutDate : null,
+            startTime: isHotel ? null : reservation.startTime,
+            endTime: isHotel ? null : reservation.endTime,
+            servicePointLabel: reservation.servicePointLabel || null,
+            type: isHotel ? "hotel" : "restaurant",
+          },
+        }).catch(err => console.error("[Reservation] SSE publish failed", {
+          reservationId: String(reservation._id),
+          event: eventName,
+          errorClass: err?.name || "Error",
+        }));
       }
 
       if (!reservationObj.email) {
@@ -847,7 +845,7 @@ export async function deleteReservation(req, res) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     const reservation = await Reservation.findOne(scope);
-    
+
     if (!reservation) {
       return res.status(404).json({ error: "Reservation not found" });
     }

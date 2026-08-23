@@ -3,22 +3,7 @@ import Feedback from "../models/Feedback.js"
 import Order from "../models/order.js"
 import ServicePoint from "../models/ServicePoint.js"
 
-const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
-const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
-
-function getBusinessDayRange() {
-    const now = DateTime.now().setZone(BUSINESS_TZ)
-    const isBeforeRollover = now.hour < ROLLOVER_HOUR
-    const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
-
-    const start = baseDay
-        .startOf("day")
-        .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-
-    const end = start.plus({ days: 1 })
-
-    return { start, end }
-}
+import { resolveAnalyticsDateRange } from "../utils/businessDate.js"
 
 export async function submitFeedback(req, res) {
     try {
@@ -98,51 +83,12 @@ export async function getOwnerFeedbackAnalytics(req, res) {
             return res.status(400).json({ error: "businessId is required" });
         }
 
-        let startDateJS, endDateJS;
-        const { start: todayStart, end: todayEnd } = getBusinessDayRange();
-
-        switch (range) {
-            case "today":
-                startDateJS = todayStart.toJSDate();
-                endDateJS = todayEnd.toJSDate();
-                break;
-            case "yesterday":
-                startDateJS = todayStart.minus({ days: 1 }).toJSDate();
-                endDateJS = todayEnd.minus({ days: 1 }).toJSDate();
-                break;
-            case "7days":
-                startDateJS = todayStart.minus({ days: 6 }).toJSDate();
-                endDateJS = todayEnd.toJSDate();
-                break;
-            case "30days":
-                startDateJS = todayStart.minus({ days: 29 }).toJSDate();
-                endDateJS = todayEnd.toJSDate();
-                break;
-            case "90days":
-                startDateJS = todayStart.minus({ days: 89 }).toJSDate();
-                endDateJS = todayEnd.toJSDate();
-                break;
-            case "12months":
-                startDateJS = todayStart.minus({ months: 12 }).toJSDate();
-                endDateJS = todayEnd.toJSDate();
-                break;
-            case "thisMonth":
-                const currentMonthStart = todayStart.startOf("month").set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 });
-                startDateJS = currentMonthStart.toJSDate();
-                endDateJS = todayEnd.toJSDate();
-                break;
-            case "custom":
-                if (!from || !to) return res.status(400).json({ error: "Missing 'from' or 'to' for custom range" });
-                const customStart = DateTime.fromISO(from, { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 });
-                const customEnd = DateTime.fromISO(to, { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 }).plus({ days: 1 });
-                if (!customStart.isValid || !customEnd.isValid) return res.status(400).json({ error: "Invalid date format" });
-                startDateJS = customStart.toJSDate();
-                endDateJS = customEnd.toJSDate();
-                break;
-            default:
-                startDateJS = todayStart.toJSDate();
-                endDateJS = todayEnd.toJSDate();
+        const business = await Business.findOne({ businessId }).lean();
+        if (!business) {
+            return res.status(404).json({ error: "Business not found" });
         }
+
+        const { startDateJS, endDateJS } = resolveAnalyticsDateRange(business, range, from, to);
 
         const dateFilter = { businessId, createdAt: { $gte: startDateJS, $lt: endDateJS } };
 
@@ -181,7 +127,7 @@ export async function getOwnerFeedbackAnalytics(req, res) {
                 });
             }
 
-            const fDateObj = DateTime.fromJSDate(f.createdAt).setZone(BUSINESS_TZ);
+            const fDateObj = DateTime.fromJSDate(f.createdAt).setZone(business.timezone || "Europe/Malta");
             let trendLabel;
             if (isSingleDay) {
                 trendLabel = `${fDateObj.toFormat("h")}${fDateObj.toFormat("a")}`;

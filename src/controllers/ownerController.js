@@ -18,25 +18,7 @@ import {
     invalidatePublicBusinessConfig,
     invalidatePublicBusinessRoute,
 } from "../services/cacheInvalidationService.js"
-const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
-const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
-
-function getBusinessDayRange() {
-    const now = DateTime.now().setZone(BUSINESS_TZ)
-    const isBeforeRollover = now.hour < ROLLOVER_HOUR
-    const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
-
-    const start = baseDay
-        .startOf("day")
-        .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-
-    const end = start.plus({ days: 1 })
-
-    return {
-        start,
-        end,
-    }
-}
+import { resolveBusinessDay, resolveAnalyticsDateRange } from "../utils/businessDate.js"
 
 // GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...&cursor=...&direction=next|previous&limit=25
 export async function ownerOrders(req, res) {
@@ -57,49 +39,12 @@ export async function ownerOrders(req, res) {
             return res.status(400).json({ error: "businessId is required" })
         }
 
-        let startDateJS, endDateJS
-
-        // 1. Determine Date Range Base
-        const { start: todayStart, end: todayEnd } = getBusinessDayRange()
-
-        switch (range) {
-            case "today":
-                startDateJS = todayStart.toJSDate()
-                endDateJS = todayEnd.toJSDate()
-                break
-            case "yesterday":
-                startDateJS = todayStart.minus({ days: 1 }).toJSDate()
-                endDateJS = todayEnd.minus({ days: 1 }).toJSDate()
-                break
-            case "7days":
-                startDateJS = todayStart.minus({ days: 6 }).toJSDate() // 6 days + today = 7 days
-                endDateJS = todayEnd.toJSDate()
-                break
-            case "thisMonth":
-                // Start of the calendar month, aligned to ROLLOVER_HOUR
-                const currentMonthStart = todayStart.startOf("month").set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-                startDateJS = currentMonthStart.toJSDate()
-                endDateJS = todayEnd.toJSDate()
-                break
-            case "custom":
-                if (!from || !to) {
-                    return res.status(400).json({ error: "Missing 'from' or 'to' for custom range" })
-                }
-                // Parse the "YYYY-MM-DD" keeping business TZ logic
-                const customStart = DateTime.fromISO(from, { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-                const customEnd = DateTime.fromISO(to, { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 }).plus({ days: 1 })
-
-                if (!customStart.isValid || !customEnd.isValid) {
-                    return res.status(400).json({ error: "Invalid date format for custom range" })
-                }
-
-                startDateJS = customStart.toJSDate()
-                endDateJS = customEnd.toJSDate()
-                break
-            default:
-                startDateJS = todayStart.toJSDate()
-                endDateJS = todayEnd.toJSDate()
+        const business = await Business.findOne({ businessId }).lean()
+        if (!business) {
+            return res.status(404).json({ error: "Business not found" })
         }
+
+        const { startDateJS, endDateJS } = resolveAnalyticsDateRange(business, range, from, to)
 
         const { rawOrders, counts, pagination } = await readOwnerOrdersPage({
             businessId,
@@ -248,10 +193,11 @@ export async function getDashboardData(req, res) {
         const businessId = req.session?.user?.businessId
         if (!businessId) return res.status(400).json({ error: "businessId is required" })
 
-        const { start: todayStart, end: todayEnd } = getBusinessDayRange()
-        const startDateJS = todayStart.toJSDate()
-        const endDateJS   = todayEnd.toJSDate()
-        const dateFilter  = { businessId, createdAt: { $gte: startDateJS, $lt: endDateJS } }
+        const business = await Business.findOne({ businessId }).lean()
+        if (!business) return res.status(404).json({ error: "Business not found" })
+
+        const { startDateJS: todayStartJS, endDateJS: todayEndJS } = resolveAnalyticsDateRange(business, "today")
+        const dateFilter  = { businessId, createdAt: { $gte: todayStartJS, $lt: todayEndJS } }
 
         // Expire stale waiter calls before querying
         const now = new Date()
@@ -263,7 +209,6 @@ export async function getDashboardData(req, res) {
         // ─── Run all queries in parallel ─────────────────────────────────────────
         const [
             todayOrdersRaw,
-            business,
             recentFeedback,
             activeStaff,
             pendingWaiterCalls,
@@ -277,8 +222,6 @@ export async function getDashboardData(req, res) {
                 status: { $in: ["placed", "in_progress", "ready", "completed"] }
             }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, servicePointLabel: 1, orderType: 1, paymentChannel: 1, tipAmount: 1 }).lean(),
 
-            Business.findOne({ businessId }).select('stripeChargesEnabled billingStatus currency timezone').lean(),
-
             Feedback.find({ businessId })
                 .sort({ createdAt: -1 })
                 .limit(5)
@@ -286,15 +229,15 @@ export async function getDashboardData(req, res) {
 
             Staff.find({ businessId, role: { $in: ["waiter", "kitchen", "manager", "bartender"] } }, "_id").lean(),
 
-            ServiceRequest.find({ businessId, status: "pending", createdAt: { $gte: startDateJS, $lt: endDateJS } }).lean(),
+            ServiceRequest.find({ businessId, status: "pending", createdAt: { $gte: todayStartJS, $lt: todayEndJS } }).lean(),
 
-            ServiceRequest.find({ businessId, status: "missed", createdAt: { $gte: startDateJS, $lt: endDateJS } }).lean(),
+            ServiceRequest.find({ businessId, status: "missed", createdAt: { $gte: todayStartJS, $lt: todayEndJS } }).lean(),
 
             MenuItem.countDocuments({ businessId }),
 
             Order.countDocuments({
                 businessId,
-                createdAt: { $lt: startDateJS },
+                createdAt: { $lt: todayStartJS },
                 $or: [
                     { status: { $in: ["placed", "in_progress", "ready"] } },
                     { paymentChannel: "offline", paymentStatus: { $ne: "paid" }, status: { $ne: "cancelled" } }
@@ -344,7 +287,7 @@ export async function getDashboardData(req, res) {
             hourlyMap.set(`${h}${ampm}`, 0)
         }
         for (const o of paidOrders) {
-            const dt = DateTime.fromJSDate(o.createdAt).setZone(BUSINESS_TZ)
+            const dt = DateTime.fromJSDate(o.createdAt).setZone(resolveBusinessDay(business).timezone)
             const label = `${dt.toFormat("h")}${dt.toFormat("a")}`
             if (hourlyMap.has(label)) hourlyMap.set(label, hourlyMap.get(label) + Number(((o.total || 0) - Number(o.tipAmount || 0)).toFixed(2)))
         }
@@ -431,7 +374,7 @@ export async function getDashboardData(req, res) {
         recentActivity.sort((a, b) => new Date(b.time) - new Date(a.time))
         const activityFeed = recentActivity.slice(0, 10)
 
-        // â”€â”€ Shape recentFeedback for preview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ─── Shape recentFeedback for preview ──────────────────────────
         const feedbackPreview = recentFeedback.map(f => ({
             id: f._id,
             rating: f.overallRating,
@@ -467,7 +410,7 @@ export async function getDashboardData(req, res) {
     }
 }
 
-// â”€â”€â”€ Branding â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Branding ─────────────────────────────────────────────────────────
 
 export async function getBranding(req, res) {
     try {
@@ -601,48 +544,11 @@ export async function ownerTransactions(req, res) {
             return res.status(400).json({ error: "businessId is required" })
         }
 
-        const { start: todayStart, end: todayEnd } = getBusinessDayRange()
-        let startDateJS
-        let endDateJS
-
-        switch (range) {
-            case "yesterday":
-                startDateJS = todayStart.minus({ days: 1 }).toJSDate()
-                endDateJS = todayEnd.minus({ days: 1 }).toJSDate()
-                break
-            case "7days":
-                startDateJS = todayStart.minus({ days: 6 }).toJSDate()
-                endDateJS = todayEnd.toJSDate()
-                break
-            case "thisMonth":
-                startDateJS = todayStart
-                    .startOf("month")
-                    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-                    .toJSDate()
-                endDateJS = todayEnd.toJSDate()
-                break
-            case "custom": {
-                if (!from || !to) {
-                    return res.status(400).json({ error: "Missing 'from' or 'to' for custom range" })
-                }
-                const customStart = DateTime.fromISO(from, { zone: BUSINESS_TZ })
-                    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-                const customEnd = DateTime.fromISO(to, { zone: BUSINESS_TZ })
-                    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-                    .plus({ days: 1 })
-                if (!customStart.isValid || !customEnd.isValid) {
-                    return res.status(400).json({ error: "Invalid date format for custom range" })
-                }
-                startDateJS = customStart.toJSDate()
-                endDateJS = customEnd.toJSDate()
-                break
-            }
-            case "today":
-            default:
-                startDateJS = todayStart.toJSDate()
-                endDateJS = todayEnd.toJSDate()
-                break
+        const business = await Business.findOne({ businessId }).lean()
+        if (!business) {
+            return res.status(404).json({ error: "Business not found" })
         }
+        const { startDateJS, endDateJS } = resolveOwnerDateRange(business, range, from, to)
 
         const dateRangeBounds = { $gte: startDateJS, $lt: endDateJS }
 

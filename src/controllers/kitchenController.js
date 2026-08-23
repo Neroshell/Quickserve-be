@@ -4,27 +4,8 @@ import Staff from "../models/Staff.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 
-const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
-const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
-
-function getBusinessDayRange() {
-  const now = DateTime.now().setZone(BUSINESS_TZ)
-  const isBeforeRollover = now.hour < ROLLOVER_HOUR
-  const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
-
-  const start = baseDay
-    .startOf("day")
-    .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-
-  const end = start.plus({ days: 1 })
-
-  return {
-    startJS: start.toJSDate(),
-    endJS: end.toJSDate(),
-    businessDay: start.toISODate(),
-    generatedAt: now.toISO(),
-  }
-}
+import Business from "../models/Business.js"
+import { resolveBusinessDay } from "../utils/businessDate.js"
 
 export async function kitchenOrders(req, res) {
   try {
@@ -33,7 +14,12 @@ export async function kitchenOrders(req, res) {
       return res.status(400).json({ error: "businessId is required" })
     }
 
-    const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
+    const business = await Business.findById(businessId).lean()
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+
+    const { startUtc, endUtcExclusive, businessDay, generatedAt } = resolveBusinessDay(business)
 
     const ACTIVE_STATUSES = ["placed", "in_progress", "ready"]
 
@@ -41,8 +27,10 @@ export async function kitchenOrders(req, res) {
     const rawOrders = await Order.find(
       {
         businessId,
-        createdAt: { $gte: startJS, $lt: endJS },
-        status: { $in: ACTIVE_STATUSES },
+        $or: [
+          { createdAt: { $gte: startUtc, $lt: endUtcExclusive } },
+          { status: { $in: ACTIVE_STATUSES } },
+        ],
       },
       {
         __v: 0,
@@ -67,9 +55,13 @@ export async function kitchenOrders(req, res) {
       }
     }).filter(Boolean)
 
-    // Counts for your top cards (optional, but nice)
+    // Counts for your top cards (strictly current business day activity)
     const counts = { placed: 0, in_progress: 0, ready: 0 }
-    for (const o of rawOrders) counts[o.status] = (counts[o.status] || 0) + 1
+    for (const o of rawOrders) {
+      if (o.createdAt >= startUtc && o.createdAt < endUtcExclusive) {
+        counts[o.status] = (counts[o.status] || 0) + 1
+      }
+    }
 
     return res.json({
       businessDay,

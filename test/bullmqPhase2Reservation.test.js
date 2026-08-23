@@ -192,11 +192,13 @@ test("disabled flags preserve behavior and only worker runtime registers schedul
         reservation: false,
         billing: false,
         postPayment: false,
+        aiAnalyst: false,
     });
     assert.deepEqual(disabledWorker, {
         reservation: false,
         billing: false,
         postPayment: false,
+        aiAnalyst: false,
     });
     assert.equal(queueCreates, 0);
 });

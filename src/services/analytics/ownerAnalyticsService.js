@@ -83,6 +83,7 @@ export function createOwnerAnalyticsService({
             to,
             timezone: business.timezone,
             now: generatedAt,
+            business,
         })
         const response = {
             contractVersion: 2,

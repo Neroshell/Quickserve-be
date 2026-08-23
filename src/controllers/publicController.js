@@ -169,7 +169,7 @@ export async function getBusinessBySlug(req, res) {
     }
 
     let business;
-  
+
 
     if (normalizedCountryCode) {
       business = await Business.findOne({ slug: normalizedSlug, countryCode: normalizedCountryCode }).lean();
@@ -180,7 +180,7 @@ export async function getBusinessBySlug(req, res) {
         business = businesses[0];
         redirectUrl = `/b/${business.countryCode || 'mt'}/${business.slug}`;
       } else if (businesses.length > 1) {
-        return res.status(300).json({ 
+        return res.status(300).json({
           error: "Multiple businesses found. Please use the country-specific link.",
           redirects: businesses.map(b => `/b/${b.countryCode || 'mt'}/${b.slug}`)
         });
@@ -190,14 +190,14 @@ export async function getBusinessBySlug(req, res) {
     if (!business) return res.status(404).json({ error: "Business not found" });
 
     if (!["active", "onboarding", "draft"].includes(business.status)) {
-        return res.status(404).json({ error: "Business is not available" });
+      return res.status(404).json({ error: "Business is not available" });
     }
 
 
-    const servicePoints = await ServicePoint.find({ 
-      businessId: business.businessId, 
-      isActive: { $ne: false }, 
-      reservable: { $ne: false } 
+    const servicePoints = await ServicePoint.find({
+      businessId: business.businessId,
+      isActive: { $ne: false },
+      reservable: { $ne: false }
     })
       .select([
         "servicePointId",
@@ -331,7 +331,7 @@ export async function createReservation(req, res) {
         businessId: business.businessId,
         servicePointId,
         status: { $in: ["confirmed", "pending", "accepted_awaiting_payment", "checked_in"] },
-        checkInDate:  { $lt: checkOutDate },
+        checkInDate: { $lt: checkOutDate },
         checkOutDate: { $gt: checkInDate },
       }).lean();
       if (conflict) {
@@ -373,6 +373,21 @@ export async function createReservation(req, res) {
       }
 
       await hotelReservation.save();
+
+      // Emit real-time event so the dashboard updates without a manual refresh
+      const { publishEvent: publishHotelEvent } = await import("../utils/sseManager.js");
+      publishHotelEvent("reservation_created", hotelReservation.businessId, ["reservations", "owner"], {
+        reservation: {
+          id: String(hotelReservation._id),
+          status: hotelReservation.status,
+          customerName: hotelReservation.customerName,
+          guestCount: hotelReservation.guestCount,
+          checkInDate: hotelReservation.checkInDate,
+          checkOutDate: hotelReservation.checkOutDate,
+          servicePointLabel: hotelReservation.servicePointLabel || null,
+          type: "hotel",
+        },
+      }).catch(err => console.error("[createReservation hotel] SSE publish failed:", err));
 
       const reservationObj = hotelReservation.toObject();
       const businessDisplayName = business.displayName || business.name;
@@ -442,7 +457,7 @@ export async function createReservation(req, res) {
     // Date/Time validation (reject past dates)
     const [year, month, day] = date.split("-").map(Number);
     const [hours, minutes] = startTime.split(":").map(Number);
-    
+
     if (!year || isNaN(month) || isNaN(day) || isNaN(hours) || isNaN(minutes)) {
       return res.status(400).json({ error: "Invalid date or time format" });
     }
@@ -452,9 +467,9 @@ export async function createReservation(req, res) {
       return res.status(400).json({ error: "Reservation cannot be in the past" });
     }
 
-    const business = await Business.findOne({ 
-      slug: businessSlug.toLowerCase(), 
-      status: { $in: ["active", "onboarding", "draft"] } 
+    const business = await Business.findOne({
+      slug: businessSlug.toLowerCase(),
+      status: { $in: ["active", "onboarding", "draft"] }
     }).lean();
     if (!business) {
       return res.status(404).json({ error: "Business not found or inactive" });
@@ -508,7 +523,7 @@ export async function createReservation(req, res) {
         startTime: { $lt: endTime },
         endTime: { $gt: startTime }
       }).lean();
-      
+
       if (existingReservation) {
         return res.status(409).json({ error: "This place is already booked for the selected date and time." });
       }
@@ -552,6 +567,24 @@ export async function createReservation(req, res) {
     });
 
     await reservation.save();
+
+    // Emit real-time event so the dashboard updates without a manual refresh
+    (async () => {
+      const { publishEvent: publishRestaurantEvent } = await import("../utils/sseManager.js");
+      publishRestaurantEvent("reservation_created", reservation.businessId, ["reservations", "owner"], {
+        reservation: {
+          id: String(reservation._id),
+          status: reservation.status,
+          customerName: reservation.customerName,
+          guestCount: reservation.guestCount,
+          date: reservation.date,
+          startTime: reservation.startTime,
+          endTime: reservation.endTime,
+          servicePointLabel: reservation.servicePointLabel || null,
+          type: "restaurant",
+        },
+      }).catch(err => console.error("[createReservation restaurant] SSE publish failed:", err));
+    })();
 
     // The reservation is durable before either direct rollback delivery or
     // queued delivery intent is attempted.

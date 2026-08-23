@@ -1,27 +1,8 @@
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
 
-const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
-const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
-
-function getBusinessDayRange() {
-    const now = DateTime.now().setZone(BUSINESS_TZ)
-    const isBeforeRollover = now.hour < ROLLOVER_HOUR
-    const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
-
-    const start = baseDay
-        .startOf("day")
-        .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-
-    const end = start.plus({ days: 1 })
-
-    return {
-        startJS: start.toJSDate(),
-        endJS: end.toJSDate(),
-        businessDay: start.toISODate(),
-        generatedAt: now.toISO(),
-    }
-}
+import Business from "../models/Business.js"
+import { resolveBusinessDay } from "../utils/businessDate.js"
 
 // ✅ NEW: waiter can fetch ANY status (ready/placed/in_progress/completed/all)
 // GET /waitstaff?status=ready
@@ -32,18 +13,25 @@ export async function waiterOrders(req, res) {
             return res.status(400).json({ error: "businessId is required" })
         }
 
-        const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
+        const business = await Business.findById(businessId).lean()
+        if (!business) {
+            return res.status(404).json({ error: "Business not found" })
+        }
+
+        const { startUtc, endUtcExclusive, businessDay, generatedAt } = resolveBusinessDay(business)
 
         const status = String(req.query.status || "ready")
 
-        // ✅ Fetch all relevant statuses so FE can calculate counts for tabs
-        // The FE sends ?status=... but relies on receiving ALL data to show badge counts
+        // Waitstaff active statuses (unresolved work)
+        const ACTIVE_STATUSES = ["placed", "in_progress", "ready"]
         const WAITER_STATUSES = ["placed", "in_progress", "ready", "completed"]
 
         const filter = {
             businessId,
-            createdAt: { $gte: startJS, $lt: endJS },
-            status: { $in: WAITER_STATUSES },
+            $or: [
+                { createdAt: { $gte: startUtc, $lt: endUtcExclusive }, status: { $in: WAITER_STATUSES } },
+                { status: { $in: ACTIVE_STATUSES } }
+            ]
         }
 
         const rawOrders = await Order.find(
@@ -72,8 +60,9 @@ export async function waiterOrders(req, res) {
             .lean()
 
         // ✅ counts for tabs (placed/in_progress/ready/completed)
+        // Only count current day's activity
         const countsAgg = await Order.aggregate([
-            { $match: { businessId, createdAt: { $gte: startJS, $lt: endJS } } },
+            { $match: { businessId, createdAt: { $gte: startUtc, $lt: endUtcExclusive } } },
             { $group: { _id: "$status", count: { $sum: 1 } } },
         ])
 

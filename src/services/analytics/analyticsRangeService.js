@@ -1,4 +1,5 @@
 import { DateTime, IANAZone } from "luxon"
+import { getClosingTime } from "../../utils/businessDate.js"
 
 export const DEFAULT_ANALYTICS_TIMEZONE = "UTC"
 export const FOOD_SERVICE_ROLLOVER_HOUR = 2
@@ -71,7 +72,10 @@ function parseLocalDate(value, timezone, fieldName) {
  * boundary to the first valid local instant and preserves the local 02:00
  * boundary on ordinary and fall-back days.
  */
-function atRollover(localDate, timezone, rolloverHour) {
+function atRollover(localDate, timezone, rolloverHour, business) {
+    if (business && rolloverHour === FOOD_SERVICE_ROLLOVER_HOUR) {
+        return getClosingTime(localDate, business.operatingHours || {})
+    }
     return DateTime.fromObject(
         {
             year: localDate.year,
@@ -86,13 +90,14 @@ function atRollover(localDate, timezone, rolloverHour) {
     )
 }
 
-function getCurrentBusinessDate({ now, timezone, rolloverHour }) {
+function getCurrentBusinessDate({ now, timezone, rolloverHour, business }) {
     const zonedNow = asDateTime(now, timezone)
     const calendarDate = zonedNow.startOf("day")
     const todayRollover = atRollover(
         calendarDate,
         timezone,
-        rolloverHour
+        rolloverHour,
+        business
     )
 
     return zonedNow < todayRollover
@@ -150,6 +155,7 @@ export function resolveAnalyticsRange({
     timezone,
     rolloverHour = FOOD_SERVICE_ROLLOVER_HOUR,
     maxCustomDays = MAX_CUSTOM_ANALYTICS_DAYS,
+    business,
 } = {}) {
     if (!SUPPORTED_PRESETS.has(preset)) {
         throw new AnalyticsRangeError(
@@ -162,6 +168,7 @@ export function resolveAnalyticsRange({
         now,
         timezone: resolvedTimezone,
         rolloverHour,
+        business,
     })
 
     let currentFrom
@@ -225,22 +232,26 @@ export function resolveAnalyticsRange({
     const currentStart = atRollover(
         currentFrom,
         resolvedTimezone,
-        rolloverHour
+        rolloverHour,
+        business
     )
     const currentEnd = atRollover(
         currentTo.plus({ days: 1 }),
         resolvedTimezone,
-        rolloverHour
+        rolloverHour,
+        business
     )
     const comparisonStart = atRollover(
         comparisonDates.from,
         resolvedTimezone,
-        rolloverHour
+        rolloverHour,
+        business
     )
     const comparisonEnd = atRollover(
         comparisonDates.to.plus({ days: 1 }),
         resolvedTimezone,
-        rolloverHour
+        rolloverHour,
+        business
     )
 
     return {
@@ -271,10 +282,12 @@ export function resolveAnalyticsDomainRanges(options = {}) {
         foodOperationalRange: resolveAnalyticsRange({
             ...sharedOptions,
             rolloverHour: FOOD_SERVICE_ROLLOVER_HOUR,
+            business: options.business,
         }),
         lodgingCalendarRange: resolveAnalyticsRange({
             ...sharedOptions,
             rolloverHour: LODGING_CALENDAR_ROLLOVER_HOUR,
+            business: options.business,
         }),
     }
 }

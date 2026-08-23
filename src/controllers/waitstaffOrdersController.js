@@ -26,50 +26,33 @@ import {
   normalizeOrderItems,
 } from "../utils/restaurantOrderValidation.js"
 
-const BUSINESS_TZ = process.env.BUSINESS_TZ || "Europe/Malta"
-const ROLLOVER_HOUR = Number(process.env.BUSINESS_DAY_ROLLOVER_HOUR || 2)
-
-function getBusinessDayRange() {
-    const now = DateTime.now().setZone(BUSINESS_TZ)
-    const isBeforeRollover = now.hour < ROLLOVER_HOUR
-    const baseDay = isBeforeRollover ? now.minus({ days: 1 }) : now
-
-    const start = baseDay
-        .startOf("day")
-        .set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-
-    const end = start.plus({ days: 1 })
-
-    return {
-        start,
-        end,
-        startJS: start.toJSDate(),
-        endJS: end.toJSDate(),
-        businessDay: start.toISODate(),
-        generatedAt: now.toISO(),
-    }
-}
+import { resolveBusinessDay } from "../utils/businessDate.js"
 
 function escapeRegex(value = "") {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-function getHistoryDateRange(range = "yesterday", from, to) {
-    const { start: todayStart, end: todayEnd } = getBusinessDayRange()
+function getHistoryDateRange(business, range = "yesterday", from, to) {
+    const { startUtc, timezone } = resolveBusinessDay(business)
+    const todayStart = DateTime.fromJSDate(startUtc).setZone(timezone)
 
     // Enforce upper bound: Past orders cannot include today's orders
-    const maxEndJS = todayStart.toJSDate()
+    const maxEndJS = startUtc
 
     switch (range) {
         case "today": // Fallback if someone manually passes 'today'
-            return { startJS: todayStart.minus({ days: 1 }).toJSDate(), endJS: maxEndJS }
-        case "yesterday":
-            return { startJS: todayStart.minus({ days: 1 }).toJSDate(), endJS: maxEndJS }
-        case "7days":
-            return { startJS: todayStart.minus({ days: 7 }).toJSDate(), endJS: maxEndJS }
+        case "yesterday": {
+            const yesterdayRes = resolveBusinessDay(business, todayStart.minus({ hours: 1 }).toJSDate())
+            return { startJS: yesterdayRes.startUtc, endJS: maxEndJS }
+        }
+        case "7days": {
+            const pastRes = resolveBusinessDay(business, todayStart.minus({ days: 7 }).toJSDate())
+            return { startJS: pastRes.startUtc, endJS: maxEndJS }
+        }
         case "thisMonth": {
-            const monthStart = todayStart.startOf("month").set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-            return { startJS: monthStart.toJSDate(), endJS: maxEndJS }
+            const monthStart = todayStart.startOf("month")
+            const monthStartRes = resolveBusinessDay(business, monthStart.toJSDate())
+            return { startJS: monthStartRes.startUtc, endJS: maxEndJS }
         }
         case "custom": {
             if (!from || !to) {
@@ -78,22 +61,30 @@ function getHistoryDateRange(range = "yesterday", from, to) {
                 throw error
             }
 
-            const customStart = DateTime.fromISO(String(from), { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 })
-            const customEnd = DateTime.fromISO(String(to), { zone: BUSINESS_TZ }).set({ hour: ROLLOVER_HOUR, minute: 0, second: 0, millisecond: 0 }).plus({ days: 1 })
+            const customStartDT = DateTime.fromISO(String(from), { zone: timezone }).startOf("day")
+            const customEndDT = DateTime.fromISO(String(to), { zone: timezone }).startOf("day")
 
-            if (!customStart.isValid || !customEnd.isValid) {
+            if (!customStartDT.isValid || !customEndDT.isValid) {
                 const error = new Error("Invalid date format for custom range")
                 error.statusCode = 400
                 throw error
             }
 
-            const actualEnd = customEnd > todayStart ? todayStart : customEnd
+            const startRes = resolveBusinessDay(business, customStartDT.toJSDate())
+            const endRes = resolveBusinessDay(business, customEndDT.toJSDate())
+
+            const customStart = startRes.startUtc
+            const customEnd = endRes.endUtcExclusive
+
+            const actualEnd = customEnd > maxEndJS ? maxEndJS : customEnd
             const actualStart = customStart > actualEnd ? actualEnd : customStart
 
-            return { startJS: actualStart.toJSDate(), endJS: actualEnd.toJSDate() }
+            return { startJS: actualStart, endJS: actualEnd }
         }
-        default:
-            return { startJS: todayStart.minus({ days: 1 }).toJSDate(), endJS: maxEndJS }
+        default: {
+            const yesterdayRes = resolveBusinessDay(business, todayStart.minus({ hours: 1 }).toJSDate())
+            return { startJS: yesterdayRes.startUtc, endJS: maxEndJS }
+        }
     }
 }
 
@@ -148,7 +139,13 @@ export async function waiterPastOrders(req, res) {
         const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1)
         const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || "25"), 10) || 25))
         const skip = (page - 1) * limit
-        const { startJS, endJS } = getHistoryDateRange(range, from, to)
+
+        const business = await Business.findById(businessId).lean()
+        if (!business) {
+            return res.status(404).json({ error: "Business not found" })
+        }
+
+        const { startJS, endJS } = getHistoryDateRange(business, range, from, to)
 
         const filter = {
             businessId,
@@ -357,14 +354,19 @@ export async function waiterPastOrders(req, res) {
 // GET /waitstaff?status=ready
 export async function waiterOrders(req, res) {
     try {
-        const { startJS, endJS, businessDay, generatedAt } = getBusinessDayRange()
-
         const status = String(req.query.status || "ready")
         const businessId = req.session?.user?.businessId
 
         if (!businessId) {
             return res.status(401).json({ error: "Unauthorized" })
         }
+
+        const business = await Business.findById(businessId).lean()
+        if (!business) {
+            return res.status(404).json({ error: "Business not found" })
+        }
+
+        const { startUtc, endUtcExclusive, businessDay, generatedAt } = resolveBusinessDay(business)
 
         // Surface the waiter-ordering setting so the dashboard can show/hide the
         // "+ Take Order" button. Defaults to enabled when unset.
@@ -374,14 +376,16 @@ export async function waiterOrders(req, res) {
         ).lean()
         const enableWaiterOrdering = bizPrefs?.orderingPreferences?.enableWaiterOrdering !== false
 
-        // ✅ Fetch all relevant statuses so FE can calculate counts for tabs
-        // The FE sends ?status=... but relies on receiving ALL data to show badge counts
+        // Waitstaff active statuses (unresolved work)
+        const ACTIVE_STATUSES = ["placed", "in_progress", "ready"]
         const WAITER_STATUSES = ["placed", "in_progress", "ready", "completed"]
 
         const filter = {
             businessId,
-            createdAt: { $gte: startJS, $lt: endJS },
-            status: { $in: WAITER_STATUSES },
+            $or: [
+                { createdAt: { $gte: startUtc, $lt: endUtcExclusive }, status: { $in: WAITER_STATUSES } },
+                { status: { $in: ACTIVE_STATUSES } }
+            ]
         }
 
         const rawOrders = await Order.find(
@@ -414,8 +418,9 @@ export async function waiterOrders(req, res) {
             .lean()
 
         // ✅ counts for tabs (placed/in_progress/ready/completed)
+        // Only count current day's activity
         const countsAgg = await Order.aggregate([
-            { $match: { businessId, createdAt: { $gte: startJS, $lt: endJS } } },
+            { $match: { businessId, createdAt: { $gte: startUtc, $lt: endUtcExclusive } } },
             { $group: { _id: "$status", count: { $sum: 1 } } },
         ])
 
