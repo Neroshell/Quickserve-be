@@ -157,9 +157,9 @@ export async function getTableSessionsOverview(req, res) {
         ])
 
         const tableIds = sessions.map(s => s._id)
-        
+
         const servicePoints = await ServicePoint.find(
-            { servicePointId: { $in: tableIds } }, 
+            { servicePointId: { $in: tableIds } },
             "servicePointId label"
         ).lean()
 
@@ -170,7 +170,7 @@ export async function getTableSessionsOverview(req, res) {
 
         const activeSessionsNow = sessions.reduce((acc, curr) => acc + curr.activeDevices, 0)
         const activeTablesNow = sessions.length
-        
+
         const tables = sessions.map(s => ({
             servicePointLabel: s._id,
             label: labelMap[s._id] || s._id,
@@ -197,7 +197,7 @@ export async function getDashboardData(req, res) {
         if (!business) return res.status(404).json({ error: "Business not found" })
 
         const { startDateJS: todayStartJS, endDateJS: todayEndJS } = resolveAnalyticsDateRange(business, "today")
-        const dateFilter  = { businessId, createdAt: { $gte: todayStartJS, $lt: todayEndJS } }
+        const dateFilter = { businessId, createdAt: { $gte: todayStartJS, $lt: todayEndJS } }
 
         // Expire stale waiter calls before querying
         const now = new Date()
@@ -273,11 +273,11 @@ export async function getDashboardData(req, res) {
 
         // ─── Today's KPIs ───────────────────────────────────────────────────────────
         const completedOrders = todayOrdersRaw.filter(o => o.status === "completed")
-        const paidOrders      = todayOrdersRaw.filter(o => o.paymentStatus === "paid")
-        const todayRevenue    = paidOrders.reduce((sum, o) => sum + Number(((o.total || 0) - Number(o.tipAmount || 0)).toFixed(2)), 0)
-        const todayOrders     = todayOrdersRaw.length
-        const tablesServed    = completedOrders.length
-        const activeOrders    = todayOrdersRaw.filter(o => ["placed","in_progress","ready"].includes(o.status)).length
+        const paidOrders = todayOrdersRaw.filter(o => o.paymentStatus === "paid")
+        const todayRevenue = paidOrders.reduce((sum, o) => sum + Number(((o.total || 0) - Number(o.tipAmount || 0)).toFixed(2)), 0)
+        const todayOrders = todayOrdersRaw.length
+        const tablesServed = completedOrders.length
+        const activeOrders = todayOrdersRaw.filter(o => ["placed", "in_progress", "ready"].includes(o.status)).length
 
         // ─── Hourly Revenue (today) ─────────────────────────────────────────────────
         const hourlyMap = new Map()
@@ -294,10 +294,10 @@ export async function getDashboardData(req, res) {
         const hourlyRevenue = Array.from(hourlyMap.entries()).map(([hour, revenue]) => ({ hour, revenue }))
 
         // ─── Business Health ────────────────────────────────────────────────────────
-        const onlinePaymentsOk  = business?.stripeChargesEnabled === true
-        const billingStatus     = business?.billingStatus || "incomplete"
-        const hasMenu           = true // Placeholder — could query MenuItem count
-        
+        const onlinePaymentsOk = business?.stripeChargesEnabled === true
+        const billingStatus = business?.billingStatus || "incomplete"
+        const hasMenu = true // Placeholder — could query MenuItem count
+
         const staffIds = activeStaff.map(s => s._id.toString())
         const presenceMap = await getStaffPresence(businessId, staffIds)
         const staffOnlineCount = Object.values(presenceMap).filter(p => p.status === "active").length
@@ -325,7 +325,7 @@ export async function getDashboardData(req, res) {
 
         // Orders waiting >15 minutes
         const now15 = new Date(Date.now() - 15 * 60 * 1000)
-        const longWaitOrders = todayOrdersRaw.filter(o => ["placed","in_progress"].includes(o.status) && new Date(o.createdAt) < now15)
+        const longWaitOrders = todayOrdersRaw.filter(o => ["placed", "in_progress"].includes(o.status) && new Date(o.createdAt) < now15)
         if (longWaitOrders.length > 0) {
             actionItems.push({ type: "orders", severity: "warning", message: `${longWaitOrders.length} order${longWaitOrders.length > 1 ? "s" : ""} waiting over 15 minutes.`, href: "/owner/orders" })
         }
@@ -476,7 +476,7 @@ export async function updateBranding(req, res) {
         // If the user does NOT have advanced branding, ensure they aren't trying to change advanced fields
         if (!hasAdvancedBranding) {
             const currentBranding = business.branding || {};
-            const attemptedAdvancedChange = 
+            const attemptedAdvancedChange =
                 (primaryColor !== undefined && primaryColor !== currentBranding.primaryColor && primaryColor !== "#EA601A") ||
                 (secondaryColor !== undefined && secondaryColor !== currentBranding.secondaryColor && secondaryColor !== "#2B304C") ||
                 (accentColor !== undefined && accentColor !== currentBranding.accentColor && accentColor !== "#FB923C") ||
@@ -548,7 +548,7 @@ export async function ownerTransactions(req, res) {
         if (!business) {
             return res.status(404).json({ error: "Business not found" })
         }
-        const { startDateJS, endDateJS } = resolveOwnerDateRange(business, range, from, to)
+        const { startDateJS, endDateJS } = resolveAnalyticsDateRange(business, range, from, to)
 
         const dateRangeBounds = { $gte: startDateJS, $lt: endDateJS }
 

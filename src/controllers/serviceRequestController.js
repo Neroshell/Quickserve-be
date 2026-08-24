@@ -10,6 +10,7 @@ import {
   buildActiveServiceRequestLocationScope,
   getTrustedTableServicePointId,
 } from "../services/serviceRequestScopeService.js"
+import { getWaiterRequestCooldownMs } from "../config/waiterRequest.js"
 
 async function expireStaleCalls(businessId) {
   const now = new Date()
@@ -59,7 +60,7 @@ async function resolveCallBusinessId(req, token) {
   }
 }
 
-import { resolveBusinessDay } from "../utils/businessDate.js"
+import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/businessDate.js"
 
 /**
  * Expects a stable per-device waiter id in header:
@@ -154,10 +155,8 @@ export async function createWaiterCall(req, res) {
       $and: [
         activeLocationScope,
         {
-          $or: [
-            { status: "acknowledged" },
-            { status: "pending", pendingExpiresAt: { $gt: now } },
-          ],
+          status: { $in: ["pending", "acknowledged"] },
+          pendingExpiresAt: { $gt: now },
         },
       ],
     }).lean()
@@ -185,7 +184,7 @@ export async function createWaiterCall(req, res) {
       note: String(note || "").trim(),
       status: "pending",
       createdBy: staffId || null, // usually null because customer triggers it
-      pendingExpiresAt: new Date(now.getTime() + 3 * 60 * 1000),
+      pendingExpiresAt: new Date(now.getTime() + getWaiterRequestCooldownMs()),
     })
 
     // Notify staff and the customer's table stream (per-table scoped). The latter
@@ -236,19 +235,26 @@ export async function listWaiterCalls(req, res) {
     }
 
     const { startUtc, endUtcExclusive } = resolveBusinessDay(business)
+    const prev = resolvePreviousBusinessDay(business)
 
     const ACTIVE_STATUSES = ["pending", "acknowledged"]
 
     if (status === "active") {
       filter.$or = [
         { createdAt: { $gte: startUtc, $lt: endUtcExclusive }, status: { $in: ACTIVE_STATUSES } },
-        { status: { $in: ACTIVE_STATUSES } }
+        {
+          createdAt: { $gte: prev.startUtc, $lt: prev.endUtcExclusive },
+          status: { $in: ACTIVE_STATUSES },
+        },
       ]
     } else if (["pending", "acknowledged", "resolved", "missed"].includes(String(status))) {
       if (ACTIVE_STATUSES.includes(String(status))) {
         filter.$or = [
           { createdAt: { $gte: startUtc, $lt: endUtcExclusive }, status: String(status) },
-          { status: String(status) }
+          {
+            createdAt: { $gte: prev.startUtc, $lt: prev.endUtcExclusive },
+            status: String(status),
+          },
         ]
       } else {
         filter.status = String(status)
@@ -258,7 +264,10 @@ export async function listWaiterCalls(req, res) {
       // all
       filter.$or = [
         { createdAt: { $gte: startUtc, $lt: endUtcExclusive } },
-        { status: { $in: ACTIVE_STATUSES } }
+        {
+          createdAt: { $gte: prev.startUtc, $lt: prev.endUtcExclusive },
+          status: { $in: ACTIVE_STATUSES },
+        },
       ]
     }
 

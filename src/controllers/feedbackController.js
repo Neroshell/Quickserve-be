@@ -2,6 +2,7 @@ import { DateTime } from "luxon"
 import Feedback from "../models/Feedback.js"
 import Order from "../models/order.js"
 import ServicePoint from "../models/ServicePoint.js"
+import Business from "../models/Business.js"
 
 import { resolveAnalyticsDateRange } from "../utils/businessDate.js"
 
@@ -104,21 +105,21 @@ export async function getOwnerFeedbackAnalytics(req, res) {
 
         let totalFeedbacks = feedbacks.length;
         let responseRate = totalCompletedOrders > 0 ? Math.round((totalFeedbacks / totalCompletedOrders) * 100) : 0;
-        
+
         let sumOverall = 0;
         let csatPositives = 0;
-        
+
         const ratingDistribution = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
         const trendsMap = new Map(); // Date string -> { count, ratingSum }
         const tagCounts = {};
 
         // Determine trend label format based on range
         const isSingleDay = range === "today" || range === "yesterday" || (range === "custom" && from === to);
-        
+
         feedbacks.forEach(f => {
             sumOverall += f.overallRating;
             ratingDistribution[f.overallRating] = (ratingDistribution[f.overallRating] || 0) + 1;
-            
+
             if (f.overallRating >= 4) csatPositives++;
 
             if (Array.isArray(f.tags)) {

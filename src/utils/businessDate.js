@@ -67,6 +67,23 @@ export function resolveBusinessDay(business, nowUtc = undefined) {
 }
 
 /**
+ * Resolves the immediately previous operational business day.
+ * Uses the same timezone-aware, operating-hours-aware logic as resolveBusinessDay
+ * by rewinding 1ms before the current business day's start.
+ *
+ * @param {Object} business - The business configuration.
+ * @param {Date|string|undefined} nowUtc - The UTC timestamp to evaluate (defaults to now).
+ * @returns {Object} { businessDay, startUtc, endUtcExclusive, timezone, generatedAt }
+ */
+export function resolvePreviousBusinessDay(business, nowUtc = undefined) {
+    const current = resolveBusinessDay(business, nowUtc)
+    // The current business day starts at the previous day's closing time.
+    // Subtract 1ms to land in the previous business day.
+    const previousMoment = new Date(current.startUtc.getTime() - 1)
+    return resolveBusinessDay(business, previousMoment)
+}
+
+/**
  * Resolves analytic date ranges like 'today', 'yesterday', '7days', 'thisMonth', 'custom'.
  * 
  * @param {Object} business - The business configuration.

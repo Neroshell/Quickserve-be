@@ -3,7 +3,7 @@ import Order from "../models/order.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 
 import Business from "../models/Business.js"
-import { resolveBusinessDay } from "../utils/businessDate.js"
+import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/businessDate.js"
 
 export async function barOrders(req, res) {
   try {
@@ -12,12 +12,13 @@ export async function barOrders(req, res) {
       return res.status(401).json({ error: "Unauthorized" })
     }
 
-    const business = await Business.findById(businessId).lean()
+    const business = await Business.findOne({ businessId }).lean()
     if (!business) {
       return res.status(404).json({ error: "Business not found" })
     }
 
     const { startUtc, endUtcExclusive, businessDay, generatedAt } = resolveBusinessDay(business)
+    const prev = resolvePreviousBusinessDay(business)
 
     // Bar cares about active orders to see drinks
     const ACTIVE_STATUSES = ["placed", "in_progress", "ready"]
@@ -27,7 +28,10 @@ export async function barOrders(req, res) {
         businessId,
         $or: [
           { createdAt: { $gte: startUtc, $lt: endUtcExclusive } },
-          { status: { $in: ACTIVE_STATUSES } },
+          {
+            createdAt: { $gte: prev.startUtc, $lt: prev.endUtcExclusive },
+            status: { $in: ACTIVE_STATUSES },
+          },
         ],
       },
       {

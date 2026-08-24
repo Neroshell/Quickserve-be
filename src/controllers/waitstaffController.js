@@ -2,7 +2,7 @@ import { DateTime } from "luxon"
 import Order from "../models/order.js"
 
 import Business from "../models/Business.js"
-import { resolveBusinessDay } from "../utils/businessDate.js"
+import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/businessDate.js"
 
 // ✅ NEW: waiter can fetch ANY status (ready/placed/in_progress/completed/all)
 // GET /waitstaff?status=ready
@@ -13,12 +13,13 @@ export async function waiterOrders(req, res) {
             return res.status(400).json({ error: "businessId is required" })
         }
 
-        const business = await Business.findById(businessId).lean()
+        const business = await Business.findOne({ businessId }).lean()
         if (!business) {
             return res.status(404).json({ error: "Business not found" })
         }
 
         const { startUtc, endUtcExclusive, businessDay, generatedAt } = resolveBusinessDay(business)
+        const prev = resolvePreviousBusinessDay(business)
 
         const status = String(req.query.status || "ready")
 
@@ -30,7 +31,10 @@ export async function waiterOrders(req, res) {
             businessId,
             $or: [
                 { createdAt: { $gte: startUtc, $lt: endUtcExclusive }, status: { $in: WAITER_STATUSES } },
-                { status: { $in: ACTIVE_STATUSES } }
+                {
+                    createdAt: { $gte: prev.startUtc, $lt: prev.endUtcExclusive },
+                    status: { $in: ACTIVE_STATUSES },
+                },
             ]
         }
 

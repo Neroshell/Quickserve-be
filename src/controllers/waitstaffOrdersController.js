@@ -26,486 +26,490 @@ import {
   normalizeOrderItems,
 } from "../utils/restaurantOrderValidation.js"
 
-import { resolveBusinessDay } from "../utils/businessDate.js"
+import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/businessDate.js"
 
 function escapeRegex(value = "") {
-    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function getHistoryDateRange(business, range = "yesterday", from, to) {
-    const { startUtc, timezone } = resolveBusinessDay(business)
-    const todayStart = DateTime.fromJSDate(startUtc).setZone(timezone)
+  const { startUtc, timezone } = resolveBusinessDay(business)
+  const todayStart = DateTime.fromJSDate(startUtc).setZone(timezone)
 
-    // Enforce upper bound: Past orders cannot include today's orders
-    const maxEndJS = startUtc
+  // Enforce upper bound: Past orders cannot include today's orders
+  const maxEndJS = startUtc
 
-    switch (range) {
-        case "today": // Fallback if someone manually passes 'today'
-        case "yesterday": {
-            const yesterdayRes = resolveBusinessDay(business, todayStart.minus({ hours: 1 }).toJSDate())
-            return { startJS: yesterdayRes.startUtc, endJS: maxEndJS }
-        }
-        case "7days": {
-            const pastRes = resolveBusinessDay(business, todayStart.minus({ days: 7 }).toJSDate())
-            return { startJS: pastRes.startUtc, endJS: maxEndJS }
-        }
-        case "thisMonth": {
-            const monthStart = todayStart.startOf("month")
-            const monthStartRes = resolveBusinessDay(business, monthStart.toJSDate())
-            return { startJS: monthStartRes.startUtc, endJS: maxEndJS }
-        }
-        case "custom": {
-            if (!from || !to) {
-                const error = new Error("Missing 'from' or 'to' for custom range")
-                error.statusCode = 400
-                throw error
-            }
-
-            const customStartDT = DateTime.fromISO(String(from), { zone: timezone }).startOf("day")
-            const customEndDT = DateTime.fromISO(String(to), { zone: timezone }).startOf("day")
-
-            if (!customStartDT.isValid || !customEndDT.isValid) {
-                const error = new Error("Invalid date format for custom range")
-                error.statusCode = 400
-                throw error
-            }
-
-            const startRes = resolveBusinessDay(business, customStartDT.toJSDate())
-            const endRes = resolveBusinessDay(business, customEndDT.toJSDate())
-
-            const customStart = startRes.startUtc
-            const customEnd = endRes.endUtcExclusive
-
-            const actualEnd = customEnd > maxEndJS ? maxEndJS : customEnd
-            const actualStart = customStart > actualEnd ? actualEnd : customStart
-
-            return { startJS: actualStart, endJS: actualEnd }
-        }
-        default: {
-            const yesterdayRes = resolveBusinessDay(business, todayStart.minus({ hours: 1 }).toJSDate())
-            return { startJS: yesterdayRes.startUtc, endJS: maxEndJS }
-        }
+  switch (range) {
+    case "today": // Fallback if someone manually passes 'today'
+    case "yesterday": {
+      const yesterdayRes = resolveBusinessDay(business, todayStart.minus({ hours: 1 }).toJSDate())
+      return { startJS: yesterdayRes.startUtc, endJS: maxEndJS }
     }
+    case "7days": {
+      const pastRes = resolveBusinessDay(business, todayStart.minus({ days: 7 }).toJSDate())
+      return { startJS: pastRes.startUtc, endJS: maxEndJS }
+    }
+    case "thisMonth": {
+      const monthStart = todayStart.startOf("month")
+      const monthStartRes = resolveBusinessDay(business, monthStart.toJSDate())
+      return { startJS: monthStartRes.startUtc, endJS: maxEndJS }
+    }
+    case "custom": {
+      if (!from || !to) {
+        const error = new Error("Missing 'from' or 'to' for custom range")
+        error.statusCode = 400
+        throw error
+      }
+
+      const customStartDT = DateTime.fromISO(String(from), { zone: timezone }).startOf("day")
+      const customEndDT = DateTime.fromISO(String(to), { zone: timezone }).startOf("day")
+
+      if (!customStartDT.isValid || !customEndDT.isValid) {
+        const error = new Error("Invalid date format for custom range")
+        error.statusCode = 400
+        throw error
+      }
+
+      const startRes = resolveBusinessDay(business, customStartDT.toJSDate())
+      const endRes = resolveBusinessDay(business, customEndDT.toJSDate())
+
+      const customStart = startRes.startUtc
+      const customEnd = endRes.endUtcExclusive
+
+      const actualEnd = customEnd > maxEndJS ? maxEndJS : customEnd
+      const actualStart = customStart > actualEnd ? actualEnd : customStart
+
+      return { startJS: actualStart, endJS: actualEnd }
+    }
+    default: {
+      const yesterdayRes = resolveBusinessDay(business, todayStart.minus({ hours: 1 }).toJSDate())
+      return { startJS: yesterdayRes.startUtc, endJS: maxEndJS }
+    }
+  }
 }
 
 function buildHistoryTimeline(order) {
-    return [
-        order.createdAt ? { label: "Created", at: order.createdAt } : null,
-        order.readyAt ? { label: "Ready", at: order.readyAt } : null,
-        order.completedAt ? { label: "Completed", at: order.completedAt } : null,
-        order.servedAt ? { label: "Served", at: order.servedAt, by: order.servedByName || null } : null,
-        order.paidAt ? { label: "Paid", at: order.paidAt, by: order.paidByName || null } : null,
-        order.receiptSentAt ? { label: "Receipt sent", at: order.receiptSentAt } : null,
-        order.cancelledAt ? { label: "Cancelled", at: order.cancelledAt } : null,
-    ].filter(Boolean)
+  return [
+    order.createdAt ? { label: "Created", at: order.createdAt } : null,
+    order.readyAt ? { label: "Ready", at: order.readyAt } : null,
+    order.completedAt ? { label: "Completed", at: order.completedAt } : null,
+    order.servedAt ? { label: "Served", at: order.servedAt, by: order.servedByName || null } : null,
+    order.paidAt ? { label: "Paid", at: order.paidAt, by: order.paidByName || null } : null,
+    order.receiptSentAt ? { label: "Receipt sent", at: order.receiptSentAt } : null,
+    order.cancelledAt ? { label: "Cancelled", at: order.cancelledAt } : null,
+  ].filter(Boolean)
 }
 
 function normalizePaymentMethod(order) {
-    if (order.paidVia === "cash") return "cash"
-    if (order.paidVia === "pos_card") return "pos_card"
-    if (order.paidVia === "online_card") return "online"
-    return order.paymentChannel || "offline"
+  if (order.paidVia === "cash") return "cash"
+  if (order.paidVia === "pos_card") return "pos_card"
+  if (order.paidVia === "online_card") return "online"
+  return order.paymentChannel || "offline"
 }
 
 function getWaiterName(order, staffById) {
-    return (
-        order.servedByName ||
-        order.paidByName ||
-        order.completedBy ||
-        staffById.get(order.servedByStaffId) ||
-        staffById.get(order.paidByStaffId) ||
-        staffById.get(order.createdByStaffId) ||
-        ""
-    )
+  return (
+    order.servedByName ||
+    order.paidByName ||
+    order.completedBy ||
+    staffById.get(order.servedByStaffId) ||
+    staffById.get(order.paidByStaffId) ||
+    staffById.get(order.createdByStaffId) ||
+    ""
+  )
 }
 
 export async function waiterPastOrders(req, res) {
-    try {
-        const businessId = req.session?.user?.businessId
-        if (!businessId) {
-            return res.status(401).json({ error: "Unauthorized" })
-        }
-
-        const {
-            range = "today",
-            from,
-            to,
-            status = "all",
-            paymentStatus = "all",
-            paymentMethod = "all",
-            search = "",
-        } = req.query
-
-        const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1)
-        const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || "25"), 10) || 25))
-        const skip = (page - 1) * limit
-
-        const business = await Business.findById(businessId).lean()
-        if (!business) {
-            return res.status(404).json({ error: "Business not found" })
-        }
-
-        const { startJS, endJS } = getHistoryDateRange(business, range, from, to)
-
-        const filter = {
-            businessId,
-            createdAt: { $gte: startJS, $lt: endJS },
-        }
-
-        const allowedStatuses = ["placed", "in_progress", "ready", "completed", "cancelled"]
-        if (status !== "all" && allowedStatuses.includes(status)) {
-            filter.status = status
-        } else {
-            filter.status = { $in: allowedStatuses }
-        }
-
-        if (paymentStatus === "paid") {
-            filter.paymentStatus = "paid"
-        } else if (paymentStatus === "pending") {
-            filter.paymentStatus = { $in: ["pending", "unpaid"] }
-        }
-
-        if (paymentMethod === "online") {
-            filter.paymentChannel = "online"
-        } else if (paymentMethod === "offline") {
-            filter.paymentChannel = "offline"
-        } else if (paymentMethod === "cash") {
-            filter.paidVia = "cash"
-        } else if (paymentMethod === "pos_card") {
-            filter.paidVia = "pos_card"
-        }
-
-        const trimmedSearch = String(search || "").trim()
-        if (trimmedSearch) {
-            const searchRegex = new RegExp(escapeRegex(trimmedSearch), "i")
-            const matchingStaff = await Staff.find(
-                {
-                    businessId,
-                    name: { $regex: searchRegex },
-                },
-                { staffId: 1, staffId: 1 }
-            ).lean()
-
-            const matchingStaffIds = matchingStaff
-                .flatMap((staff) => [staff.staffId, staff.staffId])
-                .filter(Boolean)
-
-            filter.$or = [
-                { orderId: { $regex: searchRegex } },
-                { receiptEmail: { $regex: searchRegex } },
-                { crmEmail: { $regex: searchRegex } },
-                { servicePointLabel: { $regex: searchRegex } },
-                { servicePointLabel: { $regex: searchRegex } },
-                { paidByName: { $regex: searchRegex } },
-                { servedByName: { $regex: searchRegex } },
-                { completedBy: { $regex: searchRegex } },
-            ]
-
-            if (matchingStaffIds.length > 0) {
-                filter.$or.push(
-                    { createdByStaffId: { $in: matchingStaffIds } },
-                    { paidByStaffId: { $in: matchingStaffIds } },
-                    { servedByStaffId: { $in: matchingStaffIds } }
-                )
-            }
-        }
-
-        const projection = {
-            _id: 0,
-            orderId: 1,
-            businessId: 1,
-            servicePointLabel: 1,
-            orderType: 1,
-            status: 1,
-            createdAt: 1,
-            updatedAt: 1,
-            readyAt: 1,
-            completedAt: 1,
-            servedAt: 1,
-            cancelledAt: 1,
-            items: 1,
-            subtotal: 1,
-            taxAmount: 1,
-            platformFeeTotal: 1,
-            tipAmount: 1,
-            tipType: 1,
-            tipPercentage: 1,
-            total: 1,
-            currency: 1,
-            paymentChannel: 1,
-            paymentStatus: 1,
-            paidVia: 1,
-            paidAt: 1,
-            receiptEmail: 1,
-            receiptSent: 1,
-            receiptSentAt: 1,
-            crmEmail: 1,
-            createdByStaffId: 1,
-            completedBy: 1,
-            paidByStaffId: 1,
-            paidByName: 1,
-            servedByStaffId: 1,
-            servedByName: 1,
-        }
-
-        const [rawOrders, totalCount] = await Promise.all([
-            Order.find(filter, projection)
-                .sort({ createdAt: -1, updatedAt: -1 })
-                .skip(skip)
-                .limit(limit)
-                .lean(),
-            Order.countDocuments(filter),
-        ])
-
-        const staffIds = Array.from(new Set(rawOrders.flatMap((order) => [
-            order.createdByStaffId,
-            order.paidByStaffId,
-            order.servedByStaffId,
-        ]).filter(Boolean)))
-
-        const staffRows = staffIds.length > 0
-            ? await Staff.find(
-                {
-                    businessId,
-                    $or: [
-                        { staffId: { $in: staffIds } },
-                        { staffId: { $in: staffIds } },
-                    ],
-                },
-                { staffId: 1, staffId: 1, name: 1 }
-            ).lean()
-            : []
-
-        const staffById = new Map()
-        for (const staff of staffRows) {
-            if (staff.staffId) staffById.set(staff.staffId, staff.name)
-            if (staff.staffId) staffById.set(staff.staffId, staff.name)
-        }
-
-        const orders = rawOrders.map((order) => ({
-            orderId: order.orderId,
-            businessId: order.businessId,
-            servicePointLabel: order.servicePointLabel || order.servicePointLabel,
-            servicePoint: order.servicePointLabel || order.servicePointLabel,
-            orderType: order.orderType,
-            status: order.status,
-            createdAt: order.createdAt,
-            updatedAt: order.updatedAt,
-            readyAt: order.readyAt,
-            completedAt: order.completedAt,
-            servedAt: order.servedAt,
-            cancelledAt: order.cancelledAt,
-            customerEmail: order.receiptEmail || order.crmEmail || "",
-            waiter: getWaiterName(order, staffById),
-            paymentChannel: order.paymentChannel || "offline",
-            paymentStatus: order.paymentStatus || "unpaid",
-            paymentMethod: normalizePaymentMethod(order),
-            paidVia: order.paidVia || null,
-            paidAt: order.paidAt,
-            receiptEmail: order.receiptEmail || "",
-            receiptSent: Boolean(order.receiptSent),
-            receiptSentAt: order.receiptSentAt,
-            subtotal: order.subtotal || 0,
-            taxAmount: order.taxAmount || 0,
-            platformFeeTotal: order.platformFeeTotal || 0,
-            tipAmount: order.tipAmount || 0,
-            tipType: order.tipType || null,
-            tipPercentage: order.tipPercentage ?? null,
-            total: order.total || 0,
-            currency: order.currency || "EUR",
-            canMarkPaid: order.paymentChannel === "offline" && ["pending", "unpaid"].includes(order.paymentStatus) && order.status !== "cancelled",
-            canMarkCompleted: ["placed", "in_progress", "ready"].includes(order.status),
-            items: (order.items || []).map((item) => ({
-                itemName: item.itemName,
-                quantity: item.quantity,
-                lineTotal: item.lineTotal || 0,
-                notes: item.notes || "",
-                allergies: item.allergies || [],
-            })),
-            timeline: buildHistoryTimeline(order),
-        }))
-
-        return res.json({
-            orders,
-            pagination: {
-                page,
-                limit,
-                total: totalCount,
-                totalPages: Math.max(1, Math.ceil(totalCount / limit)),
-                hasNextPage: page * limit < totalCount,
-                hasPreviousPage: page > 1,
-            },
-            filters: {
-                range,
-                from: startJS,
-                to: endJS,
-                status,
-                paymentStatus,
-                paymentMethod,
-                search: trimmedSearch,
-            },
-        })
-    } catch (err) {
-        console.error("[waiterPastOrders]", err)
-        return res.status(err.statusCode || 500).json({ error: err.message || "Failed to fetch waiter past orders" })
+  try {
+    const businessId = req.session?.user?.businessId
+    if (!businessId) {
+      return res.status(401).json({ error: "Unauthorized" })
     }
+
+    const {
+      range = "today",
+      from,
+      to,
+      status = "all",
+      paymentStatus = "all",
+      paymentMethod = "all",
+      search = "",
+    } = req.query
+
+    const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1)
+    const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || "25"), 10) || 25))
+    const skip = (page - 1) * limit
+
+    const business = await Business.findOne({ businessId }).lean()
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+
+    const { startJS, endJS } = getHistoryDateRange(business, range, from, to)
+
+    const filter = {
+      businessId,
+      createdAt: { $gte: startJS, $lt: endJS },
+    }
+
+    const allowedStatuses = ["placed", "in_progress", "ready", "completed", "cancelled"]
+    if (status !== "all" && allowedStatuses.includes(status)) {
+      filter.status = status
+    } else {
+      filter.status = { $in: allowedStatuses }
+    }
+
+    if (paymentStatus === "paid") {
+      filter.paymentStatus = "paid"
+    } else if (paymentStatus === "pending") {
+      filter.paymentStatus = { $in: ["pending", "unpaid"] }
+    }
+
+    if (paymentMethod === "online") {
+      filter.paymentChannel = "online"
+    } else if (paymentMethod === "offline") {
+      filter.paymentChannel = "offline"
+    } else if (paymentMethod === "cash") {
+      filter.paidVia = "cash"
+    } else if (paymentMethod === "pos_card") {
+      filter.paidVia = "pos_card"
+    }
+
+    const trimmedSearch = String(search || "").trim()
+    if (trimmedSearch) {
+      const searchRegex = new RegExp(escapeRegex(trimmedSearch), "i")
+      const matchingStaff = await Staff.find(
+        {
+          businessId,
+          name: { $regex: searchRegex },
+        },
+        { staffId: 1, staffId: 1 }
+      ).lean()
+
+      const matchingStaffIds = matchingStaff
+        .flatMap((staff) => [staff.staffId, staff.staffId])
+        .filter(Boolean)
+
+      filter.$or = [
+        { orderId: { $regex: searchRegex } },
+        { receiptEmail: { $regex: searchRegex } },
+        { crmEmail: { $regex: searchRegex } },
+        { servicePointLabel: { $regex: searchRegex } },
+        { servicePointLabel: { $regex: searchRegex } },
+        { paidByName: { $regex: searchRegex } },
+        { servedByName: { $regex: searchRegex } },
+        { completedBy: { $regex: searchRegex } },
+      ]
+
+      if (matchingStaffIds.length > 0) {
+        filter.$or.push(
+          { createdByStaffId: { $in: matchingStaffIds } },
+          { paidByStaffId: { $in: matchingStaffIds } },
+          { servedByStaffId: { $in: matchingStaffIds } }
+        )
+      }
+    }
+
+    const projection = {
+      _id: 0,
+      orderId: 1,
+      businessId: 1,
+      servicePointLabel: 1,
+      orderType: 1,
+      status: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      readyAt: 1,
+      completedAt: 1,
+      servedAt: 1,
+      cancelledAt: 1,
+      items: 1,
+      subtotal: 1,
+      taxAmount: 1,
+      platformFeeTotal: 1,
+      tipAmount: 1,
+      tipType: 1,
+      tipPercentage: 1,
+      total: 1,
+      currency: 1,
+      paymentChannel: 1,
+      paymentStatus: 1,
+      paidVia: 1,
+      paidAt: 1,
+      receiptEmail: 1,
+      receiptSent: 1,
+      receiptSentAt: 1,
+      crmEmail: 1,
+      createdByStaffId: 1,
+      completedBy: 1,
+      paidByStaffId: 1,
+      paidByName: 1,
+      servedByStaffId: 1,
+      servedByName: 1,
+    }
+
+    const [rawOrders, totalCount] = await Promise.all([
+      Order.find(filter, projection)
+        .sort({ createdAt: -1, updatedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Order.countDocuments(filter),
+    ])
+
+    const staffIds = Array.from(new Set(rawOrders.flatMap((order) => [
+      order.createdByStaffId,
+      order.paidByStaffId,
+      order.servedByStaffId,
+    ]).filter(Boolean)))
+
+    const staffRows = staffIds.length > 0
+      ? await Staff.find(
+        {
+          businessId,
+          $or: [
+            { staffId: { $in: staffIds } },
+            { staffId: { $in: staffIds } },
+          ],
+        },
+        { staffId: 1, staffId: 1, name: 1 }
+      ).lean()
+      : []
+
+    const staffById = new Map()
+    for (const staff of staffRows) {
+      if (staff.staffId) staffById.set(staff.staffId, staff.name)
+      if (staff.staffId) staffById.set(staff.staffId, staff.name)
+    }
+
+    const orders = rawOrders.map((order) => ({
+      orderId: order.orderId,
+      businessId: order.businessId,
+      servicePointLabel: order.servicePointLabel || order.servicePointLabel,
+      servicePoint: order.servicePointLabel || order.servicePointLabel,
+      orderType: order.orderType,
+      status: order.status,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+      readyAt: order.readyAt,
+      completedAt: order.completedAt,
+      servedAt: order.servedAt,
+      cancelledAt: order.cancelledAt,
+      customerEmail: order.receiptEmail || order.crmEmail || "",
+      waiter: getWaiterName(order, staffById),
+      paymentChannel: order.paymentChannel || "offline",
+      paymentStatus: order.paymentStatus || "unpaid",
+      paymentMethod: normalizePaymentMethod(order),
+      paidVia: order.paidVia || null,
+      paidAt: order.paidAt,
+      receiptEmail: order.receiptEmail || "",
+      receiptSent: Boolean(order.receiptSent),
+      receiptSentAt: order.receiptSentAt,
+      subtotal: order.subtotal || 0,
+      taxAmount: order.taxAmount || 0,
+      platformFeeTotal: order.platformFeeTotal || 0,
+      tipAmount: order.tipAmount || 0,
+      tipType: order.tipType || null,
+      tipPercentage: order.tipPercentage ?? null,
+      total: order.total || 0,
+      currency: order.currency || "EUR",
+      canMarkPaid: order.paymentChannel === "offline" && ["pending", "unpaid"].includes(order.paymentStatus) && order.status !== "cancelled",
+      canMarkCompleted: ["placed", "in_progress", "ready"].includes(order.status),
+      items: (order.items || []).map((item) => ({
+        itemName: item.itemName,
+        quantity: item.quantity,
+        lineTotal: item.lineTotal || 0,
+        notes: item.notes || "",
+        allergies: item.allergies || [],
+      })),
+      timeline: buildHistoryTimeline(order),
+    }))
+
+    return res.json({
+      orders,
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        totalPages: Math.max(1, Math.ceil(totalCount / limit)),
+        hasNextPage: page * limit < totalCount,
+        hasPreviousPage: page > 1,
+      },
+      filters: {
+        range,
+        from: startJS,
+        to: endJS,
+        status,
+        paymentStatus,
+        paymentMethod,
+        search: trimmedSearch,
+      },
+    })
+  } catch (err) {
+    console.error("[waiterPastOrders]", err)
+    return res.status(err.statusCode || 500).json({ error: err.message || "Failed to fetch waiter past orders" })
+  }
 }
 // ✅ NEW: waiter can fetch ANY status (ready/placed/in_progress/completed/all)
 // GET /waitstaff?status=ready
 export async function waiterOrders(req, res) {
-    try {
-        const status = String(req.query.status || "ready")
-        const businessId = req.session?.user?.businessId
+  try {
+    const status = String(req.query.status || "ready")
+    const businessId = req.session?.user?.businessId
 
-        if (!businessId) {
-            return res.status(401).json({ error: "Unauthorized" })
-        }
-
-        const business = await Business.findById(businessId).lean()
-        if (!business) {
-            return res.status(404).json({ error: "Business not found" })
-        }
-
-        const { startUtc, endUtcExclusive, businessDay, generatedAt } = resolveBusinessDay(business)
-
-        // Surface the waiter-ordering setting so the dashboard can show/hide the
-        // "+ Take Order" button. Defaults to enabled when unset.
-        const bizPrefs = await Business.findOne(
-            { $or: [{ businessId }, { businessId: businessId }] },
-            { "orderingPreferences.enableWaiterOrdering": 1 }
-        ).lean()
-        const enableWaiterOrdering = bizPrefs?.orderingPreferences?.enableWaiterOrdering !== false
-
-        // Waitstaff active statuses (unresolved work)
-        const ACTIVE_STATUSES = ["placed", "in_progress", "ready"]
-        const WAITER_STATUSES = ["placed", "in_progress", "ready", "completed"]
-
-        const filter = {
-            businessId,
-            $or: [
-                { createdAt: { $gte: startUtc, $lt: endUtcExclusive }, status: { $in: WAITER_STATUSES } },
-                { status: { $in: ACTIVE_STATUSES } }
-            ]
-        }
-
-        const rawOrders = await Order.find(
-            filter,
-            {
-                _id: 0,
-                orderId: 1,
-                servicePointLabel: 1,
-                orderType: 1,
-                status: 1,
-                createdAt: 1,
-                updatedAt: 1,
-                readyAt: 1,
-                items: 1,
-                subtotal: 1,
-                taxAmount: 1,
-                platformFeeTotal: 1,
-                tipAmount: 1,
-                tipType: 1,
-                tipPercentage: 1,
-                total: 1,
-                currency: 1,
-                paymentChannel: 1,
-                paymentStatus: 1,
-                paidVia: 1,
-            }
-        )
-            // ✅ show READY first if status=all, else normal ordering
-            .sort({ updatedAt: -1, createdAt: -1 })
-            .lean()
-
-        // ✅ counts for tabs (placed/in_progress/ready/completed)
-        // Only count current day's activity
-        const countsAgg = await Order.aggregate([
-            { $match: { businessId, createdAt: { $gte: startUtc, $lt: endUtcExclusive } } },
-            { $group: { _id: "$status", count: { $sum: 1 } } },
-        ])
-
-        const counts = { placed: 0, in_progress: 0, ready: 0, completed: 0 }
-        for (const row of countsAgg) {
-            if (row?._id && counts[row._id] !== undefined) counts[row._id] = row.count
-        }
-
-        // ✅ shape for FE
-        const orders = rawOrders.map((o) => {
-            const allergiesSet = new Set()
-            let specialRequest = ""
-
-            for (const it of o.items || []) {
-                if (Array.isArray(it.allergies)) {
-                    for (const a of it.allergies) {
-                        if (a && String(a).trim()) allergiesSet.add(String(a).trim())
-                    }
-                }
-                // grab first non-empty note
-                if (!specialRequest && it.notes && String(it.notes).trim()) {
-                    specialRequest = String(it.notes).trim()
-                }
-            }
-
-            return {
-                businessId: o.businessId,
-                businessId: o.businessId, // legacy alias
-                orderId: o.orderId,
-                servicePointLabel: o.servicePointLabel,
-                orderType: o.orderType,
-                status: o.status,
-                createdAt: o.createdAt,
-                readyAt: o.readyAt,
-                updatedAt: o.updatedAt,
-                paymentChannel: o.paymentChannel,
-                paymentStatus: o.paymentStatus,
-                paidVia: o.paidVia,
-                items: (o.items || []).map((it) => ({
-                    itemName: it.itemName,
-                    quantity: it.quantity,
-                    lineTotal: it.lineTotal || 0,
-                    notes: it.notes,
-                    allergies: it.allergies
-                })),
-                allergies: Array.from(allergiesSet),
-                notes: specialRequest,
-                subtotal: o.subtotal || 0,
-                taxAmount: o.taxAmount || 0,
-                platformFeeTotal: o.platformFeeTotal || 0,
-                tipAmount: o.tipAmount || 0,
-                tipType: o.tipType || null,
-                tipPercentage: o.tipPercentage ?? null,
-                total: o.total,
-                // subtotalCents: o.subtotalCents || 0,
-                // taxCents: o.taxCents || 0,
-                // totalCents: o.totalCents || 0,
-                currency: o.currency || "EUR",
-            }
-        })
-
-        // ✅ optional: if status=all, prioritize ready -> in_progress -> placed -> completed
-        if (status === "all") {
-            const rank = { ready: 1, in_progress: 2, placed: 3, completed: 4 }
-            orders.sort((a, b) => (rank[a.status] || 99) - (rank[b.status] || 99))
-        }
-
-        return res.json({ businessDay, generatedAt, counts, orders, settings: { enableWaiterOrdering } })
-    } catch (err) {
-        console.error("[waiterOrders]", err)
-        return res.status(500).json({ error: "Failed to fetch waiter orders" })
+    if (!businessId) {
+      return res.status(401).json({ error: "Unauthorized" })
     }
+
+    const business = await Business.findOne({ businessId }).lean()
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+
+    const { startUtc, endUtcExclusive, businessDay, generatedAt } = resolveBusinessDay(business)
+    const prev = resolvePreviousBusinessDay(business)
+
+    // Surface the waiter-ordering setting so the dashboard can show/hide the
+    // "+ Take Order" button. Defaults to enabled when unset.
+    const bizPrefs = await Business.findOne(
+      { $or: [{ businessId }, { businessId: businessId }] },
+      { "orderingPreferences.enableWaiterOrdering": 1 }
+    ).lean()
+    const enableWaiterOrdering = bizPrefs?.orderingPreferences?.enableWaiterOrdering !== false
+
+    // Waitstaff active statuses (unresolved work)
+    const ACTIVE_STATUSES = ["placed", "in_progress", "ready"]
+    const WAITER_STATUSES = ["placed", "in_progress", "ready", "completed"]
+
+    const filter = {
+      businessId,
+      $or: [
+        { createdAt: { $gte: startUtc, $lt: endUtcExclusive }, status: { $in: WAITER_STATUSES } },
+        {
+          createdAt: { $gte: prev.startUtc, $lt: prev.endUtcExclusive },
+          status: { $in: ACTIVE_STATUSES },
+        },
+      ]
+    }
+
+    const rawOrders = await Order.find(
+      filter,
+      {
+        _id: 0,
+        orderId: 1,
+        servicePointLabel: 1,
+        orderType: 1,
+        status: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        readyAt: 1,
+        items: 1,
+        subtotal: 1,
+        taxAmount: 1,
+        platformFeeTotal: 1,
+        tipAmount: 1,
+        tipType: 1,
+        tipPercentage: 1,
+        total: 1,
+        currency: 1,
+        paymentChannel: 1,
+        paymentStatus: 1,
+        paidVia: 1,
+      }
+    )
+      // ✅ show READY first if status=all, else normal ordering
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean()
+
+    // ✅ counts for tabs (placed/in_progress/ready/completed)
+    // Only count current day's activity
+    const countsAgg = await Order.aggregate([
+      { $match: { businessId, createdAt: { $gte: startUtc, $lt: endUtcExclusive } } },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ])
+
+    const counts = { placed: 0, in_progress: 0, ready: 0, completed: 0 }
+    for (const row of countsAgg) {
+      if (row?._id && counts[row._id] !== undefined) counts[row._id] = row.count
+    }
+
+    // ✅ shape for FE
+    const orders = rawOrders.map((o) => {
+      const allergiesSet = new Set()
+      let specialRequest = ""
+
+      for (const it of o.items || []) {
+        if (Array.isArray(it.allergies)) {
+          for (const a of it.allergies) {
+            if (a && String(a).trim()) allergiesSet.add(String(a).trim())
+          }
+        }
+        // grab first non-empty note
+        if (!specialRequest && it.notes && String(it.notes).trim()) {
+          specialRequest = String(it.notes).trim()
+        }
+      }
+
+      return {
+        businessId: o.businessId,
+        businessId: o.businessId, // legacy alias
+        orderId: o.orderId,
+        servicePointLabel: o.servicePointLabel,
+        orderType: o.orderType,
+        status: o.status,
+        createdAt: o.createdAt,
+        readyAt: o.readyAt,
+        updatedAt: o.updatedAt,
+        paymentChannel: o.paymentChannel,
+        paymentStatus: o.paymentStatus,
+        paidVia: o.paidVia,
+        items: (o.items || []).map((it) => ({
+          itemName: it.itemName,
+          quantity: it.quantity,
+          lineTotal: it.lineTotal || 0,
+          notes: it.notes,
+          allergies: it.allergies
+        })),
+        allergies: Array.from(allergiesSet),
+        notes: specialRequest,
+        subtotal: o.subtotal || 0,
+        taxAmount: o.taxAmount || 0,
+        platformFeeTotal: o.platformFeeTotal || 0,
+        tipAmount: o.tipAmount || 0,
+        tipType: o.tipType || null,
+        tipPercentage: o.tipPercentage ?? null,
+        total: o.total,
+        // subtotalCents: o.subtotalCents || 0,
+        // taxCents: o.taxCents || 0,
+        // totalCents: o.totalCents || 0,
+        currency: o.currency || "EUR",
+      }
+    })
+
+    // ✅ optional: if status=all, prioritize ready -> in_progress -> placed -> completed
+    if (status === "all") {
+      const rank = { ready: 1, in_progress: 2, placed: 3, completed: 4 }
+      orders.sort((a, b) => (rank[a.status] || 99) - (rank[b.status] || 99))
+    }
+
+    return res.json({ businessDay, generatedAt, counts, orders, settings: { enableWaiterOrdering } })
+  } catch (err) {
+    console.error("[waiterOrders]", err)
+    return res.status(500).json({ error: "Failed to fetch waiter orders" })
+  }
 }
 
 // keep your ready endpoint if you still want it
 export async function waiterReadyOrders(req, res) {
-    req.query.status = "ready"
-    return waiterOrders(req, res)
+  req.query.status = "ready"
+  return waiterOrders(req, res)
 }
 
 export async function createWaiterOrder(req, res) {
   try {
     const businessId = req.session?.user?.businessId
     const staffId = req.session?.user?.staffId || req.session?.user?.id
-    
+
     if (!businessId) {
       return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
     }
