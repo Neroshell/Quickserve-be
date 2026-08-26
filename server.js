@@ -28,7 +28,8 @@ import { connectSessionRedis } from "./src/config/sessionRedisClient.js"
 import rateLimit from "express-rate-limit"
 import { setupSwagger } from "./src/config/swagger.js"
 import { validateOrigin } from "./src/middleware/originValidation.js"
-import { requireAuth, requireRole } from "./src/middleware/authMiddleware.js"
+import { requireAuth, requirePermission, requireRole } from "./src/middleware/authMiddleware.js"
+import { PERMISSIONS } from "./src/constants/permissions.js"
 
 const app = express()
 app.set("trust proxy", 1) // required for secure cookies behind proxies like vercel
@@ -96,7 +97,13 @@ app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)
 app.use("/bar", barRoute)
 app.use("/waitstaff", waiterRoute)
-app.use("/owner/guests", requireAuth, requireRole("owner", "co_owner", "manager"), guestProfileRoute)
+app.use(
+  "/owner/guests",
+  requireAuth,
+  requireRole("owner", "co_owner", "manager"),
+  requirePermission(PERMISSIONS.CRM_VIEW),
+  guestProfileRoute,
+)
 app.use("/owner", ownerRoute)
 app.use("/menu-items", menuRoute)
 app.use("/business", restaurantRoute)

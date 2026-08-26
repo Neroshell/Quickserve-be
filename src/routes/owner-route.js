@@ -10,6 +10,7 @@ import {
     getStaff,
     createStaff,
     deleteStaff,
+    updateManagerPermissions,
     // Legacy waiter routes (backward compat)
     getWaiters,
     createWaiter,
@@ -34,8 +35,9 @@ import {
 } from "../controllers/reservationController.js"
 import { cancelOwnerHotelReservation } from "../controllers/reservationCancellationController.js"
 
-import { requireAuth, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
+import { requireAuth, requirePermission, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
 import { requireEntitlement } from "../middleware/subscriptionMiddleware.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 import { connectAccount, getStripeStatus, getStripeDashboardLink, getPayoutSummary } from "../controllers/stripeConnectController.js"
 import {
     getBillingOverview,
@@ -51,7 +53,7 @@ import {
 } from "../controllers/billingController.js"
 
 const router = express.Router()
-router.use(requireAuth, requireOwnerOrCoOwner)
+router.use(requireAuth)
 
 // ─── Branding ─────────────────────────────────────────────────────────────────
 
@@ -66,7 +68,7 @@ router.use(requireAuth, requireOwnerOrCoOwner)
  *       200:
  *         description: Current branding configuration
  */
-router.get("/branding", getBranding)
+router.get("/branding", requireOwnerOrCoOwner, getBranding)
 
 /**
  * @openapi
@@ -96,7 +98,7 @@ router.get("/branding", getBranding)
  *       200:
  *         description: Branding preferences updated successfully
  */
-router.patch("/branding", updateBranding)
+router.patch("/branding", requireOwnerOrCoOwner, updateBranding)
 
 // ─── Dashboard & Analytics ───────────────────────────────────────────────────
 
@@ -155,8 +157,8 @@ router.patch("/branding", updateBranding)
  *       400:
  *         description: Invalid date range or malformed cursor
  */
-router.get("/orders", ownerOrders)
-router.get("/transactions", ownerTransactions)
+router.get("/orders", requirePermission(PERMISSIONS.ORDERS_VIEW), ownerOrders)
+router.get("/transactions", requirePermission(PERMISSIONS.TRANSACTIONS_VIEW), ownerTransactions)
 
 /**
  * @openapi
@@ -169,8 +171,8 @@ router.get("/transactions", ownerTransactions)
  *       200:
  *         description: Main dashboard analytics and status counters
  */
-router.get("/dashboard", getDashboardData)
-router.get("/setup-progress", getSetupProgress)
+router.get("/dashboard", requirePermission(PERMISSIONS.DASHBOARD_VIEW), getDashboardData)
+router.get("/setup-progress", requirePermission(PERMISSIONS.DASHBOARD_VIEW), getSetupProgress)
 router.post("/setup-progress/dismiss", requirePrimaryOwner, dismissSetupGuide)
 
 /**
@@ -184,7 +186,7 @@ router.post("/setup-progress/dismiss", requirePrimaryOwner, dismissSetupGuide)
  *       200:
  *         description: Analytical graphs and stats
  */
-router.get("/analytics", requireEntitlement("advancedAnalytics"), ownerAnalytics)
+router.get("/analytics", requirePermission(PERMISSIONS.ANALYTICS_VIEW), requireEntitlement("advancedAnalytics"), ownerAnalytics)
 
 /**
  * @openapi
@@ -197,7 +199,7 @@ router.get("/analytics", requireEntitlement("advancedAnalytics"), ownerAnalytics
  *       200:
  *         description: Table sessions status
  */
-router.get("/table-sessions/overview", getTableSessionsOverview)
+router.get("/table-sessions/overview", requirePermission(PERMISSIONS.SERVICE_POINTS_VIEW), getTableSessionsOverview)
 
 /**
  * @openapi
@@ -210,7 +212,7 @@ router.get("/table-sessions/overview", getTableSessionsOverview)
  *       200:
  *         description: Feedback analytics
  */
-router.get("/feedback", getOwnerFeedbackAnalytics)
+router.get("/feedback", requirePermission(PERMISSIONS.FEEDBACK_VIEW), getOwnerFeedbackAnalytics)
 
 // ─── Staff Management (unified, multi-role) ───────────────────────────────────
 
@@ -236,7 +238,7 @@ router.get("/feedback", getOwnerFeedbackAnalytics)
  *       200:
  *         description: List of staff members
  */
-router.get("/staff", getStaff)
+router.get("/staff", requirePermission(PERMISSIONS.STAFF_VIEW), getStaff)
 
 /**
  * @openapi
@@ -267,7 +269,7 @@ router.get("/staff", getStaff)
  *       201:
  *         description: Staff invited successfully
  */
-router.post("/staff", createStaff)
+router.post("/staff", requirePermission(PERMISSIONS.STAFF_MANAGE), createStaff)
 
 /**
  * @openapi
@@ -286,7 +288,8 @@ router.post("/staff", createStaff)
  *       200:
  *         description: Staff member deleted successfully
  */
-router.delete("/staff/:staffId", deleteStaff)
+router.patch("/staff/:staffId/permissions", requireOwnerOrCoOwner, updateManagerPermissions)
+router.delete("/staff/:staffId", requirePermission(PERMISSIONS.STAFF_MANAGE), deleteStaff)
 
 // ─── Team & Access (Primary Owner Only) ───────────────────────────────────────
 
@@ -362,7 +365,7 @@ router.delete("/team/co-owner/:staffId", requirePrimaryOwner, removeCoOwner)
  *       200:
  *         description: List of waiters
  */
-router.get("/staff", getWaiters)
+router.get("/staff", requirePermission(PERMISSIONS.STAFF_VIEW), getWaiters)
 
 /**
  * @openapi
@@ -389,7 +392,7 @@ router.get("/staff", getWaiters)
  *       201:
  *         description: Waiter created successfully
  */
-router.post("/staff", createWaiter)
+router.post("/staff", requirePermission(PERMISSIONS.STAFF_MANAGE), createWaiter)
 
 /**
  * @openapi
@@ -408,7 +411,7 @@ router.post("/staff", createWaiter)
  *       200:
  *         description: Waiter deleted successfully
  */
-router.delete("/staff/:id", deleteWaiter)
+router.delete("/staff/:id", requirePermission(PERMISSIONS.STAFF_MANAGE), deleteWaiter)
 
 // ─── Service Point Management ─────────────────────────────────────────────────
 
@@ -428,7 +431,7 @@ router.delete("/staff/:id", deleteWaiter)
  *       200:
  *         description: List of service points
  */
-router.get("/service-points", listServicePoints)
+router.get("/service-points", requirePermission(PERMISSIONS.SERVICE_POINTS_VIEW), listServicePoints)
 
 /**
  * @openapi
@@ -460,7 +463,7 @@ router.get("/service-points", listServicePoints)
  *       201:
  *         description: Service point created successfully
  */
-router.post("/service-points", createServicePoint)
+router.post("/service-points", requirePermission(PERMISSIONS.SERVICE_POINTS_MANAGE), createServicePoint)
 
 /**
  * @openapi
@@ -479,7 +482,7 @@ router.post("/service-points", createServicePoint)
  *       200:
  *         description: Service point details
  */
-router.get("/service-points/:servicePointId", getServicePoint)
+router.get("/service-points/:servicePointId", requirePermission(PERMISSIONS.SERVICE_POINTS_VIEW), getServicePoint)
 
 /**
  * @openapi
@@ -511,7 +514,7 @@ router.get("/service-points/:servicePointId", getServicePoint)
  *       200:
  *         description: Service point updated successfully
  */
-router.patch("/service-points/:servicePointId", updateServicePoint)
+router.patch("/service-points/:servicePointId", requirePermission(PERMISSIONS.SERVICE_POINTS_MANAGE), updateServicePoint)
 
 /**
  * @openapi
@@ -530,7 +533,7 @@ router.patch("/service-points/:servicePointId", updateServicePoint)
  *       200:
  *         description: Service point state toggled successfully
  */
-router.patch("/service-points/:servicePointId/toggle", toggleServicePoint)
+router.patch("/service-points/:servicePointId/toggle", requirePermission(PERMISSIONS.SERVICE_POINTS_MANAGE), toggleServicePoint)
 
 /**
  * @openapi
@@ -549,7 +552,7 @@ router.patch("/service-points/:servicePointId/toggle", toggleServicePoint)
  *       200:
  *         description: Reservable state toggled successfully
  */
-router.patch("/service-points/:servicePointId/toggle-reservable", toggleReservableServicePoint)
+router.patch("/service-points/:servicePointId/toggle-reservable", requirePermission(PERMISSIONS.SERVICE_POINTS_MANAGE), toggleReservableServicePoint)
 
 /**
  * @openapi
@@ -568,7 +571,7 @@ router.patch("/service-points/:servicePointId/toggle-reservable", toggleReservab
  *       200:
  *         description: Service point deleted successfully
  */
-router.delete("/service-points/:servicePointId", deleteServicePoint)
+router.delete("/service-points/:servicePointId", requirePermission(PERMISSIONS.SERVICE_POINTS_MANAGE), deleteServicePoint)
 
 // ─── Reservations ─────────────────────────────────────────────────────────────
 
@@ -583,7 +586,7 @@ router.delete("/service-points/:servicePointId", deleteServicePoint)
  *       200:
  *         description: List of reservations
  */
-router.get("/reservations", getReservations)
+router.get("/reservations", requirePermission(PERMISSIONS.RESERVATIONS_VIEW), getReservations)
 
 /**
  * @openapi
@@ -617,7 +620,7 @@ router.get("/reservations", getReservations)
  *       200:
  *         description: Reservation status updated successfully
  */
-router.patch("/reservations/:id/status", updateReservationStatus)
+router.patch("/reservations/:id/status", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), updateReservationStatus)
 
 /**
  * @openapi
@@ -642,7 +645,7 @@ router.patch("/reservations/:id/status", updateReservationStatus)
  *       409:
  *         description: Reservation or payment state conflict
  */
-router.post("/reservations/:id/cancel", cancelOwnerHotelReservation)
+router.post("/reservations/:id/cancel", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), cancelOwnerHotelReservation)
 
 /**
  * @openapi
@@ -680,7 +683,7 @@ router.post("/reservations/:id/cancel", cancelOwnerHotelReservation)
  *       423:
  *         description: Check-in code is locked
  */
-router.post("/reservations/:id/check-in", checkInHotelReservation)
+router.post("/reservations/:id/check-in", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), checkInHotelReservation)
 
 /**
  * @openapi
@@ -699,7 +702,7 @@ router.post("/reservations/:id/check-in", checkInHotelReservation)
  *       200:
  *         description: Reservation archived successfully
  */
-router.delete("/reservations/:id", deleteReservation)
+router.delete("/reservations/:id", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), deleteReservation)
 
 /**
  * @openapi
@@ -722,7 +725,7 @@ router.delete("/reservations/:id", deleteReservation)
  *       404:
  *         description: Reservation not found
  */
-router.post("/reservations/:id/resend-confirmation", resendReservationConfirmation)
+router.post("/reservations/:id/resend-confirmation", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), resendReservationConfirmation)
 
 /**
  * @openapi
@@ -743,7 +746,7 @@ router.post("/reservations/:id/resend-confirmation", resendReservationConfirmati
  *       409:
  *         description: Reservation is not awaiting payment or the link expired
  */
-router.post("/reservations/:id/resend-payment-link", resendReservationPaymentLink)
+router.post("/reservations/:id/resend-payment-link", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), resendReservationPaymentLink)
 
 
 // ─── Stripe Connect ───────────────────────────────────────────────────────────
@@ -964,18 +967,21 @@ router.post("/billing/report-usage", requirePrimaryOwner, reportOfflineUsage)
 
 router.get(
     "/ai-business-analyst/latest",
+    requirePermission(PERMISSIONS.AI_ANALYST_VIEW),
     requireEntitlement("aiBusinessAnalyst"),
     getLatestReport,
 )
 
 router.get(
     "/ai-business-analyst/history",
+    requirePermission(PERMISSIONS.AI_ANALYST_VIEW),
     requireEntitlement("aiBusinessAnalyst"),
     getReportHistory,
 )
 
 router.get(
     "/ai-business-analyst/:periodKey",
+    requirePermission(PERMISSIONS.AI_ANALYST_VIEW),
     requireEntitlement("aiBusinessAnalyst"),
     getReportByPeriod,
 )

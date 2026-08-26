@@ -1,11 +1,27 @@
 import express from "express"
 import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory, addHotelRoomType, removeHotelRoomType } from "../controllers/businessController.js"
 
-import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+import { requireAnyPermission, requireAuth, requirePermission, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 
 const router = express.Router()
 
-const requireManager = [requireAuth, requireRole("owner", "admin", "manager")]
+const requireOperationalSettingsManager = [
+    requireAuth,
+    requireRole("owner", "admin", "manager"),
+    requirePermission(PERMISSIONS.SETTINGS_OPERATIONAL_MANAGE),
+]
+const requireManagementSettingsRead = [
+    requireAuth,
+    requireRole("owner", "admin", "manager"),
+    requireAnyPermission(
+        PERMISSIONS.TRANSACTIONS_VIEW,
+        PERMISSIONS.RESERVATIONS_VIEW,
+        PERMISSIONS.SERVICE_POINTS_VIEW,
+        PERMISSIONS.SETTINGS_OPERATIONAL_MANAGE,
+    ),
+]
+const requireBusinessIdentityOwner = [requireAuth, requireRole("owner", "admin")]
 const requireOwner = [requireAuth, requireRole("owner", "co_owner")]
 
 /**
@@ -19,7 +35,7 @@ const requireOwner = [requireAuth, requireRole("owner", "co_owner")]
  *       200:
  *         description: Current business configurations
  */
-router.get("/settings", requireManager, getSettings)
+router.get("/settings", requireManagementSettingsRead, getSettings)
 
 /**
  * @openapi
@@ -43,7 +59,7 @@ router.get("/settings", requireManager, getSettings)
  *       200:
  *         description: Settings updated successfully
  */
-router.patch("/settings", requireManager, updateSettings)
+router.patch("/settings", requireBusinessIdentityOwner, updateSettings)
 
 /**
  * Hotel owners can add or remove Food Service without changing the hotel's
@@ -68,7 +84,7 @@ router.patch("/settings/modules", requireOwner, updateOwnerBusinessModules)
  *       200:
  *         description: Operating hours updated successfully
  */
-router.patch("/operating-hours", requireManager, updateOperatingHours)
+router.patch("/operating-hours", requireOperationalSettingsManager, updateOperatingHours)
 
 /**
  * @openapi
@@ -87,7 +103,7 @@ router.patch("/operating-hours", requireManager, updateOperatingHours)
  *       200:
  *         description: Ordering preferences updated successfully
  */
-router.patch("/settings/ordering-preferences", requireManager, updateOrderingPreferences)
+router.patch("/settings/ordering-preferences", requireOperationalSettingsManager, updateOrderingPreferences)
 
 /**
  * @openapi
@@ -106,7 +122,7 @@ router.patch("/settings/ordering-preferences", requireManager, updateOrderingPre
  *       200:
  *         description: Payment preferences updated successfully
  */
-router.patch("/settings/payment-preferences", requireManager, updatePaymentPreferences)
+router.patch("/settings/payment-preferences", requireOperationalSettingsManager, updatePaymentPreferences)
 
 /**
  * @openapi
@@ -125,7 +141,7 @@ router.patch("/settings/payment-preferences", requireManager, updatePaymentPrefe
  *       200:
  *         description: Table preferences updated successfully
  */
-router.patch("/settings/table-preferences", requireManager, updateTablePreferences)
+router.patch("/settings/table-preferences", requireOperationalSettingsManager, updateTablePreferences)
 
 /**
  * @openapi
@@ -144,7 +160,7 @@ router.patch("/settings/table-preferences", requireManager, updateTablePreferenc
  *       200:
  *         description: List of categories
  */
-router.get("/categories", getCategories)
+router.get("/categories", requirePermissionForAuthenticatedManager(PERMISSIONS.MENU_VIEW), getCategories)
 
 /**
  * @openapi
@@ -168,7 +184,7 @@ router.get("/categories", getCategories)
  *       201:
  *         description: Category added successfully
  */
-router.post("/categories", requireManager, addCategory)
+router.post("/categories", requireOperationalSettingsManager, addCategory)
 
 /**
  * @openapi
@@ -192,7 +208,7 @@ router.post("/categories", requireManager, addCategory)
  *       200:
  *         description: Category removed successfully
  */
-router.delete("/categories", requireManager, removeCategory)
+router.delete("/categories", requireOperationalSettingsManager, removeCategory)
 
 /**
  * @openapi

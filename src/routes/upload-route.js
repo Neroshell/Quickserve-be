@@ -8,12 +8,13 @@ import {
   invalidatePublicBusinessRoute,
 } from "../services/cacheInvalidationService.js"
 import { uploadToCloudinary, deleteFromCloudinary } from "../utils/uploadToCloudinary.js"
-import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+import { requireAnyPermission, requireAuth, requirePermission, requireRole } from "../middleware/authMiddleware.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 
 const router = express.Router()
 
-// Require manager/owner level access for all uploads
-router.use(requireAuth, requireRole("owner", "admin", "manager"))
+router.use(requireAuth)
+const requireExistingUploadRole = requireRole("owner", "admin", "manager")
 
 // Memory storage — no files written to disk
 const upload = multer({
@@ -62,7 +63,12 @@ const upload = multer({
  *                 publicId:
  *                   type: string
  */
-router.post("/image", upload.single("image"), async (req, res) => {
+router.post(
+  "/image",
+  requireExistingUploadRole,
+  requireAnyPermission(PERMISSIONS.MENU_MANAGE, PERMISSIONS.SERVICE_POINTS_MANAGE),
+  upload.single("image"),
+  async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "Image file is required" })
@@ -78,7 +84,8 @@ router.post("/image", upload.single("image"), async (req, res) => {
     console.error("[upload/image]", err)
     return res.status(500).json({ error: err.message || "Upload failed" })
   }
-})
+  },
+)
 
 /**
  * @openapi
@@ -106,7 +113,7 @@ router.post("/image", upload.single("image"), async (req, res) => {
  *       200:
  *         description: Logo uploaded and saved successfully
  */
-router.post("/business-logo", upload.single("image"), async (req, res) => {
+router.post("/business-logo", requireRole("owner", "admin"), upload.single("image"), async (req, res) => {
   try {
     // Always the authenticated user's own business — never a businessId from the body.
     const businessId = req.session?.user?.businessId
@@ -179,7 +186,12 @@ router.post("/business-logo", upload.single("image"), async (req, res) => {
  *       200:
  *         description: Menu item image uploaded and saved successfully
  */
-router.post("/menu-item", upload.single("image"), async (req, res) => {
+router.post(
+  "/menu-item",
+  requireExistingUploadRole,
+  requirePermission(PERMISSIONS.MENU_MANAGE),
+  upload.single("image"),
+  async (req, res) => {
   try {
     // Scope to the authenticated user's business so one tenant can't overwrite
     // (or delete the Cloudinary asset of) another tenant's menu item.
@@ -226,7 +238,8 @@ router.post("/menu-item", upload.single("image"), async (req, res) => {
     console.error("[upload/menu-item]", err)
     return res.status(500).json({ error: err.message || "Upload failed" })
   }
-})
+  },
+)
 
 
 export default router

@@ -1,6 +1,8 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
 import { createCheckoutSession, createReservationCheckoutSession } from "../controllers/paymentController.js";
+import { requirePermissionForAuthenticatedManager } from "../middleware/authMiddleware.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 
 const router = express.Router();
 
@@ -46,7 +48,12 @@ const checkoutLimiter = rateLimit({
  *                 url:
  *                   type: string
  */
-router.post("/checkout", checkoutLimiter, createCheckoutSession);
+router.post(
+  "/checkout",
+  checkoutLimiter,
+  requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE),
+  createCheckoutSession,
+);
 
 /**
  * @openapi

@@ -8,6 +8,7 @@ import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse 
 import { resolveBusinessCapabilities, resolveBusinessModules } from "../services/businessCapabilityService.js";
 import { resolveSubscriptionEntitlements } from "../services/subscriptionEntitlementService.js";
 import { markStaffActive, markStaffOffline } from "../services/presenceService.js";
+import { resolveCurrentManager } from "../middleware/authMiddleware.js";
 /**
  * Validate an invitation token
  * GET /auth/invite/validate?token=...
@@ -370,7 +371,13 @@ export async function staffHeartbeat(req, res) {
         // staffObjectId is stored in session at login. For sessions created
         // before this change, fall back to a lightweight DB lookup.
         let staffMongoId = sessionUser.staffObjectId;
-        if (!staffMongoId) {
+        if (sessionUser.role === "manager") {
+            const manager = await resolveCurrentManager(req);
+            if (!manager) {
+                return res.status(403).json({ message: "Manager account is disabled or no longer exists." });
+            }
+            staffMongoId = manager._id.toString();
+        } else if (!staffMongoId) {
             const Staff = (await import("../models/Staff.js")).default;
             const staffDoc = await Staff.findOne(
                 { email: sessionUser.email, businessId: sessionUser.businessId },
@@ -396,7 +403,7 @@ export async function getMe(req, res) {
             return res.status(401).json({ message: "Not authenticated" });
         }
         
-        const { role, email } = req.session.user;
+        const { role, email, businessId } = req.session.user;
 
         // Optionally, grab fresh data from DB to ensure user isn't disabled
         if (role === 'owner') {
@@ -406,7 +413,7 @@ export async function getMe(req, res) {
             if (!business) return res.status(401).json({ message: "Account disabled or not found." });
             return res.json({ 
                 ...req.session.user, 
-                displayName: business.displayName, 
+                displayName: business.displayName,
                 name: business.ownerName,
                 businessType: business.businessType || "restaurant",
                 modules: resolveBusinessModules(business),
@@ -417,7 +424,9 @@ export async function getMe(req, res) {
                 timezone: business.timezone || "UTC"
             });
         } else {
-            const staff = await Staff.findOne({ email, accountStatus: "active" }).select('-passwordHash');
+            const staff = role === "manager"
+                ? await resolveCurrentManager(req)
+                : await Staff.findOne({ email, accountStatus: "active" }).select('-passwordHash');
             if (!staff) return res.status(401).json({ message: "Account disabled or not found." });
             
             // Also fetch business to get businessType and currency
@@ -426,12 +435,16 @@ export async function getMe(req, res) {
                     { businessId: staff.businessId },
                     { businessId: staff.businessId }
                 ]
-            }).select('businessType modules currency taxRate timezone currentPlan billingStatus').lean();
+            }).select('name displayName businessType modules currency taxRate timezone currentPlan billingStatus').lean();
+
+            const businessDisplayName = business?.displayName || business?.name;
 
             return res.json({ 
                 ...req.session.user, 
-                name: staff.name, 
+                name: staff.name,
+                displayName: businessDisplayName,
                 staffId: staff.staffId,
+                ...(role === "manager" ? { permissions: staff.permissions || [] } : {}),
                 businessType: business?.businessType || "restaurant",
                 modules: resolveBusinessModules(business),
                 capabilities: resolveBusinessCapabilities(business),
@@ -591,7 +604,10 @@ export async function changePassword(req, res) {
         if (role === 'owner') {
             user = await Business.findOne({ ownerEmail: email });
         } else {
-            user = await Staff.findOne({ email });
+            if (role === "manager" && !await resolveCurrentManager(req)) {
+                return res.status(403).json({ message: "Manager account is disabled or no longer exists." });
+            }
+            user = await Staff.findOne({ email, businessId, accountStatus: "active" });
             userType = "staff";
         }
 

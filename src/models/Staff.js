@@ -1,4 +1,5 @@
 import mongoose from "mongoose"
+import { PERMISSION_VALUES } from "../constants/permissions.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender", "co_owner"]
 
@@ -37,6 +38,10 @@ const StaffSchema = new mongoose.Schema({
         type: String,
         enum: ["active", "offline"],
         default: "offline"
+    },
+    permissions: {
+        type: [{ type: String, enum: PERMISSION_VALUES }],
+        default: [],
     },
     passwordHash: { type: String },
     inviteToken: { type: String, select: false },

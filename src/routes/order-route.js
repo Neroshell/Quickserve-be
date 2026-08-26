@@ -2,7 +2,8 @@ import express from "express"
 import rateLimit from "express-rate-limit"
 import { listOrders, createOrder, getOrderById, updateOrderStatus, deleteOrdersBySession, markPaid, sendReceipt, saveReceiptEmail, reconcileComplete } from "../controllers/orderController.js"
 import { reorderFromOrder } from "../controllers/reorderController.js"
-import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+import { requireAuth, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 
 const router = express.Router()
 
@@ -40,7 +41,7 @@ const receiptLimiter = rateLimit({
  *       200:
  *         description: List of orders
  */
-router.get("/", listOrders)
+router.get("/", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW), listOrders)
 
 /**
  * @openapi
@@ -79,7 +80,7 @@ router.get("/", listOrders)
  *       201:
  *         description: Order created successfully
  */
-router.post("/", createOrder)
+router.post("/", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), createOrder)
 
 /**
  * @openapi
@@ -98,7 +99,7 @@ router.post("/", createOrder)
  *       200:
  *         description: Orders session deleted
  */
-router.delete("/session", requireAuth, requireRole("owner", "admin", "manager"), deleteOrdersBySession)
+router.delete("/session", requireAuth, requireRole("owner", "admin", "manager"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), deleteOrdersBySession)
 
 /**
  * @openapi
@@ -119,7 +120,7 @@ router.delete("/session", requireAuth, requireRole("owner", "admin", "manager"),
  *       404:
  *         description: Order not found
  */
-router.get("/:orderId", getOrderById)
+router.get("/:orderId", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW), getOrderById)
 
 /**
  * @openapi
@@ -151,7 +152,11 @@ router.get("/:orderId", getOrderById)
  *       200:
  *         description: Reorder payload with available items and unavailable item names
  */
-router.post("/:orderId/reorder", reorderFromOrder)
+router.post(
+  "/:orderId/reorder",
+  requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW),
+  reorderFromOrder,
+)
 
 /**
  * @openapi
@@ -213,7 +218,7 @@ router.patch("/:orderId/status", requireAuth, requireRole("waiter", "kitchen", "
  *       200:
  *         description: Order marked paid
  */
-router.patch("/:orderId/mark-paid", requireAuth, requireRole("waiter", "manager", "owner", "co_owner"), markPaid)
+router.patch("/:orderId/mark-paid", requireAuth, requireRole("waiter", "manager", "owner", "co_owner"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), markPaid)
 
 /**
  * @openapi
@@ -243,7 +248,7 @@ router.patch("/:orderId/mark-paid", requireAuth, requireRole("waiter", "manager"
  *       200:
  *         description: Receipt sent
  */
-router.post("/:orderId/receipt", receiptLimiter, requireAuth, requireRole("waiter", "owner", "admin", "manager"), sendReceipt)
+router.post("/:orderId/receipt", receiptLimiter, requireAuth, requireRole("waiter", "owner", "admin", "manager"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), sendReceipt)
 
 /**
  * @openapi
@@ -266,7 +271,7 @@ router.post("/:orderId/receipt", receiptLimiter, requireAuth, requireRole("waite
  *       409:
  *         description: Concurrent update conflict
  */
-router.patch("/:orderId/reconcile-complete", requireAuth, requireRole("waiter", "manager", "owner", "co_owner"), reconcileComplete)
+router.patch("/:orderId/reconcile-complete", requireAuth, requireRole("waiter", "manager", "owner", "co_owner"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), reconcileComplete)
 
 /**
  * @openapi
@@ -296,6 +301,6 @@ router.patch("/:orderId/reconcile-complete", requireAuth, requireRole("waiter", 
  *       200:
  *         description: Email saved successfully
  */
-router.patch("/:orderId/receipt-email", saveReceiptEmail)
+router.patch("/:orderId/receipt-email", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), saveReceiptEmail)
 
 export default router

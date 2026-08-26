@@ -5,23 +5,17 @@ import { hashToken } from "../utils/tokenHash.js"
 import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 import { getStaffPresence } from "../services/presenceService.js"
+import { normalizePermissions } from "../constants/permissions.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
+const OPERATIONAL_ROLES = ["waiter", "kitchen", "bartender"]
+const MANAGER_ADMIN_ROLES = new Set(["owner", "co_owner", "restaurant_owner", "admin"])
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/**
- * Resolve business identity from request — accepts businessId (preferred) or
- * businessId (legacy fallback) from either query string or body.
- */
+/** Resolve the tenant only from the authenticated session. */
 function resolveBusinessId(req) {
-    return (
-        req.session?.user?.businessId ||
-        req.query.businessId ||
-        req.query.businessId || // legacy fallback
-        req.body?.businessId ||
-        req.body?.businessId
-    )
+    return req.session?.user?.businessId
 }
 
 /**
@@ -54,14 +48,16 @@ export async function getStaff(req, res) {
             return res.status(400).json({ error: "businessId is required" })
         }
 
+        const requesterRole = req.session?.user?.role
+        const visibleRoles = requesterRole === "manager" ? OPERATIONAL_ROLES : ALLOWED_ROLES
         const filter = { businessId }
 
         // Role filter — set by card selection, never free-text
-        if (role && role !== "all" && ALLOWED_ROLES.includes(role)) {
+        if (role && role !== "all" && visibleRoles.includes(role)) {
             filter.role = role
         } else {
             // Exclude business access roles like co_owner from standard operational staff lists
-            filter.role = { $in: ALLOWED_ROLES }
+            filter.role = { $in: visibleRoles }
         }
 
         // Presence status filter is NOT applied to Mongo; Redis is the source of truth.
@@ -88,6 +84,9 @@ export async function getStaff(req, res) {
                 role: s.role,
                 name: s.name,
                 email: s.email,
+                ...(MANAGER_ADMIN_ROLES.has(requesterRole) && s.role === "manager"
+                    ? { permissions: s.permissions || [] }
+                    : {}),
                 accountStatus: s.accountStatus,
                 presenceStatus: presenceData.status,
                 lastSeenAt: presenceData.lastSeenAt,
@@ -121,7 +120,8 @@ export async function getStaff(req, res) {
 export async function createStaff(req, res) {
     try {
         const businessId = resolveBusinessId(req)
-        let { staffId, name, email, role } = req.body
+        let { staffId, name, email, role, permissions = [] } = req.body
+        const requesterRole = req.session?.user?.role
 
         if (!businessId) {
             return res.status(400).json({ error: "businessId is required" })
@@ -136,6 +136,24 @@ export async function createStaff(req, res) {
             return res.status(400).json({
                 error: `Invalid role. Must be one of: ${ALLOWED_ROLES.join(", ")}`
             })
+        }
+
+        if (requesterRole === "manager" && !OPERATIONAL_ROLES.includes(role)) {
+            return res.status(403).json({
+                error: "Managers may create only waiter, kitchen, or bartender staff.",
+            })
+        }
+
+        let normalizedPermissions = []
+        if (role === "manager") {
+            if (!MANAGER_ADMIN_ROLES.has(requesterRole)) {
+                return res.status(403).json({ error: "Only an Owner or Co-Owner may create a Manager." })
+            }
+            try {
+                normalizedPermissions = normalizePermissions(permissions)
+            } catch (err) {
+                return res.status(400).json({ error: err.message })
+            }
         }
 
         email = normalizeAccountEmail(email)
@@ -184,6 +202,7 @@ export async function createStaff(req, res) {
             staffId,
             staffId: staffId, // populate staffId for backward compat
             role,
+            permissions: normalizedPermissions,
             name,
             email,
             accountStatus: "pending",
@@ -207,6 +226,7 @@ export async function createStaff(req, res) {
             staffId: staff.staffId,
             staffId: staff.staffId,
             role: staff.role,
+            ...(staff.role === "manager" ? { permissions: staff.permissions || [] } : {}),
             name: staff.name,
             email: staff.email,
             accountStatus: staff.accountStatus,
@@ -234,14 +254,38 @@ export async function deleteStaff(req, res) {
             return res.status(400).json({ error: "businessId is required" })
         }
 
-        // Try staffId first, fall back to staffId for old records
-        let result = await Staff.findOneAndDelete({ businessId, staffId })
-        if (!result) {
-            result = await Staff.findOneAndDelete({ businessId, staffId: staffId })
+        const target = await Staff.findOne({ businessId, staffId })
+        if (!target) {
+            return res.status(404).json({ error: "Staff member not found" })
         }
 
-        if (!result) {
-            return res.status(404).json({ error: "Staff member not found" })
+        if (req.session?.user?.role === "manager") {
+            if (!OPERATIONAL_ROLES.includes(target.role)) {
+                return res.status(403).json({
+                    error: "Managers may remove only waiter, kitchen, or bartender staff.",
+                })
+            }
+            if (
+                target._id.toString() === req.session.user.staffObjectId ||
+                target.staffId === req.session.user.staffId
+            ) {
+                return res.status(403).json({ error: "Managers cannot remove their own account." })
+            }
+        }
+
+        await Staff.deleteOne({ _id: target._id, businessId })
+
+        if (target.role === "manager") {
+            try {
+                const { publishManagerAccessRevocation } = await import("../utils/sseManager.js")
+                await publishManagerAccessRevocation({
+                    businessId,
+                    staffObjectId: target._id,
+                    staffId: target.staffId,
+                })
+            } catch (streamError) {
+                console.error("[deleteStaff] Failed to revoke Manager live streams", streamError)
+            }
         }
 
         await invalidateSetupProgress(businessId)
@@ -250,6 +294,55 @@ export async function deleteStaff(req, res) {
     } catch (err) {
         console.error("[deleteStaff]", err)
         return res.status(500).json({ error: "Failed to remove staff member" })
+    }
+}
+
+// ─── Manager permission administration ──────────────────────────────────────
+
+export async function updateManagerPermissions(req, res) {
+    try {
+        const businessId = resolveBusinessId(req)
+        const { staffId } = req.params
+
+        if (!businessId) {
+            return res.status(401).json({ error: "Unauthorized" })
+        }
+
+        let permissions
+        try {
+            permissions = normalizePermissions(req.body?.permissions)
+        } catch (err) {
+            return res.status(400).json({ error: err.message })
+        }
+
+        const manager = await Staff.findOne({ businessId, staffId, role: "manager" })
+        if (!manager) {
+            return res.status(404).json({ error: "Manager not found" })
+        }
+
+        manager.permissions = permissions
+        await manager.save()
+
+        try {
+            const { publishManagerAccessRevocation } = await import("../utils/sseManager.js")
+            await publishManagerAccessRevocation({
+                businessId,
+                staffObjectId: manager._id,
+                staffId: manager.staffId,
+            })
+        } catch (streamError) {
+            console.error("[updateManagerPermissions] Failed to refresh Manager live streams", streamError)
+        }
+
+        return res.json({
+            staffId: manager.staffId,
+            role: manager.role,
+            permissions: manager.permissions,
+            updatedAt: manager.updatedAt,
+        })
+    } catch (err) {
+        console.error("[updateManagerPermissions]", err)
+        return res.status(500).json({ error: "Failed to update Manager permissions" })
     }
 }
 

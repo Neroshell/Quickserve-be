@@ -19,6 +19,9 @@
 
 import { redisPub, REDIS_CHANNEL } from "../config/redisClient.js"
 import GuestSession from "../models/GuestSession.js"
+import Staff from "../models/Staff.js"
+import { resolveCurrentManager } from "../middleware/authMiddleware.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 
 // Which SSE channel(s) a given authenticated staff role is allowed to subscribe to.
 // The channel is derived from the session role — NOT the client-supplied query —
@@ -45,6 +48,25 @@ const CUSTOMER_ROLES = new Set(["table", "anon", "customer"])
 // ignores event payloads. Tenant isolation (businessId) is still enforced.
 const SSE_DASHBOARD_ROLES = new Set(["owner"])
 
+const MANAGER_SSE_PERMISSIONS_BY_CHANNEL = {
+    owner: new Set([
+        PERMISSIONS.DASHBOARD_VIEW,
+        PERMISSIONS.ORDERS_VIEW,
+        PERMISSIONS.STAFF_VIEW,
+    ]),
+    reservations: new Set([PERMISSIONS.RESERVATIONS_VIEW]),
+}
+
+const MANAGER_ACCESS_REVOKED_EVENT = "__manager_access_revoked"
+
+function managerPermissionAllowsEvent(permission, event) {
+    if (permission === PERMISSIONS.DASHBOARD_VIEW) return true
+    if (permission === PERMISSIONS.ORDERS_VIEW) return event.startsWith("order_")
+    if (permission === PERMISSIONS.STAFF_VIEW) return event.startsWith("staff_")
+    if (permission === PERMISSIONS.RESERVATIONS_VIEW) return event.startsWith("reservation_")
+    return false
+}
+
 // ── Local client registry ────────────────────────────────────────────────────
 const clients = new Set()
 
@@ -56,10 +78,31 @@ function addClient(client) {
 }
 
 function removeClient(client) {
-    clients.delete(client)
+    if (!clients.delete(client)) return
+    if (client.keepAlive) clearInterval(client.keepAlive)
     console.log(
         `[SSE] 🔌 Client disconnected — role=${client.role} businessId=${client.businessId} total=${clients.size}`
     )
+}
+
+async function findCurrentManagerForClient(client) {
+    const identityFilter = client.managerIdentity?.staffObjectId
+        ? { _id: client.managerIdentity.staffObjectId }
+        : { staffId: client.managerIdentity?.staffId }
+
+    try {
+        return await Staff.findOne({
+            ...identityFilter,
+            businessId: client.businessId,
+            role: "manager",
+            accountStatus: "active",
+        })
+            .select("permissions")
+            .lean()
+    } catch (err) {
+        console.error("[SSE] Failed to revalidate Manager stream:", err.message)
+        return null
+    }
 }
 
 // ── SSE HTTP handler ─────────────────────────────────────────────────────────
@@ -67,6 +110,8 @@ export async function sseHandler(req, res) {
     let role = req.query.role || "anon"
     const businessId = req.query.businessId || req.query.businessId
     const token = req.query.token
+    let managerPermission = null
+    let managerIdentity = null
 
     if (!businessId) {
         return res.status(400).end("Missing businessId")
@@ -103,6 +148,24 @@ export async function sseHandler(req, res) {
         if (!allowedChannels.includes(role)) {
             role = allowedChannels[0]
         }
+
+        if (req.session.user.role === "manager") {
+            const requestedPermission = req.query.permission
+            const allowedPermissions = MANAGER_SSE_PERMISSIONS_BY_CHANNEL[role]
+            const manager = await resolveCurrentManager(req)
+            if (
+                !manager ||
+                !allowedPermissions?.has(requestedPermission) ||
+                !req.resolvedManagerPermissions.includes(requestedPermission)
+            ) {
+                return res.status(403).end("Forbidden. Manager live-update permission denied.")
+            }
+            managerPermission = requestedPermission
+            managerIdentity = {
+                staffObjectId: String(manager._id),
+                staffId: manager.staffId,
+            }
+        }
     }
 
     res.setHeader("Content-Type", "text/event-stream")
@@ -111,7 +174,7 @@ export async function sseHandler(req, res) {
     res.setHeader("X-Accel-Buffering", "no")   // disable nginx proxy buffering
     res.flushHeaders?.()
 
-    const client = { res, role, businessId, servicePointId: clientTableId }
+    const client = { res, role, businessId, servicePointId: clientTableId, managerPermission, managerIdentity }
 
     addClient(client)
 
@@ -121,8 +184,18 @@ export async function sseHandler(req, res) {
     )
 
     // Keep-alive ping every 25 s (prevents idle disconnects through proxies/load balancers)
-    const keepAlive = setInterval(() => {
+    const keepAlive = setInterval(async () => {
         try {
+            if (client.managerPermission) {
+                const currentManager = await findCurrentManagerForClient(client)
+                if (!clients.has(client)) return
+                if (!currentManager?.permissions?.includes(client.managerPermission)) {
+                    res.end()
+                    clearInterval(keepAlive)
+                    removeClient(client)
+                    return
+                }
+            }
             res.write(`event: heartbeat\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`)
         } catch (err) {
             console.error("[SSE] Heartbeat write failed, removing client:", err.message)
@@ -130,11 +203,38 @@ export async function sseHandler(req, res) {
             removeClient(client)
         }
     }, 25_000)
+    client.keepAlive = keepAlive
 
     req.on("close", () => {
         clearInterval(keepAlive)
         removeClient(client)
     })
+}
+
+/**
+ * End any live streams for a Manager whose permissions changed. EventSource
+ * reconnects automatically and the new connection performs a fresh MongoDB
+ * authorization check.
+ */
+export function disconnectManagerClients({ businessId, staffObjectId, staffId }) {
+    let disconnected = 0
+    for (const client of [...clients]) {
+        if (client.businessId !== businessId || !client.managerIdentity) continue
+        const isTarget =
+            (staffObjectId && client.managerIdentity.staffObjectId === String(staffObjectId)) ||
+            (staffId && client.managerIdentity.staffId === staffId)
+        if (!isTarget) continue
+
+        try {
+            client.res.end()
+        } catch (err) {
+            console.error("[SSE] Failed to close stale Manager stream:", err.message)
+        } finally {
+            removeClient(client)
+            disconnected++
+        }
+    }
+    return disconnected
 }
 
 // ── Local delivery ───────────────────────────────────────────────────────────
@@ -145,7 +245,7 @@ export async function sseHandler(req, res) {
  *
  * @param {{ event: string, businessId: string, targets: string[]|null, payload: object }} msg
  */
-export function broadcastLocal(msg) {
+export async function broadcastLocal(msg) {
     const { event, businessId, targets, payload } = msg
 
     if (!event || !businessId) {
@@ -153,7 +253,16 @@ export function broadcastLocal(msg) {
         return
     }
 
-    const data = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
+    // Internal control message distributed over the existing realtime bus.
+    // It is consumed by every app instance and is never forwarded to clients.
+    if (event === MANAGER_ACCESS_REVOKED_EVENT) {
+        disconnectManagerClients({
+            businessId,
+            staffObjectId: payload?.staffObjectId,
+            staffId: payload?.staffId,
+        })
+        return
+    }
 
     // The table this event belongs to, if any. Orders and waiter calls carry the
     // identity used to scope customer streams below. Waiter calls use only the
@@ -164,6 +273,7 @@ export function broadcastLocal(msg) {
         null
 
     let matched = 0
+    const managerAuthorizationByIdentity = new Map()
 
     for (const client of clients) {
         // Business isolation — strict
@@ -174,6 +284,30 @@ export function broadcastLocal(msg) {
         // staff-targeted operational events as invalidation signals.
         if (targets && targets.length > 0 && !targets.includes(client.role) && !SSE_DASHBOARD_ROLES.has(client.role)) continue
 
+        if (client.managerPermission) {
+            if (!managerPermissionAllowsEvent(client.managerPermission, event)) continue
+
+            const identityKey = `${client.businessId}:${client.managerIdentity?.staffObjectId || client.managerIdentity?.staffId || "unknown"}`
+            if (!managerAuthorizationByIdentity.has(identityKey)) {
+                managerAuthorizationByIdentity.set(
+                    identityKey,
+                    findCurrentManagerForClient(client),
+                )
+            }
+
+            const currentManager = await managerAuthorizationByIdentity.get(identityKey)
+            if (!clients.has(client)) continue
+            if (!currentManager?.permissions?.includes(client.managerPermission)) {
+                try {
+                    client.res.end()
+                } catch (err) {
+                    console.error("[SSE] Failed to close unauthorized Manager stream:", err.message)
+                }
+                removeClient(client)
+                continue
+            }
+        }
+
         // Per-table isolation for customer streams: a diner only receives events
         // for their own table. Staff channels (kitchen/bar/waitstaff/owner) are
         // business-wide and skip this. Falls open if either side lacks a servicePointId
@@ -183,6 +317,10 @@ export function broadcastLocal(msg) {
         }
 
         try {
+            const clientPayload = client.managerPermission === PERMISSIONS.DASHBOARD_VIEW
+                ? { invalidated: true }
+                : payload
+            const data = `event: ${event}\ndata: ${JSON.stringify(clientPayload)}\n\n`
             client.res.write(data)
             matched++
         } catch (err) {
@@ -219,7 +357,7 @@ export async function publishEvent(event, businessId, targets, payload) {
     if (!redisPub) {
         // Local dev fallback: no Redis, broadcast directly in this process
         console.log(`[RealtimeBus] (local fallback) publishEvent event=${event} businessId=${businessId}`)
-        broadcastLocal(msg)
+        await broadcastLocal(msg)
         return
     }
 
@@ -231,6 +369,19 @@ export async function publishEvent(event, businessId, targets, payload) {
     } catch (err) {
         console.error("[RealtimeBus] ❌ Redis PUBLISH failed, using local fallback:", err.message)
         // Graceful fallback: deliver on this instance even if Redis is temporarily down
-        broadcastLocal(msg)
+        await broadcastLocal(msg)
     }
+}
+
+/** Disconnect a Manager's SSE streams on every app instance. */
+export async function publishManagerAccessRevocation({ businessId, staffObjectId, staffId }) {
+    return publishEvent(
+        MANAGER_ACCESS_REVOKED_EVENT,
+        businessId,
+        null,
+        {
+            staffObjectId: staffObjectId ? String(staffObjectId) : null,
+            staffId: staffId || null,
+        },
+    )
 }

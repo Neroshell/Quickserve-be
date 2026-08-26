@@ -23,6 +23,7 @@ import {
     invalidatePublicBusinessRoute,
     invalidatePublicBusinessRoutes,
 } from "../services/cacheInvalidationService.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 
 function generateBusinessId() {
     return `biz_${crypto.randomBytes(7).toString("hex")}`
@@ -47,6 +48,46 @@ function sanitizeBusiness(biz) {
     const obj = typeof biz.toObject === "function" ? biz.toObject() : { ...biz }
     for (const field of SENSITIVE_BUSINESS_FIELDS) delete obj[field]
     return attachBusinessCapabilities(obj)
+}
+
+function buildManagerSettingsPayload(business, permissions = []) {
+    const allowed = new Set(permissions)
+    const payload = {
+        businessId: business.businessId,
+        name: business.name,
+        displayName: business.displayName,
+        businessType: business.businessType,
+        currency: business.currency,
+        timezone: business.timezone,
+        taxRate: business.taxRate,
+        logoUrl: business.logoUrl,
+    }
+
+    if (allowed.has(PERMISSIONS.RESERVATIONS_VIEW)) {
+        payload.settings = {
+            reservationsEnabled: business.settings?.reservationsEnabled,
+        }
+    }
+
+    if (allowed.has(PERMISSIONS.SERVICE_POINTS_VIEW)) {
+        payload.hotelRoomTypes = business.hotelRoomTypes || []
+    }
+
+    if (allowed.has(PERMISSIONS.SETTINGS_OPERATIONAL_MANAGE)) {
+        payload.operatingHours = business.operatingHours
+        payload.orderingPreferences = business.orderingPreferences
+        payload.paymentPreferences = business.paymentPreferences
+        payload.tablePreferences = business.tablePreferences
+        payload.menuCategories = business.menuCategories
+        payload.settings = {
+            reservationsEnabled: business.settings?.reservationsEnabled,
+            tipsEnabled: business.settings?.tipsEnabled,
+        }
+        payload.offlinePaymentsAvailable = business.offlinePaymentsAvailable
+        payload.offlinePaymentsUnavailableReason = business.offlinePaymentsUnavailableReason
+    }
+
+    return payload
 }
 
 // Profile/config fields a tenant manager may edit via PATCH /business/settings.
@@ -119,6 +160,13 @@ export async function getSettings(req, res) {
             if (!canRemoveQuickServeBranding) {
                 bizObj.branding.removeQuickServeBranding = false
             }
+        }
+
+        if (req.session.user.role === "manager") {
+            return res.json(buildManagerSettingsPayload(
+                bizObj,
+                req.resolvedManagerPermissions || [],
+            ))
         }
 
         return res.json(attachBusinessCapabilities(bizObj))

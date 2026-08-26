@@ -1,6 +1,7 @@
 import express from "express"
 import { getOrderById, updateOrderStatus, markPaid, sendReceipt, saveReceiptEmail } from "../controllers/orderController.js"
-import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+import { requireAuth, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 
 const router = express.Router({ mergeParams: true })
 
@@ -30,7 +31,7 @@ const router = express.Router({ mergeParams: true })
  *       200:
  *         description: Order details
  */
-router.get("/:orderId", getOrderById)
+router.get("/:orderId", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW), getOrderById)
 
 /**
  * @openapi
@@ -66,7 +67,7 @@ router.get("/:orderId", getOrderById)
  *       200:
  *         description: Status updated successfully
  */
-router.patch("/:orderId/status", requireAuth, requireRole("owner", "admin", "manager", "waiter", "kitchen", "bar"), updateOrderStatus)
+router.patch("/:orderId/status", requireAuth, requireRole("owner", "admin", "manager", "waiter", "kitchen", "bar"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), updateOrderStatus)
 
 /**
  * @openapi
@@ -102,7 +103,7 @@ router.patch("/:orderId/status", requireAuth, requireRole("owner", "admin", "man
  *       200:
  *         description: Order marked paid successfully
  */
-router.patch("/:orderId/mark-paid", requireAuth, requireRole("owner", "admin", "manager", "waiter"), markPaid)
+router.patch("/:orderId/mark-paid", requireAuth, requireRole("owner", "admin", "manager", "waiter"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), markPaid)
 
 /**
  * @openapi
@@ -137,7 +138,7 @@ router.patch("/:orderId/mark-paid", requireAuth, requireRole("owner", "admin", "
  *       200:
  *         description: Receipt sent
  */
-router.post("/:orderId/receipt", requireAuth, requireRole("owner", "admin", "manager", "waiter"), sendReceipt)
+router.post("/:orderId/receipt", requireAuth, requireRole("owner", "admin", "manager", "waiter"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), sendReceipt)
 
 /**
  * @openapi
@@ -172,6 +173,6 @@ router.post("/:orderId/receipt", requireAuth, requireRole("owner", "admin", "man
  *       200:
  *         description: Email saved successfully
  */
-router.patch("/:orderId/receipt-email", saveReceiptEmail)
+router.patch("/:orderId/receipt-email", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), saveReceiptEmail)
 
 export default router

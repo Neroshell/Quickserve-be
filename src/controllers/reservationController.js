@@ -163,7 +163,7 @@ export function toOwnerReservationResponse(reservation) {
 export async function getReservations(req, res) {
   try {
     const {
-      businessId,
+      businessId: requestedBusinessId,
       view,
       cursor,
       previousCursor,
@@ -175,16 +175,29 @@ export async function getReservations(req, res) {
       clientToday,
     } = req.query;
 
+    const sessionUser = req.session?.user;
+    const businessId = sessionUser?.role === "admin"
+      ? requestedBusinessId || sessionUser.businessId
+      : sessionUser?.businessId;
+
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" });
+    }
+    if (
+      sessionUser?.role !== "admin" &&
+      requestedBusinessId &&
+      requestedBusinessId !== businessId
+    ) {
+      return res.status(403).json({ error: "Unauthorized access to this business" });
     }
 
     const limit = parseInt(reqLimit, 10) || 25;
 
-    // Ensure the business belongs to this owner
-    const business = await Business.findOne({ businessId, ownerEmail: req.session.user.email }).lean();
-    if (!business && req.session.user.role !== "admin") {
-      return res.status(403).json({ error: "Unauthorized access to this business" });
+    // Route authorization has already admitted the caller. Resolve the business
+    // strictly inside the authenticated tenant for owners, co-owners, and Managers.
+    const business = await Business.findOne({ businessId }).lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
     }
 
     const caps = resolveBusinessCapabilities(business)?.reservations;

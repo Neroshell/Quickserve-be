@@ -1,6 +1,7 @@
 import express from "express"
 import { barOrders } from "../controllers/barController.js"
-import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+import { requireAuth, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 
 const router = express.Router()
 
@@ -18,6 +19,6 @@ router.use(requireAuth, requireRole("bartender", "manager", "owner", "co_owner",
  *       200:
  *         description: List of bar orders
  */
-router.get("/orders", barOrders)
+router.get("/orders", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW), barOrders)
 
 export default router

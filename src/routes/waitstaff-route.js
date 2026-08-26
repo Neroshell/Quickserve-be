@@ -11,7 +11,8 @@ import {
 
 import { listServicePoints } from "../controllers/servicePointController.js"
 
-import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+import { requireAuth, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 import { requireOfflineServiceActive } from "../middleware/billingMiddleware.js"
 
 const router = express.Router()
@@ -38,7 +39,11 @@ const router = express.Router()
  *       200:
  *         description: List of active waiter calls
  */
-router.get("/calls", listWaiterCalls)
+router.get(
+    "/calls",
+    requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW),
+    listWaiterCalls,
+)
 
 /**
  * @openapi
@@ -69,7 +74,11 @@ router.get("/calls", listWaiterCalls)
  *       201:
  *         description: Call created successfully
  */
-router.post("/calls", createWaiterCall)
+router.post(
+    "/calls",
+    requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE),
+    createWaiterCall,
+)
 
 
 // ==========================================
@@ -88,7 +97,7 @@ const requireReconciliationRole = requireRole("waiter", "manager", "owner", "co_
  *       200:
  *         description: Paginated past orders
  */
-router.get("/past-orders", requireAuth, requireReconciliationRole, waiterPastOrders)
+router.get("/past-orders", requireAuth, requireReconciliationRole, requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW), waiterPastOrders)
 
 /**
  * @openapi
@@ -101,7 +110,7 @@ router.get("/past-orders", requireAuth, requireReconciliationRole, waiterPastOrd
  *       200:
  *         description: Order marked as paid
  */
-router.patch("/orders/:orderId/mark-paid", requireAuth, requireReconciliationRole, markPaid)
+router.patch("/orders/:orderId/mark-paid", requireAuth, requireReconciliationRole, requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), markPaid)
 
 /**
  * @openapi
@@ -114,7 +123,7 @@ router.patch("/orders/:orderId/mark-paid", requireAuth, requireReconciliationRol
  *       200:
  *         description: Order marked as completed
  */
-router.patch("/orders/:orderId/reconcile-complete", requireAuth, requireReconciliationRole, reconcileComplete)
+router.patch("/orders/:orderId/reconcile-complete", requireAuth, requireReconciliationRole, requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), reconcileComplete)
 
 router.use(requireAuth, requireRole("waiter"))
 

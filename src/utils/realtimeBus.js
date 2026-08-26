@@ -48,7 +48,9 @@ export function startRealtimeBus() {
             `[RealtimeBus] 📨 Received event=${event} businessId=${businessId} targets=${JSON.stringify(targets ?? "all")}`
         )
 
-        broadcastLocal({ event, businessId, targets: targets ?? null, payload })
+        void broadcastLocal({ event, businessId, targets: targets ?? null, payload }).catch((err) => {
+            console.error("[RealtimeBus] Failed to broadcast event locally:", err.message)
+        })
     })
 
     redisSub.on("error", (err) => {

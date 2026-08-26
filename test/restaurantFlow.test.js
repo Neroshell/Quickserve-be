@@ -1549,6 +1549,17 @@ test("order-again data uses current tenant menu price and rejects another guest 
   });
   t.mock.method(MenuItem, "find", () => mockQuery([live]));
 
+  const missingSessionRes = createResponse();
+  await reorderFromOrder(
+    {
+      params: { orderId: original.orderId },
+      body: { businessId: "business-a" },
+      session: {},
+    },
+    missingSessionRes,
+  );
+  assert.equal(missingSessionRes.statusCode, 400);
+
   const deniedRes = createResponse();
   await reorderFromOrder(
     {

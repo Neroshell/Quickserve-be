@@ -16,6 +16,8 @@ export async function reorderFromOrder(req, res) {
   try {
     const { orderId } = req.params
     const { businessId, sessionId } = req.body
+    const sessionBusinessId = req.session?.user?.businessId
+    const isSameTenantStaff = Boolean(sessionBusinessId && sessionBusinessId === businessId)
 
     if (!businessId) {
       return res.status(400).json({ error: "businessId is required" })
@@ -25,10 +27,14 @@ export async function reorderFromOrder(req, res) {
       return res.status(400).json({ error: "orderId is required" })
     }
 
-    // 1. Load the original order — allow lookup by sessionId (customer) or businessId scope
+    if (!isSameTenantStaff && !sessionId) {
+      return res.status(400).json({ error: "sessionId is required" })
+    }
+
+    // Staff may use only their authenticated tenant. Customer devices must
+    // prove ownership with the original device session ID.
     const query = { orderId, businessId }
-    if (sessionId) {
-      // Ensure the customer actually owns this session
+    if (!isSameTenantStaff) {
       query.sessionId = sessionId
     }
 

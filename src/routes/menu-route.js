@@ -8,11 +8,16 @@ import {
     getPopularItems
 } from "../controllers/menuController.js"
 
-import { requireAuth, requireRole } from "../middleware/authMiddleware.js"
+import { requireAuth, requirePermission, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { PERMISSIONS } from "../constants/permissions.js"
 
 const router = express.Router()
 
-const requireManager = [requireAuth, requireRole("owner", "admin", "manager")]
+const requireMenuManagement = [
+    requireAuth,
+    requireRole("owner", "admin", "manager"),
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+]
 
 /**
  * @openapi
@@ -31,7 +36,7 @@ const requireManager = [requireAuth, requireRole("owner", "admin", "manager")]
  *       200:
  *         description: List of popular menu items
  */
-router.get("/popular", getPopularItems)
+router.get("/popular", requirePermissionForAuthenticatedManager(PERMISSIONS.MENU_VIEW), getPopularItems)
 
 /**
  * @openapi
@@ -50,7 +55,7 @@ router.get("/popular", getPopularItems)
  *       200:
  *         description: List of menu items
  */
-router.get("/", getMenuItems)
+router.get("/", requirePermissionForAuthenticatedManager(PERMISSIONS.MENU_VIEW), getMenuItems)
 
 
 /**
@@ -95,7 +100,7 @@ router.get("/", getMenuItems)
  *       201:
  *         description: Menu item created successfully
  */
-router.post("/", requireManager, createMenuItem)
+router.post("/", requireMenuManagement, createMenuItem)
 
 /**
  * @openapi
@@ -133,7 +138,7 @@ router.post("/", requireManager, createMenuItem)
  *       200:
  *         description: Menu item updated successfully
  */
-router.patch("/:id", requireManager, updateMenuItem)
+router.patch("/:id", requireMenuManagement, updateMenuItem)
 
 /**
  * @openapi
@@ -152,7 +157,7 @@ router.patch("/:id", requireManager, updateMenuItem)
  *       200:
  *         description: Menu item deleted successfully
  */
-router.delete("/:id", requireManager, deleteMenuItem)
+router.delete("/:id", requireMenuManagement, deleteMenuItem)
 
 /**
  * @openapi
@@ -171,6 +176,6 @@ router.delete("/:id", requireManager, deleteMenuItem)
  *       200:
  *         description: Menu item availability toggled successfully
  */
-router.patch("/:id/availability", requireManager, toggleMenuItemAvailability)
+router.patch("/:id/availability", requireMenuManagement, toggleMenuItemAvailability)
 
 export default router
