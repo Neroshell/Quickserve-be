@@ -3,6 +3,7 @@ import WeeklyAnalystReport, {
     WEEKLY_INSIGHT_ENGINE_VERSION,
     GENERATION_STATUSES,
 } from "../models/WeeklyAnalystReport.js"
+import { assertPeriodIntegrity } from "./weeklyPeriodResolver.js"
 
 /**
  * findLatestReport(businessId)
@@ -70,6 +71,15 @@ export async function upsertSnapshotAndInsights({
     insights,
     model = WeeklyAnalystReport,
 }) {
+    // Defensive invariant: the snapshot period must match the report period.
+    if (snapshot?.period) {
+        assertPeriodIntegrity(snapshot.period, {
+            key: period.key,
+            start: period.start,
+            end: period.end,
+        })
+    }
+
     const result = await model.findOneAndUpdate(
         { businessId, periodKey: period.key },
         {

@@ -1,6 +1,6 @@
 import express from "express"
 import { ownerOrders, ownerTransactions, getTableSessionsOverview, getDashboardData, getBranding, updateBranding } from "../controllers/ownerController.js"
-import { getLatestReport, getReportHistory, getReportByPeriod } from "../controllers/ownerAnalystReportController.js"
+import { getLatestReport, getReportHistory, getReportByPeriod, getCurrentWeekSnapshot } from "../controllers/ownerAnalystReportController.js"
 import { ownerAnalytics } from "../controllers/ownerAnalyticsController.js"
 import { dismissSetupGuide, getSetupProgress } from "../controllers/setupProgressController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
@@ -977,6 +977,13 @@ router.get(
     requirePermission(PERMISSIONS.AI_ANALYST_VIEW),
     requireEntitlement("aiBusinessAnalyst"),
     getReportHistory,
+)
+
+router.get(
+    "/ai-business-analyst/current-week",
+    requirePermission(PERMISSIONS.AI_ANALYST_VIEW),
+    requireEntitlement("aiBusinessAnalyst"),
+    getCurrentWeekSnapshot,
 )
 
 router.get(

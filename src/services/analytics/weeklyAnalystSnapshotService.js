@@ -11,6 +11,11 @@ import {
 import { getSharedAnalytics } from "./sharedAnalyticsService.js"
 import { getFoodServiceAnalytics } from "./foodServiceAnalyticsService.js"
 import { getLodgingAnalytics } from "./lodgingAnalyticsService.js"
+import {
+    resolveWeeklyPeriodFromKey,
+    resolveLastCompletedWeek,
+    resolveCurrentWeek,
+} from "../weeklyPeriodResolver.js"
 
 export class WeeklyAnalystSnapshotServiceError extends Error {
     constructor(message, statusCode = 500) {
@@ -45,20 +50,28 @@ function isoWeekKey(isoDate, tz) {
 
 // ---------- period ----------
 
-function resolveWeeklyPeriod(now, timezone, explicitStart, explicitEnd) {
+/**
+ * Resolve the snapshot period.  Supports three modes:
+ *
+ *   1. `periodKey`         — canonical resolution via weeklyPeriodResolver
+ *   2. `periodStart + periodEnd` — explicit local calendar bounds
+ *   3. default             — most recently completed Mon–Sun week
+ *
+ * When `isPartialWeek` is true, resolves the current in-progress week
+ * (Monday → now).
+ */
+function resolveWeeklyPeriod(now, timezone, periodKey, explicitStart, explicitEnd, isPartialWeek) {
+    if (periodKey) {
+        return resolveWeeklyPeriodFromKey(periodKey, timezone)
+    }
     if (explicitStart && explicitEnd) {
-        return { start: explicitStart, end: explicitEnd }
+        const key = isoWeekKey(explicitStart, timezone)
+        return { key, start: explicitStart, end: explicitEnd, timezone }
     }
-    const today = DateTime.isDateTime(now)
-        ? now.setZone(timezone).startOf("day")
-        : DateTime.fromJSDate(now, { zone: timezone }).startOf("day")
-    // today.weekday: 1=Mon … 7=Sun.  The most recently completed
-    // Sunday is exactly `today.weekday` days before today.
-    const sunday = today.minus({ days: today.weekday })
-    return {
-        start: sunday.minus({ days: 6 }).toISODate(),
-        end: sunday.toISODate(),
+    if (isPartialWeek) {
+        return resolveCurrentWeek(now, timezone)
     }
+    return resolveLastCompletedWeek(now, timezone)
 }
 
 // ---------- business ----------
@@ -192,15 +205,19 @@ async function buildFeedbackSnapshot({ businessId, periodFrom, periodTo, feedbac
 /**
  * @param {Object} opts
  * @param {string} opts.businessId
- * @param {string} [opts.periodStart]  YYYY-MM-DD in business tz
+ * @param {string} [opts.periodKey]       YYYY-Www — canonical resolution
+ * @param {string} [opts.periodStart]     YYYY-MM-DD in business tz
  * @param {string} [opts.periodEnd]
+ * @param {boolean} [opts.isPartialWeek]  true for live current-week snapshot
  * @param {Date}   [opts.now]
  * @returns {Object}
  */
 export async function generateWeeklySnapshot({
     businessId,
+    periodKey: requestedPeriodKey,
     periodStart,
     periodEnd,
+    isPartialWeek = false,
     now = new Date(),
     businessModel = Business,
     guestProfileModel = GuestProfile,
@@ -221,10 +238,12 @@ export async function generateWeeklySnapshot({
     const hasFood = modules.includes("foodService")
     const hasLodge = modules.includes("lodging")
 
-    // 2. period
-    const { start: s, end: e } = resolveWeeklyPeriod(now, tz, periodStart, periodEnd)
+    // 2. period — resolve via canonical resolver
+    const resolved = resolveWeeklyPeriod(now, tz, requestedPeriodKey, periodStart, periodEnd, isPartialWeek)
+    const s = resolved.start
+    const e = isPartialWeek ? DateTime.fromJSDate(now instanceof Date ? now : new Date(), { zone: tz }).toISODate() : resolved.end
     if (!s || !e) throw new WeeklyAnalystSnapshotServiceError("Could not determine period")
-    const periodKey = isoWeekKey(s, tz)
+    const periodKey = resolved.key || isoWeekKey(s, tz)
 
     // 3. ranges
     const ranges = resolveAnalyticsDomainRanges({ preset: "custom", from: s, to: e, now, timezone: tz, business: biz })

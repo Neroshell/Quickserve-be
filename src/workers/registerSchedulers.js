@@ -80,7 +80,7 @@ export async function registerWorkerSchedulers({
         const aiAnalystQueue = createQueueFn(QUEUE_NAMES.AI_ANALYST, { env });
         await aiAnalystQueue.upsertJobScheduler(
             AI_ANALYST_WEEKLY_SCHEDULER_ID,
-            { every: 7 * 24 * 60 * 60 * 1000 }, // weekly
+            { pattern: "0 6 * * 1", tz: "UTC" }, // Monday 06:00 UTC
             {
                 name: AI_ANALYST_JOB_NAMES.WEEKLY_SCAN,
                 data: {},

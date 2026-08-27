@@ -1,5 +1,6 @@
 import { AI_ANALYST_JOB_NAMES } from "../../queues/index.js"
 import Business from "../../models/Business.js"
+import WeeklyAnalystReport from "../../models/WeeklyAnalystReport.js"
 import { resolveSubscriptionEntitlements } from "../../services/subscriptionEntitlementService.js"
 import { generateWeeklySnapshot } from "../../services/analytics/weeklyAnalystSnapshotService.js"
 import { generateWeeklyInsights } from "../../services/analytics/weeklyInsightService.js"
@@ -7,15 +8,41 @@ import { upsertSnapshotAndInsights, findReport } from "../../services/weeklyAnal
 import { generateAnalystReportForPeriod, GenerationError } from "../../services/ai/weeklyAnalystGenerationService.js"
 import { CloudflareProviderError } from "../../services/ai/cloudflareProvider.js"
 import { enqueueAiAnalystGenerate, buildAiAnalystJobId } from "../../queues/aiAnalystQueue.js"
+import { resolveCompletedWeeks } from "../../services/weeklyPeriodResolver.js"
+import { resolveAnalyticsTimezone } from "../../services/analytics/analyticsRangeService.js"
 
 const SCAN_BATCH_SIZE = 200
+const CATCHUP_WEEKS = 4
+
+/**
+ * Determine the catch-up status for a given business/periodKey.
+ *
+ * Returns one of:
+ *   "FINAL"      — completed report exists, skip
+ *   "GENERATING" — currently generating, don't duplicate
+ *   "QUEUED"     — snapshot_ready waiting for AI generation, skip
+ *   "FAILED"     — failed, eligible for retry
+ *   "MISSING"    — no report document exists at all
+ */
+function classifyReportStatus(report) {
+    if (!report) return "MISSING"
+    switch (report.generationStatus) {
+        case "completed": return "FINAL"
+        case "generating": return "GENERATING"
+        case "snapshot_ready": return "QUEUED"
+        case "pending": return "QUEUED"
+        case "failed": return "FAILED"
+        default: return "MISSING"
+    }
+}
 
 /**
  * Weekly scan processor.
  *
  * Finds all Growth businesses entitled to aiBusinessAnalyst, determines
- * the most recently completed week for each, and enqueues one generation
- * job per business/week.
+ * the last CATCHUP_WEEKS completed weeks for each (in the business's
+ * timezone), and enqueues generation jobs for any that are MISSING or
+ * FAILED.  FINAL, GENERATING, and QUEUED weeks are skipped.
  */
 export async function processAiAnalystWeeklyScan(job) {
     const startTime = Date.now()
@@ -48,43 +75,48 @@ export async function processAiAnalystWeeklyScan(job) {
 
             totalEligible++
 
-            // Determine the canonical completed week
-            let snapshot
-            try {
-                snapshot = await generateWeeklySnapshot({
-                    businessId: biz.businessId,
-                })
-            } catch (err) {
-                console.warn(
-                    `[ai-analyst-scan] Snapshot failed for ${biz.businessId}: ${err.message}`,
-                )
-                continue
-            }
+            // Resolve the last N completed weeks in the business's timezone
+            const tz = resolveAnalyticsTimezone(biz.timezone, "UTC")
+            const completedWeeks = resolveCompletedWeeks(new Date(), tz, CATCHUP_WEEKS)
 
-            const periodKey = snapshot.period.key
-            const jobId = buildAiAnalystJobId(biz.businessId, periodKey)
+            // Batch-fetch existing reports for these weeks
+            const periodKeys = completedWeeks.map(w => w.key)
+            const existingReports = await WeeklyAnalystReport.find(
+                { businessId: biz.businessId, periodKey: { $in: periodKeys } },
+                "periodKey generationStatus",
+            ).lean()
 
-            // Check if already exists
-            const existing = await findReport(biz.businessId, periodKey)
-            if (existing?.generationStatus === "completed") {
-                skipped++
-                continue
-            }
+            const reportMap = new Map(existingReports.map(r => [r.periodKey, r]))
 
-            // Enqueue generation job
-            try {
-                await enqueueAiAnalystGenerate({
-                    businessId: biz.businessId,
-                    periodKey,
-                })
-                enqueued++
-            } catch (err) {
-                if (err.message?.includes?.("jobId") && err.message?.includes?.("exist")) {
+            for (const week of completedWeeks) {
+                const existing = reportMap.get(week.key) || null
+                const status = classifyReportStatus(existing)
+
+                // Skip anything that is already done, in progress, or queued
+                if (status === "FINAL" || status === "GENERATING" || status === "QUEUED") {
                     skipped++
-                } else {
-                    console.warn(
-                        `[ai-analyst-scan] Enqueue failed for ${biz.businessId}/${periodKey}: ${err.message}`,
+                    continue
+                }
+
+                // MISSING or FAILED → enqueue
+                const jobId = buildAiAnalystJobId(biz.businessId, week.key)
+                try {
+                    await enqueueAiAnalystGenerate({
+                        businessId: biz.businessId,
+                        periodKey: week.key,
+                    })
+                    enqueued++
+                    console.log(
+                        `[ai-analyst-scan] Enqueued ${biz.businessId}/${week.key} (was ${status})`,
                     )
+                } catch (err) {
+                    if (err.message?.includes?.("jobId") && err.message?.includes?.("exist")) {
+                        skipped++
+                    } else {
+                        console.warn(
+                            `[ai-analyst-scan] Enqueue failed for ${biz.businessId}/${week.key}: ${err.message}`,
+                        )
+                    }
                 }
             }
         }
@@ -139,17 +171,16 @@ export async function processAiAnalystGenerate(job) {
             return { status: "already_completed" }
         }
 
-        // 3. Generate snapshot
+        // 3. Generate snapshot using canonical periodKey resolution
         const snapshot = await generateWeeklySnapshot({
             businessId,
-            periodStart: existing?.periodStart,
-            periodEnd: existing?.periodEnd,
+            periodKey,
         })
 
         // 4. Generate insights
         const insightResult = generateWeeklyInsights(snapshot)
 
-        // 5. Upsert snapshot + insights
+        // 5. Upsert snapshot + insights (includes period integrity validation)
         await upsertSnapshotAndInsights({
             businessId,
             period: snapshot.period,

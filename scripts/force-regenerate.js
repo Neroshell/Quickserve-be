@@ -10,6 +10,8 @@
 
 import { generateAnalystReportForPeriod } from "../src/services/ai/weeklyAnalystGenerationService.js"
 import { generateWeeklySnapshot } from "../src/services/analytics/weeklyAnalystSnapshotService.js"
+import { generateWeeklyInsights } from "../src/services/analytics/weeklyInsightService.js"
+import { upsertSnapshotAndInsights } from "../src/services/weeklyAnalystReportService.js"
 import mongoose from "mongoose"
 
 async function run() {
@@ -20,31 +22,42 @@ async function run() {
     await mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/quickserve")
     
     console.log(`[force-regenerate] Rebuilding snapshot for ${businessId} / ${periodKey}...`)
+
+    // Use canonical periodKey resolution — generateWeeklySnapshot now
+    // deterministically resolves periodKey → correct Monday/Sunday dates.
     const snapshot = await generateWeeklySnapshot({ businessId, periodKey })
-    
-    const db = mongoose.connection.db
-    await db.collection("weeklyanalystreports").updateOne(
-        { businessId, periodKey },
-        { 
-            $set: { 
-                analyticsSnapshot: snapshot,
-                generationStatus: "snapshot_ready", 
-                generatedReport: null 
-            } 
-        }
-    )
+
+    // Verify period integrity before persisting
+    if (snapshot.period.key !== periodKey) {
+        console.error(
+            `[force-regenerate] CRITICAL: Snapshot resolved to ${snapshot.period.key} ` +
+            `but requested ${periodKey}. Aborting.`,
+        )
+        process.exit(1)
+    }
+
+    console.log(`[force-regenerate] Snapshot period: ${snapshot.period.start} → ${snapshot.period.end} (${snapshot.period.key})`)
+
+    // Generate deterministic insights
+    const insights = generateWeeklyInsights(snapshot)
+
+    // Upsert via canonical service (includes period integrity validation)
+    await upsertSnapshotAndInsights({
+        businessId,
+        period: snapshot.period,
+        snapshot,
+        insights,
+    })
 
     console.log(`[force-regenerate] Executing canonical V5 report generation...`)
     try {
         const report = await generateAnalystReportForPeriod({ businessId, periodKey })
         console.log(`[force-regenerate] Success!`)
-        console.log(`  Headline: "${report.generatedReport.headline}"`)
+        console.log(`  Headline: "${report.generatedReport?.headline}"`)
         console.log(`  Report Version: ${report.reportVersion}`)
         console.log(`  Model Version: ${report.modelVersion}`)
     } catch (e) {
         console.error("[force-regenerate] Error during generation:", e.message)
-        const doc = await db.collection("weeklyanalystreports").findOne({ businessId, periodKey })
-        console.log("[force-regenerate] Failure state:", doc?.failureReason)
     }
     process.exit(0)
 }
