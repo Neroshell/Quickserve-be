@@ -19,6 +19,7 @@ const [
   },
   {
     handleStripeWebhook,
+    PAID_CHECKOUT_FULFILLMENT_STATE_MISSING,
     validateOrderCheckoutPayment,
   },
   { default: PendingCheckout },
@@ -301,7 +302,7 @@ test("invalid Stripe signature is rejected before checkout lookup", async (t) =>
   assert.equal(pendingLookupCount, 0);
 });
 
-test("missing PendingCheckout is handled without creating an order", async (t) => {
+test("paid checkout with missing PendingCheckout remains retryable without creating an order", async (t) => {
   const event = createCheckoutEvent();
   const stripeForTest = new Stripe("sk_test_order_receipt");
   t.mock.method(stripeForTest.webhooks, "constructEvent", () => event);
@@ -315,7 +316,8 @@ test("missing PendingCheckout is handled without creating an order", async (t) =
     res,
   );
 
-  assert.equal(res.statusCode, 200);
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body, PAID_CHECKOUT_FULFILLMENT_STATE_MISSING);
 });
 
 test("processed payment with a missing receipt surfaces provider failure and retries safely", async (t) => {

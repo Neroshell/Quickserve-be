@@ -23,4 +23,7 @@ const guestVisitSchema = new mongoose.Schema(
 // Compound unique index to ensure exactly one visit document per guest per day
 guestVisitSchema.index({ businessId: 1, email: 1, visitDate: 1 }, { unique: true });
 
+// Supports tenant-first CRM analytics scans across operational visit dates.
+guestVisitSchema.index({ businessId: 1, visitDate: 1, email: 1 });
+
 export default mongoose.models.GuestVisit || mongoose.model("GuestVisit", guestVisitSchema);

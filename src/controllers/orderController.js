@@ -20,8 +20,15 @@ import CustomerConsent from "../models/CustomerConsent.js"
 import {
   captureGuestLead,
   dispatchCrmOrder,
+  getCrmOrderRevenueCents,
   recordCrmOrderIntent,
 } from "../services/guestProfileService.js"
+import {
+  resolveOrStartCustomerJourney,
+  recordOrderPlacementForJourney,
+  recordOrderPaymentForJourney,
+  linkJourneyToProfile,
+} from "../services/customerJourneyService.js"
 import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
 import {
   calculateOfflinePricing,
@@ -110,7 +117,7 @@ export async function createOrder(req, res) {
   try {
     const {
       servicePointLabel, items, sessionId, tableSessionToken, orderType,
-      receiptEmail, tipAmount, tipType, tipPercentage
+      receiptEmail, tipAmount, tipType, tipPercentage, journeyId
     } = req.body
 
     // Payment state is NEVER trusted from the client. Orders created here are
@@ -182,7 +189,7 @@ export async function createOrder(req, res) {
     } else {
       businessId = req.session.user.businessId
       if (!businessId) {
-         return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
+        return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
       }
     }
 
@@ -303,6 +310,18 @@ export async function createOrder(req, res) {
 
     const estimate = buildOrderEstimate(enrichedItems, now)
 
+    // Resolve or start canonical CustomerJourney
+    const journey = await resolveOrStartCustomerJourney({
+      businessId,
+      journeyId: journeyId || null,
+      tableSessionToken,
+      sessionId,
+      servicePointId: sp.servicePointId,
+      orderType: finalOrderType,
+      now,
+    })
+    const resolvedJourneyId = journey?.journeyId || null
+
     const saved = await Order.create({
       orderId,
       businessId,
@@ -331,6 +350,7 @@ export async function createOrder(req, res) {
       paymentStatus: "unpaid",
       paidVia: null,
       receiptEmail: receiptEmail || null,
+      journeyId: resolvedJourneyId,
       planApplied,
       commissionRateApplied,
       commissionAmountCents: finalCommissionAmountCents,
@@ -339,6 +359,15 @@ export async function createOrder(req, res) {
       platformFeeRateAtOrder: commissionRateApplied,
       orderSource: isWaiter ? "waitstaff" : "self",
     })
+
+    if (saved.journeyId) {
+      await recordOrderPlacementForJourney({
+        businessId: saved.businessId,
+        journeyId: saved.journeyId,
+        orderId: saved.orderId,
+        createdAt: saved.createdAt,
+      })
+    }
 
     await invalidateSetupProgress(businessId)
 
@@ -379,6 +408,7 @@ export async function createOrder(req, res) {
       orderId: saved.orderId,
       businessId: saved.businessId,
       status: saved.status,
+      journeyId: saved.journeyId || null,
       pricing: {
         ...getCustomerPricingBreakdown(pricing),
         tipAmount: tip.tipAmount,
@@ -634,6 +664,16 @@ export async function markPaid(req, res) {
       return res.status(409).json({ message: "Order was already marked paid by another request." })
     }
 
+    if (updatedOrder.journeyId) {
+      await recordOrderPaymentForJourney({
+        businessId: updatedOrder.businessId,
+        journeyId: updatedOrder.journeyId,
+        orderId: updatedOrder.orderId,
+        spendCents: getCrmOrderRevenueCents(updatedOrder),
+        paidAt: updatedOrder.paidAt || new Date(),
+      })
+    }
+
     const orderDTO = toOrderDTO(updatedOrder)
 
     // Broadcast via Redis — kitchen gets food-only, bar gets drinks-only, waiters get full order
@@ -822,11 +862,19 @@ export async function saveReceiptEmail(req, res) {
       );
     }
 
-    await captureGuestLead({
+    const lead = await captureGuestLead({
       businessId: order.businessId,
       email,
       marketingConsent,
     })
+
+    if (order.journeyId && lead?._id) {
+      await linkJourneyToProfile({
+        businessId: order.businessId,
+        journeyId: order.journeyId,
+        guestProfileId: lead._id,
+      })
+    }
 
     if (order.paymentStatus === "paid") {
       try {

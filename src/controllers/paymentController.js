@@ -1,6 +1,7 @@
 import Stripe from "stripe";
 import GuestSession from "../models/GuestSession.js";
 import PendingCheckout from "../models/PendingCheckout.js";
+import { resolveOrStartCustomerJourney } from "../services/customerJourneyService.js";
 import Reservation from "../models/Reservation.js";
 import Business from "../models/Business.js";
 import MenuItem from "../models/menuItem.js";
@@ -15,6 +16,7 @@ import {
 import { validateTrackedStock } from "../services/inventoryService.js";
 import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
 import { normalizeTip } from "../utils/tips.js";
+import { getPendingCheckoutExpiresAt } from "../constants/checkoutRetention.js";
 // Restaurant-flow defect safeguards for online checkout:
 // validate and normalize the cart, reject disabled business/order/payment modes,
 // and derive Stripe currency from the business instead of the client request.
@@ -51,6 +53,7 @@ export async function createCheckoutSession(req, res) {
             tipAmount,
             tipType,
             tipPercentage,
+            journeyId,
         } = req.body;
 
         // --- Validation ---
@@ -102,7 +105,7 @@ export async function createCheckoutSession(req, res) {
         } else {
             businessIdToUse = req.session.user.businessId;
             if (!businessIdToUse) {
-                 return res.status(403).json({ message: "Unauthorized: Missing businessId in session" });
+                return res.status(403).json({ message: "Unauthorized: Missing businessId in session" });
             }
         }
 
@@ -203,7 +206,7 @@ export async function createCheckoutSession(req, res) {
         // servicePointLabel is the internal servicePointId (e.g. sp_xxxx); we resolve the
         // human-friendly label once here so the webhook can copy it without a second lookup.
         const displayLabel = sp?.label || sp?.code || servicePointLabel;
-        const servicePointQrCode  = sp?.code  || sp?.label || displayLabel;
+        const servicePointQrCode = sp?.code || sp?.label || displayLabel;
 
         // --- Save cart data temporarily (not an Order yet) ---
         const now = new Date();
@@ -258,6 +261,17 @@ export async function createCheckoutSession(req, res) {
             });
         }
 
+        // Resolve or start canonical CustomerJourney
+        const journey = await resolveOrStartCustomerJourney({
+            businessId: businessIdToUse,
+            journeyId: journeyId || null,
+            tableSessionToken,
+            sessionId,
+            servicePointId: servicePointLabel,
+            orderType: finalOrderType,
+        });
+        const resolvedJourneyId = journey?.journeyId || null;
+
         const pending = await PendingCheckout.create({
             businessId: businessIdToUse,
             orderId,
@@ -274,6 +288,7 @@ export async function createCheckoutSession(req, res) {
             total: subtotal + taxAmount + tip.tipAmount,
             currency: finalCurrency.toUpperCase(),
             receiptEmail: receiptEmail || null,
+            journeyId: resolvedJourneyId,
         });
 
         if (customerPlatformFeeCents > 0) {
@@ -322,29 +337,38 @@ export async function createCheckoutSession(req, res) {
 
         console.log(`[checkout] Stripe session created — sessionId=${stripeSession.id}`);
 
-        pending.stripeSessionId          = stripeSession.id;
-        pending.stripePaymentIntentId    = stripeSession.payment_intent || null;
+        pending.stripeSessionId = stripeSession.id;
+        pending.stripeExpiresAt = stripeSession.expires_at !== null &&
+            stripeSession.expires_at !== undefined &&
+            Number.isFinite(Number(stripeSession.expires_at))
+            ? new Date(Number(stripeSession.expires_at) * 1000)
+            : null;
+        pending.expiresAt = getPendingCheckoutExpiresAt({
+            stripeExpiresAt: stripeSession.expires_at,
+        });
+        pending.stripePaymentIntentId = stripeSession.payment_intent || null;
         pending.stripeConnectedAccountId = business.stripeAccountId;
-        pending.commissionAmountCents    = commissionAmountCents;
-        pending.commissionRateApplied    = commissionRateApplied;
-        pending.planApplied              = planApplied;
-        pending.planAtOrder              = planApplied;
-        pending.commissionRateAtOrder    = commissionRateApplied;
-        pending.platformFeeRateAtOrder   = commissionRateApplied;
-        
-        pending.platformFeeCents                 = commissionAmountCents;
-        pending.customerPlatformFeeCents         = customerPlatformFeeCents;
-        pending.businessAbsorbedPlatformFeeCents = businessAbsorbedPlatformFeeCents;
-        pending.platformFeeMode                  = platformFeeMode;
-        pending.customerPlatformFeePercent       = customerPlatformFeePercent;
+        pending.commissionAmountCents = commissionAmountCents;
+        pending.commissionRateApplied = commissionRateApplied;
+        pending.planApplied = planApplied;
+        pending.planAtOrder = planApplied;
+        pending.commissionRateAtOrder = commissionRateApplied;
+        pending.platformFeeRateAtOrder = commissionRateApplied;
 
-        pending.grossAmount              = pricing.grossAmountCents;
-        pending.netToBusinessAmount      = pricing.netToBusinessAmountCents;
-        pending.total                    = pricing.total;
+        pending.platformFeeCents = commissionAmountCents;
+        pending.customerPlatformFeeCents = customerPlatformFeeCents;
+        pending.businessAbsorbedPlatformFeeCents = businessAbsorbedPlatformFeeCents;
+        pending.platformFeeMode = platformFeeMode;
+        pending.customerPlatformFeePercent = customerPlatformFeePercent;
+
+        pending.grossAmount = pricing.grossAmountCents;
+        pending.netToBusinessAmount = pricing.netToBusinessAmountCents;
+        pending.total = pricing.total;
         await pending.save();
 
         return res.status(201).json({
             sessionUrl: stripeSession.url,
+            journeyId: resolvedJourneyId,
         });
     } catch (err) {
         console.error("[createCheckoutSession] Error:", err);
@@ -360,7 +384,7 @@ export async function createCheckoutSession(req, res) {
 export async function createReservationCheckoutSession(req, res) {
     try {
         const { secureToken } = req.body;
-        
+
         if (!secureToken) {
             return res.status(400).json({ message: "secureToken is required" });
         }
@@ -397,18 +421,18 @@ export async function createReservationCheckoutSession(req, res) {
         const pricing = getCustomerReservationPricing(reservation);
 
         if (!pricing.totalCents || pricing.totalCents <= 0) {
-          return res.status(400).json({
-            success: false,
-            message: "This reservation does not have a valid payment amount. Please contact the business.",
-          });
+            return res.status(400).json({
+                success: false,
+                message: "This reservation does not have a valid payment amount. Please contact the business.",
+            });
         }
 
         const amountCents = pricing.totalCents;
         if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
-          return res.status(400).json({
-            success: false,
-            message: "Invalid payment amount",
-          });
+            return res.status(400).json({
+                success: false,
+                message: "Invalid payment amount",
+            });
         }
 
         const currency = (business.currency || reservation.currency || "eur").toLowerCase();

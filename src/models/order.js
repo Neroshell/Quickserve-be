@@ -32,6 +32,7 @@ const OrderSchema = new mongoose.Schema(
     displayLabel: { type: String, default: "" }, // human-friendly display label, e.g. "Table 12"
     orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in", index: true },
     sessionId: { type: String, index: true },
+    journeyId: { type: String, default: null },
     status: { type: String, enum: ["placed", "in_progress", "ready", "completed", "cancelled"], default: "placed", index: true },
     items: { type: [OrderItemSchema], required: true },
     subtotal: { type: Number, default: 0 },

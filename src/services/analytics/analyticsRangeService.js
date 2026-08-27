@@ -1,5 +1,8 @@
 import { DateTime, IANAZone } from "luxon"
-import { getClosingTime } from "../../utils/businessDate.js"
+import {
+    getClosingTime,
+    resolveBusinessDay,
+} from "../../utils/businessDate.js"
 
 export const DEFAULT_ANALYTICS_TIMEZONE = "UTC"
 export const FOOD_SERVICE_ROLLOVER_HOUR = 2
@@ -10,6 +13,7 @@ const SUPPORTED_PRESETS = new Set([
     "today",
     "yesterday",
     "7days",
+    "30days",
     "thisMonth",
     "custom",
 ])
@@ -74,7 +78,13 @@ function parseLocalDate(value, timezone, fieldName) {
  */
 function atRollover(localDate, timezone, rolloverHour, business) {
     if (business && rolloverHour === FOOD_SERVICE_ROLLOVER_HOUR) {
-        return getClosingTime(localDate, business.operatingHours || {})
+        // A named operational business day begins when the preceding named
+        // day closes. This matches resolveBusinessDay(), including overnight
+        // hours and per-weekday closing times.
+        return getClosingTime(
+            localDate.minus({ days: 1 }),
+            business.operatingHours || {},
+        )
     }
     return DateTime.fromObject(
         {
@@ -92,6 +102,12 @@ function atRollover(localDate, timezone, rolloverHour, business) {
 
 function getCurrentBusinessDate({ now, timezone, rolloverHour, business }) {
     const zonedNow = asDateTime(now, timezone)
+    if (business && rolloverHour === FOOD_SERVICE_ROLLOVER_HOUR) {
+        const resolved = resolveBusinessDay(business, zonedNow.toJSDate())
+        return DateTime.fromISO(resolved.businessDay, {
+            zone: timezone,
+        }).startOf("day")
+    }
     const calendarDate = zonedNow.startOf("day")
     const todayRollover = atRollover(
         calendarDate,
@@ -185,6 +201,10 @@ export function resolveAnalyticsRange({
             break
         case "7days":
             currentFrom = businessDate.minus({ days: 6 })
+            currentTo = businessDate
+            break
+        case "30days":
+            currentFrom = businessDate.minus({ days: 29 })
             currentTo = businessDate
             break
         case "thisMonth":

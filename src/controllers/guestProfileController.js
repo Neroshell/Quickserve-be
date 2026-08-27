@@ -2,6 +2,45 @@ import GuestProfile from "../models/GuestProfile.js";
 import Business from "../models/Business.js";
 import { DateTime } from "luxon";
 import { readOwnerGuestsPage, OwnerGuestsCursorError } from "../services/ownerGuestsReadService.js";
+import { AnalyticsRangeError } from "../services/analytics/analyticsRangeService.js";
+import {
+  CrmAnalyticsServiceError,
+  crmAnalyticsService,
+} from "../services/crmAnalyticsService.js";
+
+export function createCrmAnalyticsController({
+  getAnalytics = crmAnalyticsService,
+} = {}) {
+  return async function getCrmAnalytics(req, res) {
+    try {
+      const businessId = req.session?.user?.businessId;
+      if (!businessId) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      const { range = "30days", from, to } = req.query;
+      const analytics = await getAnalytics({
+        businessId,
+        range,
+        from,
+        to,
+      });
+      return res.json(analytics);
+    } catch (error) {
+      if (
+        error instanceof AnalyticsRangeError ||
+        error instanceof CrmAnalyticsServiceError
+      ) {
+        return res.status(error.statusCode).json({ error: error.message });
+      }
+
+      console.error("[getCrmAnalytics] Error:", error);
+      return res.status(500).json({ error: "Failed to generate CRM analytics" });
+    }
+  };
+}
+
+export const getCrmAnalytics = createCrmAnalyticsController();
 
 /**
  * Get cursor-paginated guest profiles for the authenticated owner's business.

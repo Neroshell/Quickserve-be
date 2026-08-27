@@ -38,6 +38,14 @@ CrmOrderProjectionLedgerSchema.index({
   localVisitDate: 1,
   orderDate: 1,
 });
+// Supports completed, tenant-scoped period revenue aggregation without
+// scanning raw Orders or unrelated CRM ledger entries.
+CrmOrderProjectionLedgerSchema.index({
+  businessId: 1,
+  status: 1,
+  localVisitDate: 1,
+  email: 1,
+});
 
 export default mongoose.models.CrmOrderProjectionLedger ||
   mongoose.model("CrmOrderProjectionLedger", CrmOrderProjectionLedgerSchema);

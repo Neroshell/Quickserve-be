@@ -7,6 +7,7 @@ import GuestVisit from "../models/GuestVisit.js";
 import Order from "../models/order.js";
 import { enqueueCrmOrder } from "../queues/postPaymentQueue.js";
 import { resolveBusinessDay } from "../utils/businessDate.js";
+import { linkJourneyToProfile } from "./customerJourneyService.js";
 
 export const CRM_ORDER_CLAIM_LEASE_MS = 2 * 60 * 1000;
 export const CRM_REPAIR_THRESHOLD_MS = 5 * 60 * 1000;
@@ -26,7 +27,14 @@ function safeError(error) {
   return String(error?.message || error?.code || "crm_processing_failed").slice(0, 500);
 }
 
-function orderSpendCents(order) {
+/**
+ * Canonical CRM paid-order revenue.
+ *
+ * Order.total is backend-authoritative and includes applicable tax and
+ * customer-paid platform fees. Tips belong to staff-tip reporting, so CRM
+ * customer revenue subtracts tipAmount before converting to integer cents.
+ */
+export function getCrmOrderRevenueCents(order) {
   if (
     order?.total !== null &&
     order?.total !== undefined &&
@@ -74,7 +82,7 @@ export function buildCrmLedgerContribution({ order, business, email }) {
     email: ownerEmail,
     orderDate,
     localVisitDate: resolveBusinessDay(business || { timezone: "UTC" }, orderDate).businessDay,
-    spendCents: orderSpendCents(order),
+    spendCents: getCrmOrderRevenueCents(order),
     items: aggregateOrderItems(order.items),
   };
 }
@@ -441,6 +449,7 @@ export async function processCrmOrder({
   now = new Date(),
   claimId = randomUUID(),
   repository = mongoCrmRepository,
+  linkJourney = linkJourneyToProfile,
 } = {}) {
   const staleBefore = new Date(now.getTime() - CRM_ORDER_CLAIM_LEASE_MS);
   const claimed = await repository.claimOrder({
@@ -542,6 +551,24 @@ export async function processCrmOrder({
     });
     for (const visit of projection.visits) {
       await repository.replaceVisit({ businessId, email, visit, now });
+    }
+    if (order?.journeyId && profile?._id) {
+      try {
+        await linkJourney({
+          businessId,
+          journeyId: order.journeyId,
+          guestProfileId: profile._id,
+          identifiedAt: now,
+        });
+      } catch (journeyError) {
+        // Journey intelligence is fail-open and must never block the canonical
+        // GuestProfile/ledger projection.
+        console.error("[CRM] CustomerJourney profile linkage failed", {
+          businessId,
+          orderId,
+          reason: journeyError?.code || journeyError?.name || "journey_link_failed",
+        });
+      }
     }
     await repository.completeLedger({ businessId, orderId, now });
     await repository.completeOrder({ businessId, orderId, claimId, now });

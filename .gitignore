@@ -67,6 +67,10 @@ docker-data/
 
 test/*
 !test/managerPermissions.test.js
+!test/crmAnalyticsService.test.js
+!test/crmAnalyticsController.test.js
+!test/customerJourneyService.test.js
+!test/onlineCustomerJourneyFlow.test.js
 test/hotelRoomTypes.test.js
 test/responseCache.test.js
 test/stage1ResponseCaching.test.js

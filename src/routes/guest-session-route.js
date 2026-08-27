@@ -5,6 +5,7 @@ import GuestSession from "../models/GuestSession.js"
 import Business from "../models/Business.js"
 import ServicePoint from "../models/ServicePoint.js"
 import { isBusinessServable } from "../utils/restaurantOrderValidation.js"
+import { startCustomerJourney } from "../services/customerJourneyService.js"
 
 const router = express.Router()
 
@@ -85,7 +86,8 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
 
     let label = null
     let code = null
-    
+    let canonicalJourneyServicePointId = null
+
     // 2. If this is a managed service point (sp_* prefix), validate it
     if (servicePointId.startsWith("sp_")) {
       const sp = await ServicePoint.findOne({ servicePointId: servicePointId, businessId })
@@ -99,6 +101,7 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       }
       label = sp.label
       code = sp.code
+      canonicalJourneyServicePointId = sp.servicePointId
     }
 
     // 3. Create session
@@ -118,6 +121,16 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       boundSessionId: null,
     })
 
+    // Start / resolve canonical CustomerJourney
+    const journey = await startCustomerJourney({
+      businessId,
+      servicePointId: canonicalJourneyServicePointId,
+      orderType: "dine-in",
+      tableSessionToken: token,
+      sessionId: req.body.sessionId || null,
+      journeyId: req.body.journeyId || null,
+    })
+
     return res.json({
       token,
       expiresAt,
@@ -125,9 +138,61 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       servicePointId,
       label,
       code,
+      journeyId: journey?.journeyId || null,
     })
   } catch (err) {
     console.error("Table session start error:", err)
+    return res.status(500).json({ error: "Server error" })
+  }
+})
+
+/**
+ * Public route to initialize or refresh a customer journey (e.g. for Takeaway or direct menu entry).
+ */
+router.post("/journey/start", tableSessionLimiter, async (req, res) => {
+  try {
+    const {
+      businessId,
+      servicePointId = null,
+      orderType = "takeout",
+      sessionId = null,
+      journeyId = null,
+    } = req.body || {}
+
+    if (!businessId) {
+      return res.status(400).json({ error: "Missing businessId" })
+    }
+
+    const business = await Business.findOne({ businessId })
+    if (!isBusinessServable(business)) {
+      return res.status(404).json({ error: "Business not found" })
+    }
+
+    let canonicalJourneyServicePointId = null
+    if (servicePointId) {
+      const servicePoint = await ServicePoint.findOne({
+        businessId,
+        servicePointId,
+        isActive: { $ne: false },
+      }).lean()
+      canonicalJourneyServicePointId = servicePoint?.servicePointId || null
+    }
+
+    const journey = await startCustomerJourney({
+      businessId,
+      servicePointId: canonicalJourneyServicePointId,
+      orderType,
+      sessionId,
+      journeyId,
+    })
+
+    return res.json({
+      journeyId: journey?.journeyId || null,
+      businessId,
+      localBusinessDate: journey?.localBusinessDate || null,
+    })
+  } catch (err) {
+    console.error("Customer journey start error:", err)
     return res.status(500).json({ error: "Server error" })
   }
 })

@@ -19,6 +19,7 @@
     "test:restaurant-arrival": "node --test test/reservationArrival.test.js",
     "test:collections": "node --test test/collectionNameMigration.test.js",
     "test:manager-permissions": "node --test test/managerPermissions.test.js test/entitlementEnforcement.test.js",
+    "test:crm-analytics": "node --test test/customerJourneyService.test.js test/onlineCustomerJourneyFlow.test.js test/crmAnalyticsService.test.js test/crmAnalyticsController.test.js test/analyticsRangeService.test.js test/ownerGuestsPagination.test.js test/bullmqPhase3PostPayment.test.js test/managerPermissions.test.js test/entitlementEnforcement.test.js",
     "test:cache": "node --test test/responseCache.test.js test/stage1ResponseCaching.test.js test/stage2PublicBusinessCaching.test.js",
     "start": "node server.js",
     "worker": "node src/workers/index.js",

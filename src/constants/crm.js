@@ -1,0 +1,4 @@
+export const CRM_REENGAGEMENT_DAYS = 30
+export const CRM_DORMANT_DAYS = 90
+export const CRM_ANALYTICS_CUSTOMER_LIMIT = 5
+

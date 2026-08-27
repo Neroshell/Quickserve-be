@@ -107,6 +107,39 @@ test("7days returns current and immediately preceding seven local business days"
     )
 })
 
+test("30days returns thirty inclusive local business dates", () => {
+    const range = resolveAnalyticsRange({
+        preset: "30days",
+        now,
+        timezone,
+    })
+
+    assert.deepEqual(
+        [range.from, range.to, range.comparison.from, range.comparison.to],
+        ["2026-06-29", "2026-07-28", "2026-05-30", "2026-06-28"],
+    )
+})
+
+test("configured operating hours use resolveBusinessDay-compatible boundaries", () => {
+    const business = {
+        timezone,
+        operatingHours: {
+            Monday: { openTime: "09:00", closeTime: "22:00" },
+            Tuesday: { openTime: "09:00", closeTime: "22:00" },
+        },
+    }
+    const range = resolveAnalyticsRange({
+        preset: "today",
+        now,
+        timezone,
+        business,
+    })
+
+    assert.equal(range.from, "2026-07-28")
+    assert.equal(iso(range.startUtc), "2026-07-27T20:00:00.000Z")
+    assert.equal(iso(range.endUtcExclusive), "2026-07-28T20:00:00.000Z")
+})
+
 test("thisMonth compares the equivalent elapsed portion of the previous month", () => {
     const range = resolveAnalyticsRange({
         preset: "thisMonth",

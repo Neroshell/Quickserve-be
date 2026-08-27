@@ -1,11 +1,12 @@
 import mongoose from "mongoose"
+import { getPendingCheckoutExpiresAt } from "../constants/checkoutRetention.js"
 
 /**
  * Temporary storage for cart data while the customer is completing
  * Stripe Checkout. Once payment is confirmed via webhook, the data
  * here is used to create the real Order, and this document is deleted.
  *
- * Auto-expires after 1 hour (TTL index) for abandoned checkouts.
+ * Auto-expires only after Stripe's payment and webhook-delivery windows close.
  */
 
 const PendingItemSchema = new mongoose.Schema(
@@ -31,6 +32,7 @@ const PendingCheckoutSchema = new mongoose.Schema(
         displayLabel: { type: String, default: "" },      // human-friendly â€” e.g. "Table 10"
         orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in" },
         sessionId: { type: String, required: true },
+        journeyId: { type: String, default: null },
         items: { type: [PendingItemSchema], required: true },
         subtotal: { type: Number, default: 0 },
         taxAmount: { type: Number, default: 0 },
@@ -43,20 +45,21 @@ const PendingCheckoutSchema = new mongoose.Schema(
 
         // Stripe reference
         stripeSessionId: { type: String, default: null },
+        stripeExpiresAt: { type: Date, default: null },
 
         // Stripe Connect split metadata â€” populated at checkout session creation
-        stripePaymentIntentId:    { type: String, default: null },
+        stripePaymentIntentId: { type: String, default: null },
         stripeConnectedAccountId: { type: String, default: null },
-        grossAmount:              { type: Number, default: null }, // cents
-        netToBusinessAmount:      { type: Number, default: null }, // cents
+        grossAmount: { type: Number, default: null }, // cents
+        netToBusinessAmount: { type: Number, default: null }, // cents
 
         // Commission locking â€” rate is frozen at checkout creation
-        planApplied:             { type: String, default: null },
-        commissionRateApplied:   { type: Number, default: null },   // e.g. 2.5 (percentage)
-        commissionAmountCents:   { type: Number, default: 0 },      // pre-calculated commission in cents
-        planAtOrder:             { type: String, default: null },
-        commissionRateAtOrder:   { type: Number, default: null },
-        platformFeeRateAtOrder:  { type: Number, default: null },
+        planApplied: { type: String, default: null },
+        commissionRateApplied: { type: Number, default: null },   // e.g. 2.5 (percentage)
+        commissionAmountCents: { type: Number, default: 0 },      // pre-calculated commission in cents
+        planAtOrder: { type: String, default: null },
+        commissionRateAtOrder: { type: Number, default: null },
+        platformFeeRateAtOrder: { type: Number, default: null },
 
         // Platform Fee Split details
         platformFeeCents: { type: Number, default: 0 },
@@ -65,10 +68,11 @@ const PendingCheckoutSchema = new mongoose.Schema(
         platformFeeMode: { type: String, enum: ["business_absorbs", "customer_pays", "split"], default: "business_absorbs" },
         customerPlatformFeePercent: { type: Number, default: 0 },
 
-        // TTL: auto-delete abandoned checkouts after 1 hour
+        // The controller re-anchors this to Stripe's returned expires_at after
+        // Session creation. This default safely covers the same maximum window.
         expiresAt: {
             type: Date,
-            default: () => new Date(Date.now() + 60 * 60 * 1000),
+            default: () => getPendingCheckoutExpiresAt(),
         },
     },
     { timestamps: true }

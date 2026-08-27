@@ -1,5 +1,9 @@
 import mongoose from "mongoose"
 import GuestProfile from "../models/GuestProfile.js"
+import {
+  CRM_DORMANT_DAYS,
+  CRM_REENGAGEMENT_DAYS,
+} from "../constants/crm.js"
 
 export const OWNER_GUESTS_DEFAULT_LIMIT = 25
 export const OWNER_GUESTS_MAX_LIMIT = 25
@@ -158,11 +162,11 @@ function buildGuestsFilter({ businessId, filterBy, dateRangeBounds, search }) {
       query.marketingConsent = false
     } else if (filterBy === "recent") {
       const thirtyDaysAgo = new Date()
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - CRM_REENGAGEMENT_DAYS)
       query.lastVisitAt = { $gte: thirtyDaysAgo }
     } else if (filterBy === "inactive") {
       const ninetyDaysAgo = new Date()
-      ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90)
+      ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - CRM_DORMANT_DAYS)
       query.lastVisitAt = { $lt: ninetyDaysAgo }
     }
     // "top_spenders", "most_orders", "highest_visits" are handled strictly by sorting

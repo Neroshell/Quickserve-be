@@ -16,8 +16,13 @@ import {
 } from "../utils/emailService.js";
 import {
     dispatchCrmOrder,
+    getCrmOrderRevenueCents,
     recordCrmOrderIntent,
 } from "../services/guestProfileService.js";
+import {
+    recordOrderPlacementForJourney,
+    recordOrderPaymentForJourney,
+} from "../services/customerJourneyService.js";
 import { deductTrackedStock } from "../services/inventoryService.js";
 import { buildOrderEstimate } from "../utils/orderEstimate.js";
 import { generateHotelCheckInCredentials } from "../services/hotelCheckInService.js";
@@ -43,6 +48,8 @@ import {
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+export const PAID_CHECKOUT_FULFILLMENT_STATE_MISSING =
+    "PAID_CHECKOUT_FULFILLMENT_STATE_MISSING";
 
 async function dispatchPaidOrderReceipt({ dispatcher, order, email }) {
     if (order.receiptEmail !== email) {
@@ -181,6 +188,9 @@ export async function handleStripeWebhook(req, res) {
     const orderReceiptDispatcher =
         req.app?.locals?.dispatchAutomaticOrderReceipt ||
         dispatchAutomaticOrderReceipt;
+    const crmOrderDispatcher =
+        req.app?.locals?.dispatchCrmOrder ||
+        dispatchCrmOrder;
     const sig = req.headers["stripe-signature"];
     let event = req.stripeWebhookEvent || null;
 
@@ -378,9 +388,9 @@ export async function handleStripeWebhook(req, res) {
 
         if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
             const subscription = event.data.object;
-            
+
             const updateFields = { stripeSubscriptionStatus: subscription.status };
-            
+
             if (subscription.status === "past_due" || subscription.status === "unpaid" || subscription.status === "canceled") {
                 updateFields.billingStatus = subscription.status === "canceled" ? 'cancelled' : 'past_due';
                 // Only set failed at if it wasn't already set by a prior failure
@@ -394,7 +404,7 @@ export async function handleStripeWebhook(req, res) {
                 if ((subscription.status === "past_due" || subscription.status === "unpaid" || subscription.status === "canceled") && !biz.billingFailedAt) {
                     updateFields.billingFailedAt = new Date();
                 }
-                
+
                 await Business.updateOne(
                     { _id: biz._id },
                     { $set: updateFields }
@@ -573,7 +583,16 @@ export async function handleStripeWebhook(req, res) {
                     pendingCheckoutId,
                     orderId: metadataOrderId || null,
                     businessId: metadataBusinessId || null,
+                    paymentStatus: session.payment_status || null,
                 });
+                if (session.payment_status === "paid") {
+                    // A paid checkout cannot be fulfilled safely without its
+                    // authoritative cart snapshot. A 5xx leaves the durable
+                    // event failed and lets Stripe retry after reconciliation.
+                    return res
+                        .status(500)
+                        .send(PAID_CHECKOUT_FULFILLMENT_STATE_MISSING);
+                }
                 return res.status(200).send();
             }
 
@@ -609,6 +628,22 @@ export async function handleStripeWebhook(req, res) {
                     paymentStatus: existingOrder.paymentStatus,
                 });
                 return res.status(500).send("Paid order state is incomplete");
+            }
+
+            if (existingOrder.journeyId) {
+                await recordOrderPlacementForJourney({
+                    businessId: existingOrder.businessId,
+                    journeyId: existingOrder.journeyId,
+                    orderId: existingOrder.orderId,
+                    createdAt: existingOrder.createdAt,
+                });
+                await recordOrderPaymentForJourney({
+                    businessId: existingOrder.businessId,
+                    journeyId: existingOrder.journeyId,
+                    orderId: existingOrder.orderId,
+                    spendCents: getCrmOrderRevenueCents(existingOrder),
+                    paidAt: existingOrder.paidAt || existingOrder.createdAt,
+                });
             }
 
             const retryEmail = existingOrder.receiptEmail || session.customer_details?.email || null;
@@ -733,7 +768,7 @@ export async function handleStripeWebhook(req, res) {
 
         if (order) {
             let updated = false;
-            
+
             // If the order existed but wasn't paid yet (offline-to-online flow)
             if (order.paymentStatus !== "paid") {
                 order.paymentStatus = "paid";
@@ -741,7 +776,7 @@ export async function handleStripeWebhook(req, res) {
                 order.paidVia = "online_card";
                 order.paidAt = order.paidAt || new Date();
                 order.stripeSessionId = pending.stripeSessionId || session.id;
-                
+
                 // Stripe Connect split metadata
                 order.stripePaymentIntentId = pending.stripePaymentIntentId || session.payment_intent || null;
                 order.stripeConnectedAccountId = pending.stripeConnectedAccountId || null;
@@ -769,7 +804,11 @@ export async function handleStripeWebhook(req, res) {
                 if (pending.subtotal !== undefined && pending.subtotal > 0) order.subtotal = pending.subtotal;
                 if (pending.taxAmount !== undefined) order.taxAmount = pending.taxAmount;
                 if (pending.total !== undefined && pending.total > 0) order.total = pending.total;
-                
+                updated = true;
+            }
+
+            if (!order.journeyId && pending.journeyId) {
+                order.journeyId = pending.journeyId;
                 updated = true;
             }
 
@@ -881,7 +920,7 @@ export async function handleStripeWebhook(req, res) {
                         email: customerEmail,
                     });
                     if (intent.recorded) {
-                        void dispatchCrmOrder({ businessId, orderId: order.orderId });
+                        void crmOrderDispatcher({ businessId, orderId: order.orderId });
                     }
                 } catch (crmError) {
                     // The paid Order is already durable. Repair scanning will
@@ -932,26 +971,26 @@ export async function handleStripeWebhook(req, res) {
                 stripeSessionId: pending.stripeSessionId || session.id,
 
                 // Stripe Connect split metadata
-                stripePaymentIntentId:    pending.stripePaymentIntentId || session.payment_intent || null,
+                stripePaymentIntentId: pending.stripePaymentIntentId || session.payment_intent || null,
                 stripeConnectedAccountId: pending.stripeConnectedAccountId || null,
-                grossAmount:              pending.grossAmount          ?? null,
-                netToBusinessAmount:      pending.netToBusinessAmount  ?? null,
+                grossAmount: pending.grossAmount ?? null,
+                netToBusinessAmount: pending.netToBusinessAmount ?? null,
 
                 // Frozen commission fields
-                planApplied:              pending.planApplied           ?? null,
-                commissionRateApplied:    pending.commissionRateApplied ?? null,
-                commissionAmountCents:    pending.commissionAmountCents ?? 0,
-                planAtOrder:              pending.planAtOrder           ?? pending.planApplied           ?? null,
-                commissionRateAtOrder:    pending.commissionRateAtOrder ?? pending.commissionRateApplied ?? null,
-                platformFeeRateAtOrder:   pending.platformFeeRateAtOrder ?? pending.commissionRateApplied ?? null,
+                planApplied: pending.planApplied ?? null,
+                commissionRateApplied: pending.commissionRateApplied ?? null,
+                commissionAmountCents: pending.commissionAmountCents ?? 0,
+                planAtOrder: pending.planAtOrder ?? pending.planApplied ?? null,
+                commissionRateAtOrder: pending.commissionRateAtOrder ?? pending.commissionRateApplied ?? null,
+                platformFeeRateAtOrder: pending.platformFeeRateAtOrder ?? pending.commissionRateApplied ?? null,
 
                 // Platform fee split fields
-                platformFeeCents:                 pending.platformFeeCents                 ?? 0,
-                customerPlatformFeeCents:         pending.customerPlatformFeeCents         ?? 0,
+                platformFeeCents: pending.platformFeeCents ?? 0,
+                customerPlatformFeeCents: pending.customerPlatformFeeCents ?? 0,
                 businessAbsorbedPlatformFeeCents: pending.businessAbsorbedPlatformFeeCents ?? 0,
-                platformFeeMode:                  pending.platformFeeMode                  ?? "business_absorbs",
-                customerPlatformFeePercent:       pending.customerPlatformFeePercent       ?? 0,
-                platformFeeTotal:                 pending.customerPlatformFeeCents ? Number((pending.customerPlatformFeeCents / 100).toFixed(2)) : 0,
+                platformFeeMode: pending.platformFeeMode ?? "business_absorbs",
+                customerPlatformFeePercent: pending.customerPlatformFeePercent ?? 0,
+                platformFeeTotal: pending.customerPlatformFeeCents ? Number((pending.customerPlatformFeeCents / 100).toFixed(2)) : 0,
                 tipAmount: pending.tipAmount ?? 0,
                 tipType: pending.tipType ?? null,
                 tipPercentage: pending.tipPercentage ?? null,
@@ -964,6 +1003,7 @@ export async function handleStripeWebhook(req, res) {
                 crmEmail: customerEmail ? customerEmail.toLowerCase().trim() : null,
                 crmProcessingStatus: customerEmail ? "pending" : null,
                 crmProcessingRetryable: true,
+                journeyId: pending.journeyId || null,
             });
 
             await invalidateSetupProgress(businessId);
@@ -1031,7 +1071,7 @@ export async function handleStripeWebhook(req, res) {
             }
 
             if (customerEmail) {
-                void dispatchCrmOrder({ businessId, orderId: order.orderId });
+                void crmOrderDispatcher({ businessId, orderId: order.orderId });
             }
 
             const orderDTO = toOrderDTO(order);
@@ -1043,6 +1083,24 @@ export async function handleStripeWebhook(req, res) {
             }
 
             await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO });
+        }
+
+        if (order.journeyId) {
+            await recordOrderPlacementForJourney({
+                businessId,
+                journeyId: order.journeyId,
+                orderId: order.orderId,
+                createdAt: order.createdAt,
+            });
+            if (order.paymentStatus === "paid") {
+                await recordOrderPaymentForJourney({
+                    businessId,
+                    journeyId: order.journeyId,
+                    orderId: order.orderId,
+                    spendCents: getCrmOrderRevenueCents(order),
+                    paidAt: order.paidAt || order.createdAt,
+                });
+            }
         }
 
         // Deduct stock for tracked items using shared helper
@@ -1119,7 +1177,10 @@ function createDeferredWebhookResponse() {
 export async function handleDurableStripeWebhook(req, res) {
     let event;
     try {
-        event = stripe.webhooks.constructEvent(
+        const constructEvent =
+            req.app?.locals?.constructStripeWebhookEvent ||
+            stripe.webhooks.constructEvent.bind(stripe.webhooks);
+        event = constructEvent(
             req.body,
             req.headers["stripe-signature"],
             endpointSecret,

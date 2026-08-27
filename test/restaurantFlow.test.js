@@ -35,6 +35,7 @@ const [
   { default: Plan },
   { default: GuestProfile },
   { default: GuestVisit },
+  { default: CustomerJourney },
 ] = await Promise.all([
   import("../src/controllers/orderController.js"),
   import("../src/controllers/paymentController.js"),
@@ -56,6 +57,7 @@ const [
   import("../src/models/Plan.js"),
   import("../src/models/GuestProfile.js"),
   import("../src/models/GuestVisit.js"),
+  import("../src/models/CustomerJourney.js"),
 ]);
 
 const {
@@ -121,6 +123,11 @@ function installOfflineOrderMocks(t, options = {}) {
     return mockQuery(item || null);
   });
   t.mock.method(MenuItem, "findOneAndUpdate", async () => null);
+  t.mock.method(CustomerJourney, "findOne", async () => ({
+    journeyId: `jrn_${"b".repeat(32)}`,
+    async save() { return this; },
+  }));
+  t.mock.method(CustomerJourney, "findOneAndUpdate", async () => null);
   t.mock.method(Order, "create", async (fields) => {
     capture.orderCreates.push(fields);
     return createOrderDocument(fields);
@@ -170,6 +177,10 @@ function installOnlineCheckoutMocks(t, options = {}) {
     capture.pendingCreates.push(pending);
     return pending;
   });
+  t.mock.method(CustomerJourney, "findOne", async () => ({
+    journeyId: `jrn_${"c".repeat(32)}`,
+    async save() { return this; },
+  }));
 
   const stripeClient = {
     checkout: {
@@ -393,6 +404,10 @@ test("valid active ServicePoint creates a tenant-bound guest session", async (t)
     created = fields;
     return fields;
   });
+  t.mock.method(CustomerJourney, "findOne", async () => ({
+    journeyId: `jrn_${"d".repeat(32)}`,
+    async save() { return this; },
+  }));
 
   const handler = getRouteHandler(guestSessionRouter, "/start", "post");
   const res = createResponse();
@@ -809,6 +824,7 @@ test("Scenario C: mixed order events split kitchen/bar items, preserve waiter vi
 });
 
 test("kitchen and bar queues use session tenant scope and expose only their preparation items", async (t) => {
+  t.mock.method(Business, "findOne", () => mockQuery(createBusinessFixture()));
   const rawOrders = [
     createOrderDocument({
       orderId: "MIXED-1",
