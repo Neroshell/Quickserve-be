@@ -54,6 +54,11 @@ const HotelSettingsSchema = new mongoose.Schema({
         type: String,
         default: "11:00",
         match: [/^([01]\d|2[0-3]):[0-5]\d$/, "Check-out time must be HH:mm"]
+    },
+    onlineBookingConfirmationMode: {
+        type: String,
+        enum: ["instant", "confirmation_required"],
+        default: "instant"
     }
 }, { _id: false })
 

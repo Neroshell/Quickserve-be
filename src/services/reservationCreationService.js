@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { DateTime } from "luxon";
+import crypto from "crypto";
 import Business from "../models/Business.js";
 import Reservation, { timeStringToMinutes, MIN_DURATION_MINUTES } from "../models/Reservation.js";
 import ServicePoint from "../models/ServicePoint.js";
@@ -7,7 +8,8 @@ import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "
 import { sendReservationRequestEmail, sendReservationRequestReceivedEmail } from "../utils/emailService.js";
 import { dispatchRestaurantReservationEmail } from "./email/emailDispatchService.js";
 import { validateReservationGuestCapacity } from "./reservationCapacityService.js";
-import { EMAIL_JOB_NAMES } from "../queues/index.js";
+import { EMAIL_JOB_NAMES, enqueueReservationPaymentExpiry } from "../queues/index.js";
+import { getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PHASE C — Business-timezone date helper
@@ -248,6 +250,9 @@ export async function createHotelReservation({
       let checkedInAt = null;
       let checkedInBy = null;
       let amountPaidCents = undefined;
+      let secureToken = null;
+      let paymentExpiresAt = null;
+      const bookingMode = business.hotelSettings?.onlineBookingConfirmationMode || "instant";
 
       if (isWalkIn) {
         // Walk-ins are always paid immediately
@@ -266,6 +271,10 @@ export async function createHotelReservation({
           checkedInAt = now;
           checkedInBy = staffSnapshot;
         }
+      } else if (bookingMode === "instant") {
+        reservationStatus = "accepted_awaiting_payment";
+        secureToken = crypto.randomBytes(32).toString("hex");
+        paymentExpiresAt = getHotelPaymentExpiresAt(now);
       }
 
       hotelReservation = new Reservation({
@@ -299,6 +308,8 @@ export async function createHotelReservation({
         checkedInAt,
         checkedInBy,
         ...(amountPaidCents != null ? { amountPaidCents } : {}),
+        ...(secureToken != null ? { secureToken } : {}),
+        ...(paymentExpiresAt != null ? { paymentExpiresAt } : {}),
       });
 
       // Phase G: Canonical pricing snapshot from existing pricing service
@@ -325,6 +336,14 @@ export async function createHotelReservation({
     });
   } finally {
     await session.endSession();
+  }
+
+  if (!isWalkIn && business.hotelSettings?.onlineBookingConfirmationMode !== "confirmation_required") {
+    enqueueReservationPaymentExpiry({
+      businessId: business.businessId,
+      reservationId: String(hotelReservation._id),
+      expectedPaymentExpiry: hotelReservation.paymentExpiresAt,
+    }).catch(err => console.error("[createHotelReservation] Enqueue expiry failed:", err));
   }
 
   // ── Post-save: SSE notification ─────────────────────────────────────────
@@ -358,7 +377,10 @@ export async function createHotelReservation({
 
   // For online (guest-initiated) bookings, notify the owner and guest.
   // Walk-in bookings don't use the public pending-request email.
-  if (!isWalkIn) {
+  const bookingMode = business.hotelSettings?.onlineBookingConfirmationMode || "instant";
+  const isInstant = !isWalkIn && bookingMode === "instant";
+
+  if (!isWalkIn && !isInstant) {
     if (targetEmail) {
       sendReservationRequestEmail({
         to: targetEmail,
@@ -386,10 +408,13 @@ export async function createHotelReservation({
       ? hotelReservation.status === "checked_in"
         ? "Walk-in booked and guest checked in."
         : "Walk-in booking confirmed and paid."
-      : "Hotel booking request received.",
+      : isInstant 
+        ? "Hotel booking created and awaiting payment." 
+        : "Hotel booking request received.",
     reservationId: hotelReservation._id,
     pricing: getCustomerReservationPricing(hotelReservation),
     reservation: hotelReservation.toObject(),
+    bookingMode: isWalkIn ? "walk_in" : bookingMode
   };
 }
 

@@ -266,7 +266,21 @@ export async function createReservation(req, res) {
       source: "online",
     });
 
-    return res.status(201).json(result);
+    // Build safe public DTO — never expose full reservation internals
+    const dto = {
+      message: result.message,
+      reservationId: result.reservationId,
+      pricing: result.pricing,
+      bookingMode: result.bookingMode,
+    };
+
+    // For instant bookings, include the secureToken so the frontend
+    // can immediately call /payments/checkout-reservation
+    if (result.bookingMode === "instant" && result.reservation?.secureToken) {
+      dto.secureToken = result.reservation.secureToken;
+    }
+
+    return res.status(201).json(dto);
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ error: error.message });

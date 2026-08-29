@@ -20,9 +20,9 @@ import {
 } from "../queues/index.js";
 import { scheduleReservationArrivalReminder } from "../services/reservationArrivalService.js";
 import { createReservationService, createHotelReservation } from "../services/reservationCreationService.js";
+import { HOTEL_PAYMENT_WINDOW_MINUTES, getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
-export const HOTEL_PAYMENT_WINDOW_MINUTES = 30;
 const ARCHIVABLE_RESERVATION_STATUSES = new Set([
   "cancelled",
   "declined",
@@ -113,10 +113,6 @@ async function tryScheduleArrivalReminder(req, reservation, business) {
 async function publishReservationEvent(...args) {
   const { publishEvent } = await import("../utils/sseManager.js");
   return publishEvent(...args);
-}
-
-export function getHotelPaymentExpiresAt(now = Date.now()) {
-  return new Date(now + HOTEL_PAYMENT_WINDOW_MINUTES * 60 * 1000);
 }
 
 export function toOwnerReservationResponse(reservation) {

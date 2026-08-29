@@ -267,7 +267,7 @@ export async function updateSettings(req, res) {
         }
 
         if (hotelSettings && typeof hotelSettings === "object") {
-            const { checkInTime, checkOutTime } = hotelSettings
+            const { checkInTime, checkOutTime, onlineBookingConfirmationMode } = hotelSettings
 
             if (checkInTime !== undefined) {
                 if (!isValidTimeString(checkInTime)) {
@@ -281,6 +281,13 @@ export async function updateSettings(req, res) {
                     return res.status(400).json({ message: "checkOutTime must be in HH:mm format" })
                 }
                 updateObj["hotelSettings.checkOutTime"] = checkOutTime
+            }
+
+            if (onlineBookingConfirmationMode !== undefined) {
+                if (!["instant", "confirmation_required"].includes(onlineBookingConfirmationMode)) {
+                    return res.status(400).json({ message: "onlineBookingConfirmationMode must be 'instant' or 'confirmation_required'" })
+                }
+                updateObj["hotelSettings.onlineBookingConfirmationMode"] = onlineBookingConfirmationMode
             }
         }
 
