@@ -29,6 +29,9 @@ import {
     getReservations,
     updateReservationStatus,
     checkInHotelReservation,
+    createStaffReservation,
+    getHotelRoomAvailability,
+    getHotelPricingPreview,
     deleteReservation,
     resendReservationConfirmation,
     resendReservationPaymentLink
@@ -587,6 +590,76 @@ router.delete("/service-points/:servicePointId", requirePermission(PERMISSIONS.S
  *         description: List of reservations
  */
 router.get("/reservations", requirePermission(PERMISSIONS.RESERVATIONS_VIEW), getReservations)
+
+/**
+ * @openapi
+ * /owner/reservations:
+ *   post:
+ *     summary: Create a reservation manually
+ *     tags:
+ *       - Owner Reservations
+ *     responses:
+ *       201:
+ *         description: Reservation created
+ */
+router.post("/reservations", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), createStaffReservation)
+
+/**
+ * @openapi
+ * /owner/reservations/availability:
+ *   get:
+ *     summary: Get available rooms for a stay date range
+ *     tags:
+ *       - Owner Reservations
+ *     parameters:
+ *       - in: query
+ *         name: checkInDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: checkOutDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: guestCount
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Available rooms list
+ */
+router.get("/reservations/availability", requirePermission(PERMISSIONS.RESERVATIONS_VIEW), getHotelRoomAvailability)
+
+/**
+ * @openapi
+ * /owner/reservations/pricing-preview:
+ *   get:
+ *     summary: Get full pricing breakdown for a stay
+ *     tags:
+ *       - Owner Reservations
+ *     parameters:
+ *       - in: query
+ *         name: checkInDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: checkOutDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: servicePointId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Pricing breakdown preview
+ */
+router.get("/reservations/pricing-preview", requirePermission(PERMISSIONS.RESERVATIONS_VIEW), getHotelPricingPreview)
 
 /**
  * @openapi

@@ -19,6 +19,7 @@ import {
   enqueueReservationPaymentExpiry,
 } from "../queues/index.js";
 import { scheduleReservationArrivalReminder } from "../services/reservationArrivalService.js";
+import { createReservationService, createHotelReservation } from "../services/reservationCreationService.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 export const HOTEL_PAYMENT_WINDOW_MINUTES = 30;
@@ -943,7 +944,49 @@ export async function getAvailableStayServicePoints(req, res) {
       (servicePoint) => !unavailableServicePointIds.includes(servicePoint.servicePointId)
     );
 
-    res.json(availableServicePoints);
+    // Compute canonical pricing summary per room so room cards can display
+    // the actual guest-payable total (including tax and platform fees) without
+    // any client-side calculation.
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const numberOfNights = Math.max(
+      1,
+      Math.round((new Date(checkOutDate) - new Date(checkInDate)) / msPerDay),
+    );
+
+    const { calculateOnlinePricing, getCustomerPricingBreakdown } = await import("../services/pricingService.js");
+
+    const roomsWithPricing = await Promise.all(
+      availableServicePoints.map(async (sp) => {
+        if (sp.pricePerNight == null || Number(sp.pricePerNight) <= 0) {
+          return { ...sp, pricingSummary: null };
+        }
+        try {
+          const subtotalCents = Math.round(Number(sp.pricePerNight) * numberOfNights * 100);
+          const pricing = await calculateOnlinePricing({ subtotalCents, business });
+          const breakdown = getCustomerPricingBreakdown(pricing);
+          return {
+            ...sp,
+            pricingSummary: {
+              nights: numberOfNights,
+              subtotal: breakdown.subtotal,
+              taxAmount: breakdown.taxAmount,
+              taxAmountCents: breakdown.taxAmountCents,
+              taxRate: breakdown.taxRate,
+              customerPlatformFeeAmount: breakdown.customerPlatformFeeAmount,
+              customerPlatformFeeCents: breakdown.customerPlatformFeeCents,
+              total: breakdown.total,
+              totalCents: breakdown.totalCents,
+              hasAdditionalCharges: breakdown.taxAmountCents > 0 || breakdown.customerPlatformFeeCents > 0,
+            },
+          };
+        } catch (err) {
+          console.error(`[getAvailableStayServicePoints] pricing failed for ${sp.servicePointId}:`, err);
+          return { ...sp, pricingSummary: null };
+        }
+      }),
+    );
+
+    res.json(roomsWithPricing);
   } catch (error) {
     console.error("[reservationController.getAvailableStayServicePoints] Error:", error);
     res.status(500).json({ error: "Server error" });
@@ -1127,3 +1170,266 @@ export async function resendReservationPaymentLink(req, res) {
   }
 }
 
+/**
+ * POST /owner/reservations
+ * Staff-created hotel walk-in booking from the dashboard.
+ *
+ * Product rules (enforced server-side):
+ * - source is always walk_in — never trusted from client
+ * - paymentChannel is always offline
+ * - paidVia must be "cash" or "pos_card"
+ * - paymentStatus is always "paid" — no unpaid walk-in
+ * - status is "confirmed" unless checkInNow=true AND checkInDate is business-local today
+ * - createdBy is always derived from the authenticated session
+ * - businessId is always from the authenticated session
+ */
+export async function createStaffReservation(req, res) {
+  try {
+    const sessionUser = req.session?.user;
+    if (!sessionUser || !sessionUser.businessId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const businessId = sessionUser.businessId;
+    const business = await Business.findOne({ businessId }).lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
+    }
+
+    // Capabilities check: business must have lodging capability
+    const { resolveBusinessCapabilities } = await import("../services/businessCapabilityService.js");
+    const capabilities = await resolveBusinessCapabilities(business);
+    if (!capabilities?.visibleModules?.includes("lodging")) {
+      return res.status(403).json({ error: "This business does not have lodging capability." });
+    }
+
+    // Extract ONLY safe, allowlisted fields from the request body.
+    // We deliberately ignore any attempt by the client to send:
+    //   status, paymentStatus, paidVia, paymentChannel, createdBy, bookingSource, source
+    const {
+      customerName,
+      phone,
+      email,
+      checkInDate,
+      checkOutDate,
+      guestCount,
+      servicePointId,
+      specialRequest,
+      paymentMethod, // "cash" | "pos_card"
+      checkInNow,    // boolean — only honoured when check-in date = business-local today
+    } = req.body;
+
+    // Phase E: Build staff attribution server-side
+    const staffSnapshot = buildReservationStaffSnapshot(sessionUser);
+
+    const result = await createHotelReservation({
+      business,
+      customerName,
+      phone,
+      email,
+      checkInDate,
+      checkOutDate,
+      guestCount,
+      servicePointId,
+      specialRequest,
+      source: "walk_in",       // Phase D: always walk_in for staff bookings
+      paymentMethod,            // validated inside createHotelReservation
+      checkInNow: Boolean(checkInNow),
+      staffSnapshot,            // Phase E: createdBy / checkedInBy attribution
+    });
+
+    return res.status(201).json(result);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    console.error("[reservationController.createStaffReservation] Error:", error);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * GET /owner/reservations/availability
+ * Returns all room-type service points for the business, annotated with
+ * availability for the requested checkInDate/checkOutDate range.
+ *
+ * Used by the staff New Booking form to show available rooms (Phase N).
+ */
+export async function getHotelRoomAvailability(req, res) {
+  try {
+    const sessionUser = req.session?.user;
+    if (!sessionUser || !sessionUser.businessId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { checkInDate, checkOutDate, guestCount } = req.query;
+
+    if (!checkInDate || !checkOutDate) {
+      return res.status(400).json({ error: "checkInDate and checkOutDate are required" });
+    }
+    if (checkOutDate <= checkInDate) {
+      return res.status(400).json({ error: "checkOutDate must be after checkInDate" });
+    }
+
+    const businessId = sessionUser.businessId;
+
+    // Fetch all reservable service points that are room-type (or untyped — backward compat)
+    const servicePoints = await ServicePoint.find({
+      businessId,
+      isActive: { $ne: false },
+      reservable: { $ne: false },
+      $or: [
+        { servicePointType: "room" },
+        { servicePointType: { $exists: false } },
+        { servicePointType: null },
+      ],
+    })
+      .select("servicePointId label displayLabel servicePointType roomType capacity pricePerNight")
+      .lean();
+
+    if (!servicePoints.length) {
+      return res.status(200).json({ rooms: [] });
+    }
+
+    // Find all blocking reservations that overlap the requested range
+    const { BLOCKING_STAY_STATUSES } = await import("../services/reservationCreationService.js");
+    const blockedServicePointIds = new Set();
+    const conflicts = await Reservation.find({
+      businessId,
+      servicePointId: { $in: servicePoints.map((sp) => sp.servicePointId) },
+      status: { $in: [...BLOCKING_STAY_STATUSES] },
+      checkInDate: { $lt: checkOutDate },
+      checkOutDate: { $gt: checkInDate },
+    })
+      .select("servicePointId")
+      .lean();
+
+    for (const c of conflicts) {
+      blockedServicePointIds.add(c.servicePointId);
+    }
+
+    const guestCountNum = guestCount ? parseInt(guestCount, 10) : null;
+
+    // Compute canonical pricing summary per room so staff room cards can display
+    // the actual guest-payable total (including tax and platform fees) without
+    // any client-side calculation. Uses the same engine as reservation creation.
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const numberOfNights = Math.max(
+      1,
+      Math.round((new Date(checkOutDate) - new Date(checkInDate)) / msPerDay),
+    );
+
+    const business = await Business.findOne({ businessId }).lean();
+    const { calculateOnlinePricing, getCustomerPricingBreakdown } = await import("../services/pricingService.js");
+
+    const rooms = await Promise.all(
+      servicePoints.map(async (sp) => {
+        const baseRoom = {
+          servicePointId: sp.servicePointId,
+          label: sp.displayLabel || sp.label,
+          servicePointType: sp.servicePointType || "room",
+          roomType: sp.roomType || null,
+          capacity: sp.capacity ?? null,
+          pricePerNight: sp.pricePerNight ?? null,
+          available: !blockedServicePointIds.has(sp.servicePointId),
+          capacityExceeded:
+            guestCountNum != null && sp.capacity != null && guestCountNum > sp.capacity,
+          pricingSummary: null,
+        };
+
+        if (!sp.pricePerNight || Number(sp.pricePerNight) <= 0 || !business) {
+          return baseRoom;
+        }
+
+        try {
+          const subtotalCents = Math.round(Number(sp.pricePerNight) * numberOfNights * 100);
+          const pricing = await calculateOnlinePricing({ subtotalCents, business });
+          const breakdown = getCustomerPricingBreakdown(pricing);
+          return {
+            ...baseRoom,
+            pricingSummary: {
+              nights: numberOfNights,
+              subtotal: breakdown.subtotal,
+              taxAmount: breakdown.taxAmount,
+              taxAmountCents: breakdown.taxAmountCents,
+              taxRate: breakdown.taxRate,
+              customerPlatformFeeAmount: breakdown.customerPlatformFeeAmount,
+              customerPlatformFeeCents: breakdown.customerPlatformFeeCents,
+              total: breakdown.total,
+              totalCents: breakdown.totalCents,
+              hasAdditionalCharges: breakdown.taxAmountCents > 0 || breakdown.customerPlatformFeeCents > 0,
+            },
+          };
+        } catch (err) {
+          console.error(`[getHotelRoomAvailability] pricing failed for ${sp.servicePointId}:`, err);
+          return baseRoom;
+        }
+      }),
+    );
+
+    return res.status(200).json({ rooms });
+  } catch (error) {
+    console.error("[reservationController.getHotelRoomAvailability] Error:", error);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * GET /owner/reservations/pricing-preview
+ * Returns the canonical pricing breakdown for a stay, matching what would be calculated during reservation creation.
+ */
+export async function getHotelPricingPreview(req, res) {
+  try {
+    const sessionUser = req.session?.user;
+    if (!sessionUser || !sessionUser.businessId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { checkInDate, checkOutDate, servicePointId } = req.query;
+
+    if (!checkInDate || !checkOutDate || !servicePointId) {
+      return res.status(400).json({ error: "checkInDate, checkOutDate, and servicePointId are required" });
+    }
+    if (checkOutDate <= checkInDate) {
+      return res.status(400).json({ error: "checkOutDate must be after checkInDate" });
+    }
+
+    const businessId = sessionUser.businessId;
+    const business = await Business.findOne({ businessId }).lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
+    }
+
+    const servicePoint = await ServicePoint.findOne({
+      businessId,
+      servicePointId,
+      isActive: { $ne: false },
+      reservable: { $ne: false }
+    }).lean();
+
+    if (!servicePoint || !servicePoint.pricePerNight) {
+      return res.status(400).json({ error: "Invalid or unavailable room selected." });
+    }
+
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const numberOfNights = Math.round(
+      (new Date(checkOutDate) - new Date(checkInDate)) / msPerDay,
+    );
+
+    const subtotalCents = Math.round(servicePoint.pricePerNight * numberOfNights * 100);
+
+    const { calculateOnlinePricing, getCustomerPricingBreakdown } = await import("../services/pricingService.js");
+
+    const pricing = await calculateOnlinePricing({
+      subtotalCents,
+      business,
+    });
+
+    const customerPricing = getCustomerPricingBreakdown(pricing);
+
+    return res.status(200).json(customerPricing);
+  } catch (error) {
+    console.error("[reservationController.getHotelPricingPreview] Error:", error);
+    return res.status(500).json({ error: "Server error" });
+  }
+}

@@ -130,8 +130,28 @@ const ReservationSchema = new mongoose.Schema(
     },
     source: {
       type: String,
-      enum: ["public_hub", "dashboard"],
+      // Canonical booking-origin values. "public_hub" and "dashboard" are legacy
+      // values preserved for backward compatibility. New code should use
+      // "online" or "walk_in". Resolves to the canonical origin via sourceLabel().
+      enum: ["public_hub", "dashboard", "online", "walk_in"],
       default: "public_hub",
+    },
+    // Payment settlement channel: online (Stripe) or offline (cash/POS)
+    paymentChannel: {
+      type: String,
+      enum: ["online", "offline"],
+      default: null,
+    },
+    // Specific instrument used to settle the payment
+    paidVia: {
+      type: String,
+      enum: ["online_card", "pos_card", "cash", null],
+      default: null,
+    },
+    // Staff member who created this reservation (walk-in / dashboard only)
+    createdBy: {
+      type: ReservationStaffSnapshotSchema,
+      default: null,
     },
     
     // Hotel-specific fields
