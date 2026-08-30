@@ -34,7 +34,8 @@ import {
     getHotelPricingPreview,
     deleteReservation,
     resendReservationConfirmation,
-    resendReservationPaymentLink
+    resendReservationPaymentLink,
+    reassignHotelRoom
 } from "../controllers/reservationController.js"
 import { cancelOwnerHotelReservation } from "../controllers/reservationCancellationController.js"
 
@@ -694,6 +695,40 @@ router.get("/reservations/pricing-preview", requirePermission(PERMISSIONS.RESERV
  *         description: Reservation status updated successfully
  */
 router.patch("/reservations/:id/status", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), updateReservationStatus)
+
+/**
+ * @openapi
+ * /owner/reservations/{id}/room:
+ *   patch:
+ *     summary: Reassign a hotel reservation to a different room
+ *     tags:
+ *       - Owner Reservations
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - servicePointId
+ *             properties:
+ *               servicePointId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Room reassigned successfully
+ *       400:
+ *         description: Room reassignment is not supported or room cannot accommodate
+ *       409:
+ *         description: Room is not available
+ */
+router.patch("/reservations/:id/room", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), reassignHotelRoom)
 
 /**
  * @openapi

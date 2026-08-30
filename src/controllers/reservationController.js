@@ -21,6 +21,7 @@ import {
 import { scheduleReservationArrivalReminder } from "../services/reservationArrivalService.js";
 import { createReservationService, createHotelReservation } from "../services/reservationCreationService.js";
 import { HOTEL_PAYMENT_WINDOW_MINUTES, getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
+import { resolveBusinessDay } from "../utils/businessDate.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 const ARCHIVABLE_RESERVATION_STATUSES = new Set([
@@ -168,8 +169,12 @@ export async function getReservations(req, res) {
       status,
       date,
       month,
+      start,
+      endExclusive,
       search,
       clientToday,
+      sortBy,
+      sortDirection,
     } = req.query;
 
     const sessionUser = req.session?.user;
@@ -207,18 +212,120 @@ export async function getReservations(req, res) {
     const baseQuery = { businessId, archivedAt: null };
 
     // =========================================================================
+    // 0. TODAY PMS WORKSPACE VIEW
+    // =========================================================================
+
+    if (view === "today" && isHotel) {
+      const { businessDay } = resolveBusinessDay(business);
+      
+      const todayQuery = {
+        ...baseQuery,
+        $or: [
+          { checkInDate: businessDay },
+          { checkOutDate: businessDay },
+          { status: "checked_in" }
+        ]
+      };
+      
+      const rawReservations = await Reservation.find(todayQuery).lean();
+      const allRes = rawReservations.map(toOwnerReservationResponse);
+
+      const arrivals = allRes.filter(r => 
+        r.checkInDate === businessDay && 
+        ["pending", "accepted_awaiting_payment", "confirmed", "checked_in", "checked_out"].includes(r.status)
+      );
+
+      const departures = allRes.filter(r => 
+        r.checkOutDate === businessDay && 
+        ["checked_in", "checked_out"].includes(r.status)
+      );
+
+      const inHouse = allRes.filter(r => r.status === "checked_in");
+
+      const arrivalsCheckedIn = arrivals.filter(r => ["checked_in", "checked_out"].includes(r.status)).length;
+      const departuresCheckedOut = departures.filter(r => r.status === "checked_out").length;
+      const inHouseGuests = inHouse.reduce((sum, r) => sum + (r.guestCount || 0), 0);
+
+      const { BLOCKING_STAY_STATUSES } = await import("../services/reservationCreationService.js");
+      
+      const totalRooms = await mongoose.model("ServicePoint").countDocuments({
+        businessId,
+        isActive: { $ne: false },
+        reservable: { $ne: false },
+        $or: [
+          { servicePointType: "room" },
+          { servicePointType: { $exists: false } },
+          { servicePointType: null },
+        ]
+      });
+
+      const tomorrowDate = new Date(businessDay);
+      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+      const tomorrowStr = tomorrowDate.toISOString().split("T")[0];
+
+      const occupiedRooms = await Reservation.distinct("servicePointId", {
+        businessId,
+        status: { $in: [...BLOCKING_STAY_STATUSES] },
+        checkInDate: { $lt: tomorrowStr },
+        checkOutDate: { $gt: businessDay }
+      });
+
+      const available = Math.max(0, totalRooms - occupiedRooms.length);
+
+      return res.json({
+        businessDate: businessDay,
+        operations: {
+          arrivals,
+          departures,
+          inHouse
+        },
+        stats: {
+          arrivalsToday: {
+            total: arrivals.length,
+            checkedIn: arrivalsCheckedIn,
+            remaining: arrivals.length - arrivalsCheckedIn
+          },
+          departuresToday: {
+            total: departures.length,
+            checkedOut: departuresCheckedOut,
+            remaining: departures.length - departuresCheckedOut
+          },
+          inHouse: {
+            reservations: inHouse.length,
+            guests: inHouseGuests
+          },
+          availableTonight: {
+            available,
+            totalRooms
+          }
+        }
+      });
+    }
+
+    // =========================================================================
     // 1. NON-PAGINATED VIEWS: CALENDAR AND DAY
     // =========================================================================
 
     if (view === "calendar") {
-      if (!month) return res.status(400).json({ error: "month (YYYY-MM) is required for calendar view" });
+      if (isHotel && start && endExclusive) {
+        // Tape-chart range query: [start, endExclusive)
+        // Includes any reservation that overlaps the visible window:
+        //   checkInDate  < endExclusive  (starts before window closes)
+        //   checkOutDate > start         (ends after window opens)
+        baseQuery.checkInDate  = { $lt: endExclusive };
+        baseQuery.checkOutDate = { $gt: start };
+        const reservations = await Reservation.find(baseQuery).lean();
+        return res.json(reservations.map(toOwnerReservationResponse));
+      }
+
+      if (!month) return res.status(400).json({ error: "month (YYYY-MM) or start/endExclusive is required for calendar view" });
       const monthStart = `${month}-01`;
       const nextMonthDate = new Date(`${month}-01T00:00:00Z`);
       nextMonthDate.setUTCMonth(nextMonthDate.getUTCMonth() + 1);
       const monthEnd = nextMonthDate.toISOString().split("T")[0];
 
       if (isHotel) {
-        baseQuery.checkInDate = { $lt: monthEnd };
+        baseQuery.checkInDate  = { $lt: monthEnd };
         baseQuery.checkOutDate = { $gt: monthStart };
       } else {
         baseQuery.date = { $regex: `^${month}` };
@@ -266,6 +373,9 @@ export async function getReservations(req, res) {
     if (view === "list") {
       // A. Calculate Global Stats and Total Count
       const todayStr = clientToday || new Date().toISOString().split("T")[0];
+      const tomorrowDate = new Date(todayStr);
+      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+      const tomorrowStr = tomorrowDate.toISOString().split("T")[0];
 
       const [statsResult, totalCount] = await Promise.all([
         Reservation.aggregate([
@@ -274,69 +384,121 @@ export async function getReservations(req, res) {
             $group: {
               _id: null,
               today: {
-                $sum: {
-                  $cond: [
-                    { $eq: [{ $ifNull: ["$checkInDate", "$date"] }, todayStr] },
-                    1, 0
-                  ]
-                }
+                $sum: { $cond: [{ $eq: [{ $ifNull: ["$checkInDate", "$date"] }, todayStr] }, 1, 0] }
               },
               upcoming: {
-                $sum: {
-                  $cond: [
-                    { $gt: [{ $ifNull: ["$checkInDate", "$date"] }, todayStr] },
-                    1, 0
-                  ]
-                }
+                $sum: { $cond: [{ $gt: [{ $ifNull: ["$checkInDate", "$date"] }, todayStr] }, 1, 0] }
               },
               pending: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] } },
               confirmed: { $sum: { $cond: [{ $eq: ["$status", "confirmed"] }, 1, 0] } },
-              arrived: { $sum: { $cond: [{ $eq: ["$status", "arrived"] }, 1, 0] } }
+              arrived: { $sum: { $cond: [{ $eq: ["$status", "arrived"] }, 1, 0] } },
+              // Hotel-specific metrics
+              arrivalsToday: {
+                $sum: {
+                  $cond: [
+                    { $and: [
+                        { $eq: ["$checkInDate", todayStr] },
+                        { $in: ["$status", ["pending", "accepted_awaiting_payment", "confirmed", "checked_in", "checked_out"]] }
+                    ] },
+                    1, 0
+                  ]
+                }
+              },
+              departuresToday: {
+                $sum: {
+                  $cond: [
+                    { $and: [
+                        { $eq: ["$checkOutDate", todayStr] },
+                        { $in: ["$status", ["checked_in", "checked_out"]] }
+                    ] },
+                    1, 0
+                  ]
+                }
+              },
+              inHouse: {
+                $sum: { $cond: [{ $eq: ["$status", "checked_in"] }, 1, 0] }
+              }
             }
           }
         ]),
         Reservation.countDocuments(activeQuery)
       ]);
 
-      const stats = statsResult[0] || { today: 0, upcoming: 0, pending: 0, confirmed: 0, arrived: 0 };
+      const stats = statsResult[0] || { today: 0, upcoming: 0, pending: 0, confirmed: 0, arrived: 0, arrivalsToday: 0, departuresToday: 0, inHouse: 0 };
       delete stats._id;
 
+      if (isHotel) {
+        const { BLOCKING_STAY_STATUSES } = await import("../services/reservationCreationService.js");
+        const totalRooms = await mongoose.model("ServicePoint").countDocuments({
+          businessId,
+          isActive: { $ne: false },
+          reservable: { $ne: false },
+          $or: [
+            { servicePointType: "room" },
+            { servicePointType: { $exists: false } },
+            { servicePointType: null },
+          ]
+        });
+        const occupiedRooms = await Reservation.distinct("servicePointId", {
+          businessId,
+          status: { $in: [...BLOCKING_STAY_STATUSES] },
+          checkInDate: { $lt: tomorrowStr },
+          checkOutDate: { $gt: todayStr }
+        });
+        stats.availableRooms = Math.max(0, totalRooms - occupiedRooms.length);
+      }
+
       // B. Build Cursor Traversal
-      // Sort semantics: Pending first (statusRank 0), then Date ASC, Time ASC, _id ASC.
-      const sortAsc = { statusRank: 1, sortDate: 1, sortTime: 1, _id: 1 };
-      const sortDesc = { statusRank: -1, sortDate: -1, sortTime: -1, _id: -1 };
+      const activeSortBy = sortBy === "checkInDate" ? "checkInDate" : "createdAt";
+      const activeSortDir = sortDirection === "asc" ? 1 : -1;
+
+      let sortObj, reverseSortObj;
+      if (activeSortBy === "createdAt") {
+        sortObj = { createdAt: activeSortDir, _id: activeSortDir };
+        reverseSortObj = { createdAt: -activeSortDir, _id: -activeSortDir };
+      } else {
+        sortObj = { sortDate: activeSortDir, sortTime: activeSortDir, _id: activeSortDir };
+        reverseSortObj = { sortDate: -activeSortDir, sortTime: -activeSortDir, _id: -activeSortDir };
+      }
 
       let cursorMatch = null;
       let isReversing = false;
 
+      const buildCursorMatch = (c, isReverse) => {
+        const dir = isReverse ? -activeSortDir : activeSortDir;
+        const op = dir === 1 ? "$gt" : "$lt";
+
+        if (activeSortBy === "createdAt") {
+          return {
+            $or: [
+              { createdAt: { [op]: new Date(c.createdAt) } },
+              { createdAt: new Date(c.createdAt), _id: { [op]: new mongoose.Types.ObjectId(c._id) } }
+            ]
+          };
+        } else {
+          return {
+            $or: [
+              { sortDate: { [op]: c.sortDate } },
+              { sortDate: c.sortDate, sortTime: { [op]: c.sortTime } },
+              { sortDate: c.sortDate, sortTime: c.sortTime, _id: { [op]: new mongoose.Types.ObjectId(c._id) } }
+            ]
+          };
+        }
+      };
+
       if (previousCursor) {
         isReversing = true;
         const c = JSON.parse(Buffer.from(previousCursor, "base64url").toString("utf-8"));
-        cursorMatch = {
-          $or: [
-            { statusRank: { $lt: c.statusRank } },
-            { statusRank: c.statusRank, sortDate: { $lt: c.sortDate } },
-            { statusRank: c.statusRank, sortDate: c.sortDate, sortTime: { $lt: c.sortTime } },
-            { statusRank: c.statusRank, sortDate: c.sortDate, sortTime: c.sortTime, _id: { $lt: new mongoose.Types.ObjectId(c._id) } }
-          ]
-        };
+        cursorMatch = buildCursorMatch(c, true);
       } else if (cursor) {
         const c = JSON.parse(Buffer.from(cursor, "base64url").toString("utf-8"));
-        cursorMatch = {
-          $or: [
-            { statusRank: { $gt: c.statusRank } },
-            { statusRank: c.statusRank, sortDate: { $gt: c.sortDate } },
-            { statusRank: c.statusRank, sortDate: c.sortDate, sortTime: { $gt: c.sortTime } },
-            { statusRank: c.statusRank, sortDate: c.sortDate, sortTime: c.sortTime, _id: { $gt: new mongoose.Types.ObjectId(c._id) } }
-          ]
-        };
+        cursorMatch = buildCursorMatch(c, false);
       }
 
       const pipeline = [
         { $match: activeQuery },
         {
           $addFields: {
-            statusRank: { $cond: [{ $eq: ["$status", "pending"] }, 0, 1] },
             sortDate: { $ifNull: ["$checkInDate", "$date", ""] },
             sortTime: { $ifNull: ["$time", ""] }
           }
@@ -344,7 +506,7 @@ export async function getReservations(req, res) {
       ];
 
       if (cursorMatch) pipeline.push({ $match: cursorMatch });
-      pipeline.push({ $sort: isReversing ? sortDesc : sortAsc });
+      pipeline.push({ $sort: isReversing ? reverseSortObj : sortObj });
       pipeline.push({ $limit: limit + 1 });
 
       let rawReservations = await Reservation.aggregate(pipeline);
@@ -365,14 +527,13 @@ export async function getReservations(req, res) {
 
       const encodeCursor = (doc) => {
         if (!doc) return null;
-        return Buffer.from(
-          JSON.stringify({
-            statusRank: doc.statusRank,
-            sortDate: doc.sortDate,
-            sortTime: doc.sortTime,
-            _id: doc._id.toString()
-          })
-        ).toString("base64url");
+        let payload;
+        if (activeSortBy === "createdAt") {
+          payload = { createdAt: doc.createdAt, _id: doc._id.toString() };
+        } else {
+          payload = { sortDate: doc.sortDate, sortTime: doc.sortTime, _id: doc._id.toString() };
+        }
+        return Buffer.from(JSON.stringify(payload)).toString("base64url");
       };
 
       const nextCursorVal = hasNextPage && rawReservations.length > 0
@@ -1426,6 +1587,103 @@ export async function getHotelPricingPreview(req, res) {
     return res.status(200).json(customerPricing);
   } catch (error) {
     console.error("[reservationController.getHotelPricingPreview] Error:", error);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * PATCH /owner/reservations/:id/room
+ * Safely reassigns a hotel reservation to a different room.
+ */
+export async function reassignHotelRoom(req, res) {
+  try {
+    const sessionUser = req.session?.user;
+    if (!sessionUser || !sessionUser.businessId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const businessId = sessionUser.businessId;
+    const { id } = req.params;
+    const { servicePointId: newServicePointId } = req.body;
+
+    if (!newServicePointId) {
+      return res.status(400).json({ error: "New room ID is required." });
+    }
+
+    const scope = reservationScope(req, id);
+    if (!scope) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const reservation = await Reservation.findOne(scope);
+    if (!reservation) {
+      return res.status(404).json({ error: "Reservation not found." });
+    }
+
+    if (!reservation.checkInDate || !reservation.checkOutDate) {
+      return res.status(400).json({ error: "Room reassignment is only supported for hotel reservations." });
+    }
+
+    if (reservation.status === "cancelled" || reservation.status === "declined" || reservation.status === "expired" || reservation.status === "checked_out") {
+      return res.status(400).json({ error: "Cannot reassign a terminal reservation." });
+    }
+
+    if (reservation.servicePointId === newServicePointId) {
+      return res.status(200).json({ message: "Room is already assigned.", reservation: toOwnerReservationResponse(reservation) });
+    }
+
+    const newRoom = await mongoose.model("ServicePoint").findOne({
+      businessId,
+      servicePointId: newServicePointId,
+      isActive: { $ne: false },
+      reservable: { $ne: false },
+      $or: [
+        { servicePointType: "room" },
+        { servicePointType: { $exists: false } },
+        { servicePointType: null },
+      ]
+    }).lean();
+
+    if (!newRoom) {
+      return res.status(404).json({ error: "Target room not found or is not a reservable lodging room." });
+    }
+
+    if (newRoom.capacity != null && reservation.guestCount > newRoom.capacity) {
+      return res.status(400).json({ error: "Target room cannot accommodate the guest count." });
+    }
+
+    const { BLOCKING_STAY_STATUSES } = await import("../services/reservationCreationService.js");
+
+    const conflict = await Reservation.findOne({
+      _id: { $ne: reservation._id },
+      businessId,
+      servicePointId: newServicePointId,
+      status: { $in: [...BLOCKING_STAY_STATUSES] },
+      checkInDate: { $lt: reservation.checkOutDate },
+      checkOutDate: { $gt: reservation.checkInDate }
+    }).lean();
+
+    if (conflict) {
+      return res.status(409).json({ error: "Target room is not available for the entire stay." });
+    }
+
+    reservation.servicePointId = newRoom.servicePointId;
+    reservation.servicePointLabel = newRoom.displayLabel || newRoom.label;
+    reservation.roomTypeSnapshot = newRoom.roomType || null;
+
+    await reservation.save();
+
+    await publishReservationEvent(businessId, {
+      type: "reservation_updated",
+      reservation: toOwnerReservationResponse(reservation),
+    });
+
+    return res.status(200).json({
+      message: "Room reassigned successfully.",
+      reservation: toOwnerReservationResponse(reservation)
+    });
+
+  } catch (error) {
+    console.error("[reservationController.reassignHotelRoom] Error:", error);
     return res.status(500).json({ error: "Server error" });
   }
 }
