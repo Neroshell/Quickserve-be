@@ -67,7 +67,7 @@ router.get("/:orderId", requirePermissionForAuthenticatedManager(PERMISSIONS.ORD
  *       200:
  *         description: Status updated successfully
  */
-router.patch("/:orderId/status", requireAuth, requireRole("owner", "admin", "manager", "waiter", "kitchen", "bar"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), updateOrderStatus)
+router.patch("/:orderId/status", requireAuth, requireRole("owner", "co_owner", "admin", "manager", "waiter", "kitchen", "bar"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), updateOrderStatus)
 
 /**
  * @openapi
@@ -103,7 +103,7 @@ router.patch("/:orderId/status", requireAuth, requireRole("owner", "admin", "man
  *       200:
  *         description: Order marked paid successfully
  */
-router.patch("/:orderId/mark-paid", requireAuth, requireRole("owner", "admin", "manager", "waiter"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), markPaid)
+router.patch("/:orderId/mark-paid", requireAuth, requireRole("owner", "co_owner", "admin", "manager", "waiter"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), markPaid)
 
 /**
  * @openapi
@@ -138,7 +138,7 @@ router.patch("/:orderId/mark-paid", requireAuth, requireRole("owner", "admin", "
  *       200:
  *         description: Receipt sent
  */
-router.post("/:orderId/receipt", requireAuth, requireRole("owner", "admin", "manager", "waiter"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), sendReceipt)
+router.post("/:orderId/receipt", requireAuth, requireRole("owner", "co_owner", "admin", "manager", "waiter"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), sendReceipt)
 
 /**
  * @openapi

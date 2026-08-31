@@ -1,5 +1,6 @@
 import mongoose from "mongoose"
 import { PERMISSION_VALUES } from "../constants/permissions.js"
+import { MANAGEMENT_ACCESS_AREA_VALUES } from "../constants/managementAccess.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender", "co_owner"]
 
@@ -41,6 +42,12 @@ const StaffSchema = new mongoose.Schema({
     },
     permissions: {
         type: [{ type: String, enum: PERMISSION_VALUES }],
+        default: [],
+    },
+    // Co-owners are default-allow. An absent/empty list therefore preserves
+    // broad access for every legacy co-owner without requiring a migration.
+    coOwnerRestrictions: {
+        type: [{ type: String, enum: MANAGEMENT_ACCESS_AREA_VALUES }],
         default: [],
     },
     passwordHash: { type: String },

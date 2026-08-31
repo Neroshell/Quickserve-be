@@ -1212,7 +1212,12 @@ export async function getBillingOverview(req, res) {
             paymentMethodExpMonth: biz.paymentMethodExpMonth || null,
             paymentMethodExpYear: biz.paymentMethodExpYear || null,
             scheduledDowngradePlan: biz.scheduledDowngradePlan || null,
-            scheduledPlanEffectiveDate: biz.scheduledPlanEffectiveDate || null
+            scheduledPlanEffectiveDate: biz.scheduledPlanEffectiveDate || null,
+            passPlatformFeeToCustomer: biz.passPlatformFeeToCustomer === true,
+            platformFeeMode: biz.platformFeeMode || "business_absorbs",
+            customerPlatformFeePercent: biz.customerPlatformFeePercent || 0,
+            platformFeeLabel: biz.platformFeeLabel || "Platform Fee",
+            platformFeeRate: await getPlanOfflineCommissionRate(biz.currentPlan || "basic"),
         })
     } catch (err) {
         console.error("[getBillingOverview] Error:", err)

@@ -8,7 +8,8 @@ import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse 
 import { resolveBusinessCapabilities, resolveBusinessModules } from "../services/businessCapabilityService.js";
 import { resolveSubscriptionEntitlements } from "../services/subscriptionEntitlementService.js";
 import { markStaffActive, markStaffOffline } from "../services/presenceService.js";
-import { resolveCurrentManager } from "../middleware/authMiddleware.js";
+import { resolveCurrentCoOwner, resolveCurrentManager } from "../middleware/authMiddleware.js";
+import { getEffectiveManagementAreas } from "../constants/managementAccess.js";
 /**
  * Validate an invitation token
  * GET /auth/invite/validate?token=...
@@ -419,6 +420,7 @@ export async function getMe(req, res) {
                 modules: resolveBusinessModules(business),
                 capabilities: resolveBusinessCapabilities(business),
                 entitlements: resolveSubscriptionEntitlements(business),
+                managementAccessAreas: getEffectiveManagementAreas({ role: "owner" }),
                 currency: business.currency || "USD",
                 taxRate: business.taxRate || 0,
                 timezone: business.timezone || "UTC"
@@ -426,7 +428,9 @@ export async function getMe(req, res) {
         } else {
             const staff = role === "manager"
                 ? await resolveCurrentManager(req)
-                : await Staff.findOne({ email, accountStatus: "active" }).select('-passwordHash');
+                : role === "co_owner"
+                    ? await resolveCurrentCoOwner(req)
+                    : await Staff.findOne({ email, businessId, accountStatus: "active" }).select('-passwordHash');
             if (!staff) return res.status(401).json({ message: "Account disabled or not found." });
             
             // Also fetch business to get businessType and currency
@@ -445,6 +449,14 @@ export async function getMe(req, res) {
                 displayName: businessDisplayName,
                 staffId: staff.staffId,
                 ...(role === "manager" ? { permissions: staff.permissions || [] } : {}),
+                ...(role === "co_owner" ? {
+                    coOwnerRestrictions: staff.coOwnerRestrictions || [],
+                } : {}),
+                managementAccessAreas: getEffectiveManagementAreas({
+                    role,
+                    permissions: staff.permissions || [],
+                    coOwnerRestrictions: staff.coOwnerRestrictions || [],
+                }),
                 businessType: business?.businessType || "restaurant",
                 modules: resolveBusinessModules(business),
                 capabilities: resolveBusinessCapabilities(business),

@@ -8,16 +8,12 @@ import {
     getPopularItems
 } from "../controllers/menuController.js"
 
-import { requireAuth, requirePermission, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { requirePermission, requirePermissionForAuthenticatedManager } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 
 const router = express.Router()
 
-const requireMenuManagement = [
-    requireAuth,
-    requireRole("owner", "admin", "manager"),
-    requirePermission(PERMISSIONS.MENU_MANAGE),
-]
+const requireMenuManagement = requirePermission(PERMISSIONS.MENU_MANAGE)
 
 /**
  * @openapi

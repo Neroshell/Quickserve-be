@@ -5,9 +5,35 @@ import { sendOnboardingEmail } from "../utils/emailService.js"
 import { hashToken } from "../utils/tokenHash.js"
 import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
+import {
+    getEffectiveManagementAreas,
+    normalizeCoOwnerRestrictions,
+} from "../constants/managementAccess.js"
 
 function resolveBusinessId(req) {
-    return req.session?.user?.businessId || req.query.businessId
+    return req.session?.user?.businessId
+}
+
+function buildCoOwnerAccessPayload(coOwner) {
+    const coOwnerRestrictions = Array.isArray(coOwner.coOwnerRestrictions)
+        ? coOwner.coOwnerRestrictions
+        : []
+
+    return {
+        staffId: coOwner.staffId,
+        role: coOwner.role,
+        name: coOwner.name,
+        email: coOwner.email,
+        accountStatus: coOwner.accountStatus,
+        businessId: coOwner.businessId,
+        coOwnerRestrictions,
+        managementAccessAreas: getEffectiveManagementAreas({
+            role: "co_owner",
+            coOwnerRestrictions,
+        }),
+        createdAt: coOwner.createdAt,
+        updatedAt: coOwner.updatedAt,
+    }
 }
 
 export async function getTeam(req, res) {
@@ -32,18 +58,10 @@ export async function getTeam(req, res) {
             owner: business ? {
                 id: business._id,
                 name: business.ownerName,
-                email: business.email,
+                email: business.ownerEmail,
                 role: "owner"
             } : null,
-            coOwners: coOwners.map(c => ({
-                staffId: c.staffId,
-                role: c.role,
-                name: c.name,
-                email: c.email,
-                accountStatus: c.accountStatus,
-                businessId: c.businessId,
-                createdAt: c.createdAt
-            }))
+            coOwners: coOwners.map(buildCoOwnerAccessPayload)
         })
     } catch (err) {
         console.error("[getTeam]", err)
@@ -85,9 +103,7 @@ export async function inviteCoOwner(req, res) {
 
         const coOwner = await Staff.create({
             businessId,
-            businessId: businessId, // legacy alias required by old waiters collection indexes
             staffId,
-            staffId: staffId, // legacy alias required by old waiters collection indexes
             role: "co_owner",
             name,
             email,
@@ -107,20 +123,66 @@ export async function inviteCoOwner(req, res) {
             console.error("[inviteCoOwner] Email failed:", err)
         })
 
-        return res.status(201).json({
-            staffId: coOwner.staffId,
-            role: coOwner.role,
-            name: coOwner.name,
-            email: coOwner.email,
-            accountStatus: coOwner.accountStatus,
-            businessId: coOwner.businessId,
-            businessId: coOwner.businessId || coOwner.businessId,
-            staffId: coOwner.staffId,
-            createdAt: coOwner.createdAt
-        })
+        return res.status(201).json(buildCoOwnerAccessPayload(coOwner))
     } catch (err) {
         console.error("[inviteCoOwner]", err)
         return res.status(500).json({ error: "Failed to invite co-owner" })
+    }
+}
+
+export async function getCoOwnerAccess(req, res) {
+    try {
+        const businessId = resolveBusinessId(req)
+        const { staffId } = req.params
+        if (!businessId) return res.status(401).json({ error: "Unauthorized" })
+
+        const coOwner = await Staff.findOne({ businessId, staffId, role: "co_owner" })
+            .select("staffId role name email accountStatus businessId coOwnerRestrictions createdAt updatedAt")
+        if (!coOwner) return res.status(404).json({ error: "Co-Owner not found" })
+
+        return res.json(buildCoOwnerAccessPayload(coOwner))
+    } catch (err) {
+        console.error("[getCoOwnerAccess]", err)
+        return res.status(500).json({ error: "Failed to fetch co-owner access" })
+    }
+}
+
+export async function updateCoOwnerAccess(req, res) {
+    try {
+        const businessId = resolveBusinessId(req)
+        const { staffId } = req.params
+        if (!businessId) return res.status(401).json({ error: "Unauthorized" })
+
+        let coOwnerRestrictions
+        try {
+            coOwnerRestrictions = normalizeCoOwnerRestrictions(req.body?.coOwnerRestrictions)
+        } catch (err) {
+            return res.status(400).json({ error: err.message })
+        }
+
+        const coOwner = await Staff.findOneAndUpdate(
+            { businessId, staffId, role: "co_owner" },
+            { $set: { coOwnerRestrictions } },
+            { new: true, runValidators: true },
+        ).select("staffId role name email accountStatus businessId coOwnerRestrictions createdAt updatedAt")
+
+        if (!coOwner) return res.status(404).json({ error: "Co-Owner not found" })
+
+        try {
+            const { publishManagementAccessRevocation } = await import("../utils/sseManager.js")
+            await publishManagementAccessRevocation({
+                businessId,
+                staffObjectId: coOwner._id,
+                staffId: coOwner.staffId,
+            })
+        } catch (streamError) {
+            console.error("[updateCoOwnerAccess] Failed to refresh Co-Owner live streams", streamError)
+        }
+
+        return res.json(buildCoOwnerAccessPayload(coOwner))
+    } catch (err) {
+        console.error("[updateCoOwnerAccess]", err)
+        return res.status(500).json({ error: "Failed to update co-owner access" })
     }
 }
 

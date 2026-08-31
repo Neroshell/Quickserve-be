@@ -1,28 +1,30 @@
 import express from "express"
 import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory, addHotelRoomType, removeHotelRoomType } from "../controllers/businessController.js"
 
-import { requireAnyPermission, requireAuth, requirePermission, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { requireManagementArea, requirePermissionForAuthenticatedManager } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
+import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
 
 const router = express.Router()
 
-const requireOperationalSettingsManager = [
-    requireAuth,
-    requireRole("owner", "admin", "manager"),
-    requirePermission(PERMISSIONS.SETTINGS_OPERATIONAL_MANAGE),
-]
-const requireManagementSettingsRead = [
-    requireAuth,
-    requireRole("owner", "admin", "manager"),
-    requireAnyPermission(
-        PERMISSIONS.TRANSACTIONS_VIEW,
-        PERMISSIONS.RESERVATIONS_VIEW,
-        PERMISSIONS.SERVICE_POINTS_VIEW,
-        PERMISSIONS.SETTINGS_OPERATIONAL_MANAGE,
-    ),
-]
-const requireBusinessIdentityOwner = [requireAuth, requireRole("owner", "admin")]
-const requireOwner = [requireAuth, requireRole("owner", "co_owner")]
+const requireOperationalSettingsManager = requireManagementArea(
+    MANAGEMENT_ACCESS_AREAS.BUSINESS_SETTINGS,
+    PERMISSIONS.SETTINGS_OPERATIONAL_MANAGE,
+)
+const requireManagementSettingsRead = requireManagementArea(
+    MANAGEMENT_ACCESS_AREAS.BUSINESS_SETTINGS,
+    PERMISSIONS.TRANSACTIONS_VIEW,
+    PERMISSIONS.RESERVATIONS_VIEW,
+    PERMISSIONS.SERVICE_POINTS_VIEW,
+    PERMISSIONS.SETTINGS_OPERATIONAL_MANAGE,
+)
+const requireBusinessIdentityOwner = requireManagementArea(MANAGEMENT_ACCESS_AREAS.BUSINESS_SETTINGS)
+const requireServicePointOwner = requireManagementArea(MANAGEMENT_ACCESS_AREAS.SERVICE_POINTS)
+const requireMenuConfiguration = requireManagementArea(
+    MANAGEMENT_ACCESS_AREAS.MENU,
+    PERMISSIONS.MENU_MANAGE,
+    PERMISSIONS.SETTINGS_OPERATIONAL_MANAGE,
+)
 
 /**
  * @openapi
@@ -65,7 +67,7 @@ router.patch("/settings", requireBusinessIdentityOwner, updateSettings)
  * Hotel owners can add or remove Food Service without changing the hotel's
  * business identity or its required Lodging module.
  */
-router.patch("/settings/modules", requireOwner, updateOwnerBusinessModules)
+router.patch("/settings/modules", requireBusinessIdentityOwner, updateOwnerBusinessModules)
 
 /**
  * @openapi
@@ -184,7 +186,7 @@ router.get("/categories", requirePermissionForAuthenticatedManager(PERMISSIONS.M
  *       201:
  *         description: Category added successfully
  */
-router.post("/categories", requireOperationalSettingsManager, addCategory)
+router.post("/categories", requireMenuConfiguration, addCategory)
 
 /**
  * @openapi
@@ -208,7 +210,7 @@ router.post("/categories", requireOperationalSettingsManager, addCategory)
  *       200:
  *         description: Category removed successfully
  */
-router.delete("/categories", requireOperationalSettingsManager, removeCategory)
+router.delete("/categories", requireMenuConfiguration, removeCategory)
 
 /**
  * @openapi
@@ -218,7 +220,7 @@ router.delete("/categories", requireOperationalSettingsManager, removeCategory)
  *     tags:
  *       - Business Settings
  */
-router.post("/room-types", requireOwner, addHotelRoomType)
-router.delete("/room-types", requireOwner, removeHotelRoomType)
+router.post("/room-types", requireServicePointOwner, addHotelRoomType)
+router.delete("/room-types", requireServicePointOwner, removeHotelRoomType)
 
 export default router

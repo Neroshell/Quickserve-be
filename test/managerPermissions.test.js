@@ -12,9 +12,10 @@ import {
 import {
     requirePermission,
     requirePermissionForAuthenticatedManager,
-    requireOwnerOrCoOwner,
+    requireManagementArea,
     requirePrimaryOwner,
 } from "../src/middleware/authMiddleware.js"
+import { MANAGEMENT_ACCESS_AREAS } from "../src/constants/managementAccess.js"
 import { requireEntitlement } from "../src/middleware/subscriptionMiddleware.js"
 import {
     broadcastLocal,
@@ -329,20 +330,18 @@ test("Manager SSE delivery fails closed after permission removal or account disa
     }
 })
 
-test("Owner and Co-Owner permission bypass does not query Staff", async (t) => {
+test("Primary Owner permission bypass does not query Staff", async (t) => {
     let lookupCount = 0
     t.mock.method(Staff, "findOne", () => {
         lookupCount += 1
         throw new Error("Owner bypass must not query Staff")
     })
 
-    for (const role of ["owner", "co_owner"]) {
-        const result = await runMiddleware(
-            requirePermission(PERMISSIONS.ANALYTICS_VIEW),
-            { session: { user: { role, businessId: "biz_alpha" } } },
-        )
-        assert.equal(result.nextCalled, true)
-    }
+    const result = await runMiddleware(
+        requirePermission(PERMISSIONS.ANALYTICS_VIEW),
+        { session: { user: { role: "owner", businessId: "biz_alpha" } } },
+    )
+    assert.equal(result.nextCalled, true)
     assert.equal(lookupCount, 0)
 })
 
@@ -359,12 +358,25 @@ test("Manager cannot pass primary-owner billing, Stripe, or team guards", async 
     assert.equal(owner.nextCalled, true)
 })
 
-test("Manager cannot enter the Owner/Co-Owner permission-administration route", async () => {
-    const manager = await runMiddleware(requireOwnerOrCoOwner, managerSession())
-    const coOwner = await runMiddleware(
-        requireOwnerOrCoOwner,
-        { session: { user: { role: "co_owner", businessId: "biz_alpha" } } },
-    )
+test("Manager cannot enter Owner/Co-Owner permission administration", async (t) => {
+    const guard = requireManagementArea(MANAGEMENT_ACCESS_AREAS.STAFF_MANAGEMENT)
+    mockManagerLookup(t, () => ({
+        ...managerRecord(),
+        role: "co_owner",
+        staffId: "COW-1000",
+        email: "coowner@example.com",
+        coOwnerRestrictions: [],
+    }))
+    const manager = await runMiddleware(guard, managerSession())
+    const coOwner = await runMiddleware(guard, {
+        session: { user: {
+            role: "co_owner",
+            businessId: "biz_alpha",
+            staffObjectId: "507f1f77bcf86cd799439011",
+            staffId: "COW-1000",
+            email: "coowner@example.com",
+        } },
+    })
     assert.equal(manager.res.statusCode, 403)
     assert.equal(coOwner.nextCalled, true)
 })
@@ -426,17 +438,17 @@ test("owner-only and permission route declarations remain explicit", async () =>
     const authController = await readFile(new URL("../src/controllers/authController.js", import.meta.url), "utf8")
     const staffController = await readFile(new URL("../src/controllers/staffController.js", import.meta.url), "utf8")
 
-    assert.match(ownerRoutes, /router\.get\("\/billing", requirePrimaryOwner/)
+    assert.match(ownerRoutes, /MANAGEMENT_ACCESS_AREAS\.PAYMENTS_AND_BILLING/)
     assert.match(ownerRoutes, /router\.post\("\/stripe\/connect-account", requirePrimaryOwner/)
     assert.match(ownerRoutes, /router\.get\("\/team", requirePrimaryOwner/)
-    assert.match(ownerRoutes, /router\.patch\("\/staff\/:staffId\/permissions", requireOwnerOrCoOwner/)
+    assert.match(ownerRoutes, /"\/staff\/:staffId\/permissions",\s*requireManagementArea\(MANAGEMENT_ACCESS_AREAS\.STAFF_MANAGEMENT\)/)
     assert.match(menuRoutes, /requirePermission\(PERMISSIONS\.MENU_MANAGE\)/)
-    assert.match(businessRoutes, /requirePermission\(PERMISSIONS\.SETTINGS_OPERATIONAL_MANAGE\)/)
+    assert.match(businessRoutes, /requireManagementArea\(\s*MANAGEMENT_ACCESS_AREAS\.BUSINESS_SETTINGS,\s*PERMISSIONS\.SETTINGS_OPERATIONAL_MANAGE/)
     assert.match(waitstaffRoutes, /"\/calls",\s*requirePermissionForAuthenticatedManager\(PERMISSIONS\.ORDERS_VIEW\)/)
     assert.match(waitstaffRoutes, /"\/calls",\s*requirePermissionForAuthenticatedManager\(PERMISSIONS\.ORDERS_MANAGE\)/)
     assert.match(orderRoutes, /"\/:orderId\/reorder",\s*requirePermissionForAuthenticatedManager\(PERMISSIONS\.ORDERS_VIEW\)/)
     assert.match(server, /requirePermission\(PERMISSIONS\.CRM_VIEW\)/)
-    assert.match(authController, /role === "manager" \? \{ permissions: staff\.permissions \|\| \[\] \}/)
+    assert.match(authController, /role === "co_owner" \? \{\s*coOwnerRestrictions: staff\.coOwnerRestrictions \|\| \[\]/)
     assert.match(authController, /if \(sessionUser\.role === "manager"\) \{\s*const manager = await resolveCurrentManager\(req\)/)
     assert.match(authController, /Staff\.findOne\(\{ email, businessId, accountStatus: "active" \}\)/)
     assert.match(staffController, /requesterRole === "manager" && !OPERATIONAL_ROLES\.includes\(role\)/)

@@ -8,13 +8,13 @@ import {
   invalidatePublicBusinessRoute,
 } from "../services/cacheInvalidationService.js"
 import { uploadToCloudinary, deleteFromCloudinary } from "../utils/uploadToCloudinary.js"
-import { requireAnyPermission, requireAuth, requirePermission, requireRole } from "../middleware/authMiddleware.js"
+import { requireAnyPermission, requireAuth, requireManagementArea, requirePermission } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
+import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
 
 const router = express.Router()
 
 router.use(requireAuth)
-const requireExistingUploadRole = requireRole("owner", "admin", "manager")
 
 // Memory storage — no files written to disk
 const upload = multer({
@@ -65,7 +65,6 @@ const upload = multer({
  */
 router.post(
   "/image",
-  requireExistingUploadRole,
   requireAnyPermission(PERMISSIONS.MENU_MANAGE, PERMISSIONS.SERVICE_POINTS_MANAGE),
   upload.single("image"),
   async (req, res) => {
@@ -113,7 +112,11 @@ router.post(
  *       200:
  *         description: Logo uploaded and saved successfully
  */
-router.post("/business-logo", requireRole("owner", "admin"), upload.single("image"), async (req, res) => {
+router.post(
+  "/business-logo",
+  requireManagementArea(MANAGEMENT_ACCESS_AREAS.BRANDING),
+  upload.single("image"),
+  async (req, res) => {
   try {
     // Always the authenticated user's own business — never a businessId from the body.
     const businessId = req.session?.user?.businessId
@@ -158,7 +161,8 @@ router.post("/business-logo", requireRole("owner", "admin"), upload.single("imag
     console.error("[upload/business-logo]", err)
     return res.status(500).json({ error: err.message || "Upload failed" })
   }
-})
+  },
+)
 
 /**
  * @openapi
@@ -188,7 +192,6 @@ router.post("/business-logo", requireRole("owner", "admin"), upload.single("imag
  */
 router.post(
   "/menu-item",
-  requireExistingUploadRole,
   requirePermission(PERMISSIONS.MENU_MANAGE),
   upload.single("image"),
   async (req, res) => {

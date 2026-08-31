@@ -1,8 +1,11 @@
 import mongoose from "mongoose"
 import Staff from "../models/Staff.js"
 import { isValidPermission } from "../constants/permissions.js"
-
-const MANAGEMENT_OWNER_ROLES = new Set(["owner", "co_owner", "restaurant_owner", "admin"])
+import {
+    MANAGEMENT_AREA_BY_PERMISSION,
+    isValidManagementAccessArea,
+    resolveManagementAccess,
+} from "../constants/managementAccess.js"
 
 export function requireAuth(req, res, next) {
     if (!req.session || !req.session.user) {
@@ -25,14 +28,11 @@ export function requireRole(...roles) {
 
 export const requirePrimaryOwner = requireRole("owner")
 
-// Accepts primary owners, co-owners, and any legacy role variants stored in older sessions
-export const requireOwnerOrCoOwner = requireRole("owner", "co_owner", "restaurant_owner", "admin")
-
 function sendForbidden(res) {
     return res.status(403).json({ message: "Forbidden. Insufficient permissions." })
 }
 
-function getManagerIdentityFilter(sessionUser) {
+function getManagementStaffIdentityFilter(sessionUser) {
     const businessId = sessionUser?.businessId
     if (!businessId) return null
 
@@ -52,94 +52,158 @@ function getManagerIdentityFilter(sessionUser) {
 }
 
 /**
- * Resolve a Manager from MongoDB for the current request. Redis session data
- * identifies the account but never acts as the permission authority.
+ * Resolve the current Manager or Co-Owner from MongoDB. Session data identifies
+ * the account, while current database state remains the authorization authority.
  */
-export async function resolveCurrentManager(req) {
-    if (req.resolvedManagerStaff) return req.resolvedManagerStaff
-
+export async function resolveCurrentManagementStaff(req, expectedRole) {
     const sessionUser = req.session?.user
-    if (!sessionUser || sessionUser.role !== "manager") return null
+    if (!sessionUser || sessionUser.role !== expectedRole) return null
 
-    const filter = getManagerIdentityFilter(sessionUser)
+    const cacheKey = expectedRole === "manager"
+        ? "resolvedManagerStaff"
+        : "resolvedCoOwnerStaff"
+    if (req[cacheKey]) return req[cacheKey]
+
+    const filter = getManagementStaffIdentityFilter(sessionUser)
     if (!filter) return null
 
     const staff = await Staff.findOne(filter)
-        .select("_id businessId staffId role accountStatus permissions name email")
+        .select("_id businessId staffId role accountStatus permissions coOwnerRestrictions name email")
         .lean()
 
     if (
         !staff ||
         staff.accountStatus !== "active" ||
-        staff.role !== "manager" ||
+        staff.role !== expectedRole ||
         staff.businessId !== sessionUser.businessId
     ) {
         return null
     }
+
+    req[cacheKey] = staff
+    return staff
+}
+
+export async function resolveCurrentManager(req) {
+    const staff = await resolveCurrentManagementStaff(req, "manager")
+    if (!staff) return null
 
     req.resolvedManagerStaff = staff
     req.resolvedManagerPermissions = Array.isArray(staff.permissions) ? staff.permissions : []
     return staff
 }
 
-async function authorizePermissions(req, res, next, permissionKeys, { managerOnlyWhenAuthenticated = false } = {}) {
+export async function resolveCurrentCoOwner(req) {
+    const staff = await resolveCurrentManagementStaff(req, "co_owner")
+    if (!staff) return null
+
+    req.resolvedCoOwnerStaff = staff
+    req.resolvedCoOwnerRestrictions = Array.isArray(staff.coOwnerRestrictions)
+        ? staff.coOwnerRestrictions
+        : []
+    return staff
+}
+
+async function authorizeManagementAccess(req, res, next, {
+    areas,
+    managerPermissions,
+    onlyWhenManagementAuthenticated = false,
+}) {
     const sessionUser = req.session?.user
 
     if (!sessionUser) {
-        if (managerOnlyWhenAuthenticated) return next()
+        if (onlyWhenManagementAuthenticated) return next()
         return res.status(401).json({ message: "Unauthorized. Please log in." })
     }
 
-    if (MANAGEMENT_OWNER_ROLES.has(sessionUser.role)) return next()
-
-    if (sessionUser.role !== "manager") {
-        if (managerOnlyWhenAuthenticated) return next()
-        return sendForbidden(res)
-    }
-
     try {
-        const staff = await resolveCurrentManager(req)
-        if (!staff) return sendForbidden(res)
-
-        const currentPermissions = new Set(req.resolvedManagerPermissions)
-        if (!permissionKeys.some((permissionKey) => currentPermissions.has(permissionKey))) {
-            return sendForbidden(res)
+        if (["owner", "restaurant_owner", "admin"].includes(sessionUser.role)) {
+            return next()
         }
 
-        return next()
+        if (sessionUser.role === "co_owner") {
+            const staff = await resolveCurrentCoOwner(req)
+            if (!staff) return sendForbidden(res)
+
+            const allowed = areas.some((area) => resolveManagementAccess({
+                ...sessionUser,
+                coOwnerRestrictions: req.resolvedCoOwnerRestrictions,
+            }, { area }))
+            return allowed ? next() : sendForbidden(res)
+        }
+
+        if (sessionUser.role === "manager") {
+            const staff = await resolveCurrentManager(req)
+            if (!staff) return sendForbidden(res)
+
+            const allowed = resolveManagementAccess({
+                ...sessionUser,
+                permissions: req.resolvedManagerPermissions,
+            }, { area: areas[0], managerPermissions })
+            return allowed ? next() : sendForbidden(res)
+        }
+
+        if (onlyWhenManagementAuthenticated) return next()
+        return sendForbidden(res)
     } catch (err) {
-        console.error("[authorization] Failed to resolve current Manager permissions", err)
+        console.error("[authorization] Failed to resolve current management access", err)
         return res.status(500).json({ message: "Unable to verify permissions." })
     }
+}
+
+export function requireManagementArea(area, ...managerPermissions) {
+    if (!isValidManagementAccessArea(area)) {
+        throw new TypeError(`Unknown management access area: ${String(area)}`)
+    }
+    if (managerPermissions.some((permissionKey) => !isValidPermission(permissionKey))) {
+        throw new TypeError("requireManagementArea received an unknown Manager permission")
+    }
+
+    return (req, res, next) => authorizeManagementAccess(req, res, next, {
+        areas: [area],
+        managerPermissions,
+    })
 }
 
 export function requirePermission(permissionKey) {
     if (!isValidPermission(permissionKey)) {
         throw new TypeError(`Unknown permission: ${String(permissionKey)}`)
     }
-    return (req, res, next) => authorizePermissions(req, res, next, [permissionKey])
+
+    const area = MANAGEMENT_AREA_BY_PERMISSION[permissionKey]
+    if (!area) throw new TypeError(`Permission has no management access area: ${permissionKey}`)
+
+    return (req, res, next) => authorizeManagementAccess(req, res, next, {
+        areas: [area],
+        managerPermissions: [permissionKey],
+    })
 }
 
 export function requireAnyPermission(...permissionKeys) {
     if (permissionKeys.length === 0 || permissionKeys.some((permissionKey) => !isValidPermission(permissionKey))) {
         throw new TypeError("requireAnyPermission received an unknown permission")
     }
-    return (req, res, next) => authorizePermissions(req, res, next, permissionKeys)
+
+    const areas = [...new Set(permissionKeys.map((permissionKey) => MANAGEMENT_AREA_BY_PERMISSION[permissionKey]))]
+    return (req, res, next) => authorizeManagementAccess(req, res, next, {
+        areas,
+        managerPermissions: permissionKeys,
+    })
 }
 
 /**
- * Public/customer routes stay public. If the request carries a Manager session,
- * however, that Manager must have the relevant current database permission.
+ * Public/customer routes stay public. If the request carries a Manager or
+ * Co-Owner session, however, current effective access is still enforced.
  */
 export function requirePermissionForAuthenticatedManager(permissionKey) {
     if (!isValidPermission(permissionKey)) {
         throw new TypeError(`Unknown permission: ${String(permissionKey)}`)
     }
-    return (req, res, next) => authorizePermissions(
-        req,
-        res,
-        next,
-        [permissionKey],
-        { managerOnlyWhenAuthenticated: true },
-    )
+
+    const area = MANAGEMENT_AREA_BY_PERMISSION[permissionKey]
+    return (req, res, next) => authorizeManagementAccess(req, res, next, {
+        areas: [area],
+        managerPermissions: [permissionKey],
+        onlyWhenManagementAuthenticated: true,
+    })
 }

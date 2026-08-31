@@ -4,7 +4,7 @@ import { getLatestReport, getReportHistory, getReportByPeriod, getCurrentWeekSna
 import { ownerAnalytics } from "../controllers/ownerAnalyticsController.js"
 import { dismissSetupGuide, getSetupProgress } from "../controllers/setupProgressController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
-import { getTeam, inviteCoOwner, removeCoOwner } from "../controllers/teamController.js"
+import { getCoOwnerAccess, getTeam, inviteCoOwner, removeCoOwner, updateCoOwnerAccess } from "../controllers/teamController.js"
 import {
     // Staff Management (new unified API)
     getStaff,
@@ -39,9 +39,10 @@ import {
 } from "../controllers/reservationController.js"
 import { cancelOwnerHotelReservation } from "../controllers/reservationCancellationController.js"
 
-import { requireAuth, requirePermission, requirePrimaryOwner, requireOwnerOrCoOwner } from "../middleware/authMiddleware.js"
+import { requireAuth, requireManagementArea, requirePermission, requirePrimaryOwner } from "../middleware/authMiddleware.js"
 import { requireEntitlement } from "../middleware/subscriptionMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
+import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
 import { connectAccount, getStripeStatus, getStripeDashboardLink, getPayoutSummary } from "../controllers/stripeConnectController.js"
 import {
     getBillingOverview,
@@ -72,7 +73,7 @@ router.use(requireAuth)
  *       200:
  *         description: Current branding configuration
  */
-router.get("/branding", requireOwnerOrCoOwner, getBranding)
+router.get("/branding", requireManagementArea(MANAGEMENT_ACCESS_AREAS.BRANDING), getBranding)
 
 /**
  * @openapi
@@ -102,7 +103,7 @@ router.get("/branding", requireOwnerOrCoOwner, getBranding)
  *       200:
  *         description: Branding preferences updated successfully
  */
-router.patch("/branding", requireOwnerOrCoOwner, updateBranding)
+router.patch("/branding", requireManagementArea(MANAGEMENT_ACCESS_AREAS.BRANDING), updateBranding)
 
 // ─── Dashboard & Analytics ───────────────────────────────────────────────────
 
@@ -292,7 +293,11 @@ router.post("/staff", requirePermission(PERMISSIONS.STAFF_MANAGE), createStaff)
  *       200:
  *         description: Staff member deleted successfully
  */
-router.patch("/staff/:staffId/permissions", requireOwnerOrCoOwner, updateManagerPermissions)
+router.patch(
+    "/staff/:staffId/permissions",
+    requireManagementArea(MANAGEMENT_ACCESS_AREAS.STAFF_MANAGEMENT),
+    updateManagerPermissions,
+)
 router.delete("/staff/:staffId", requirePermission(PERMISSIONS.STAFF_MANAGE), deleteStaff)
 
 // ─── Team & Access (Primary Owner Only) ───────────────────────────────────────
@@ -336,6 +341,8 @@ router.get("/team", requirePrimaryOwner, getTeam)
  *         description: Co-owner invite sent successfully
  */
 router.post("/team/co-owner", requirePrimaryOwner, inviteCoOwner)
+router.get("/team/co-owner/:staffId/access", requirePrimaryOwner, getCoOwnerAccess)
+router.patch("/team/co-owner/:staffId/access", requirePrimaryOwner, updateCoOwnerAccess)
 
 /**
  * @openapi
@@ -876,14 +883,18 @@ router.post("/stripe/connect-account", requirePrimaryOwner, connectAccount)
  * @openapi
  * /owner/stripe/status:
  *   get:
- *     summary: Retrieve status of linked Stripe connected account (Primary Owner Only)
+ *     summary: Retrieve status of linked Stripe connected account (Billing Access)
  *     tags:
  *       - Owner Stripe Connect
  *     responses:
  *       200:
  *         description: Stripe integration status metrics
  */
-router.get("/stripe/status", requirePrimaryOwner, getStripeStatus)
+router.get(
+    "/stripe/status",
+    requireManagementArea(MANAGEMENT_ACCESS_AREAS.PAYMENTS_AND_BILLING),
+    getStripeStatus,
+)
 
 /**
  * @openapi
@@ -897,7 +908,11 @@ router.get("/stripe/status", requirePrimaryOwner, getStripeStatus)
  *         description: Dashboard login link
  */
 router.get("/stripe/dashboard-link", requirePrimaryOwner, getStripeDashboardLink)
-router.get("/stripe/payout-summary", requirePrimaryOwner, getPayoutSummary)
+router.get(
+    "/stripe/payout-summary",
+    requireManagementArea(MANAGEMENT_ACCESS_AREAS.PAYMENTS_AND_BILLING),
+    getPayoutSummary,
+)
 
 // ─── QuickServe Billing (MVP) ────────────────────────────────────────────────
 
@@ -905,14 +920,18 @@ router.get("/stripe/payout-summary", requirePrimaryOwner, getPayoutSummary)
  * @openapi
  * /owner/billing:
  *   get:
- *     summary: Get billing overview details (Primary Owner Only)
+ *     summary: Get billing overview details (Billing Access)
  *     tags:
  *       - Owner Billing
  *     responses:
  *       200:
  *         description: Platform billing configuration, metrics, and state
  */
-router.get("/billing", requirePrimaryOwner, getBillingOverview)
+router.get(
+    "/billing",
+    requireManagementArea(MANAGEMENT_ACCESS_AREAS.PAYMENTS_AND_BILLING),
+    getBillingOverview,
+)
 
 /**
  * @openapi
@@ -993,27 +1012,35 @@ router.post("/billing/plan", requirePrimaryOwner, updatePlan)
  * @openapi
  * /owner/billing/commission:
  *   get:
- *     summary: Get commission summary for offline sales (Primary Owner Only)
+ *     summary: Get commission summary for offline sales (Billing Access)
  *     tags:
  *       - Owner Billing
  *     responses:
  *       200:
  *         description: Accumulated platform commission info
  */
-router.get("/billing/commission", requirePrimaryOwner, getCommissionSummary)
+router.get(
+    "/billing/commission",
+    requireManagementArea(MANAGEMENT_ACCESS_AREAS.PAYMENTS_AND_BILLING),
+    getCommissionSummary,
+)
 
 /**
  * @openapi
  * /owner/billing/invoices:
  *   get:
- *     summary: Retrieve history of platform billing invoices (Primary Owner Only)
+ *     summary: Retrieve history of platform billing invoices (Billing Access)
  *     tags:
  *       - Owner Billing
  *     responses:
  *       200:
  *         description: List of invoices
  */
-router.get("/billing/invoices", requirePrimaryOwner, getInvoices)
+router.get(
+    "/billing/invoices",
+    requireManagementArea(MANAGEMENT_ACCESS_AREAS.PAYMENTS_AND_BILLING),
+    getInvoices,
+)
 
 /**
  * @openapi

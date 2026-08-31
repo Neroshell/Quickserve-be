@@ -24,6 +24,7 @@ import {
     invalidatePublicBusinessRoutes,
 } from "../services/cacheInvalidationService.js"
 import { PERMISSIONS } from "../constants/permissions.js"
+import { MANAGEMENT_ACCESS_AREAS, resolveManagementAccess } from "../constants/managementAccess.js"
 
 function generateBusinessId() {
     return `biz_${crypto.randomBytes(7).toString("hex")}`
@@ -39,6 +40,47 @@ const SENSITIVE_BUSINESS_FIELDS = [
     "inviteTokenExpires",
 ]
 
+const INTERNAL_PAYMENT_FIELDS = [
+    "stripeAccountId",
+    "stripeCustomerId",
+    "defaultPaymentMethodId",
+    "stripeSubscriptionId",
+    "stripeMeteredSubscriptionItemId",
+    "billingLifecycleClaims",
+]
+
+const BILLING_WORKSPACE_FIELDS = [
+    "billingStatus",
+    "billingEnabled",
+    "currentPlan",
+    "plan",
+    "planId",
+    "planActivatedAt",
+    "billingCycle",
+    "nextBillingDate",
+    "currentPeriodStart",
+    "currentPeriodEnd",
+    "nextInvoiceDate",
+    "billingReminderSentAt",
+    "billingReminderSentForPeriod",
+    "billingFailedAt",
+    "overdueReminderSentAt",
+    "finalWarningSentAt",
+    "billingRestoredAt",
+    "billingRestoredEmailSentAt",
+    "passPlatformFeeToCustomer",
+    "platformFeeMode",
+    "customerPlatformFeePercent",
+    "platformFeeLabel",
+    "paymentMethodBrand",
+    "paymentMethodLast4",
+    "paymentMethodExpMonth",
+    "paymentMethodExpYear",
+    "stripeSubscriptionStatus",
+    "scheduledDowngradePlan",
+    "scheduledPlanEffectiveDate",
+]
+
 // Mongoose .select() string that excludes the sensitive fields above.
 const SAFE_BUSINESS_PROJECTION = SENSITIVE_BUSINESS_FIELDS.map((f) => `-${f}`).join(" ")
 
@@ -48,6 +90,27 @@ function sanitizeBusiness(biz) {
     const obj = typeof biz.toObject === "function" ? biz.toObject() : { ...biz }
     for (const field of SENSITIVE_BUSINESS_FIELDS) delete obj[field]
     return attachBusinessCapabilities(obj)
+}
+
+function sanitizeManagementSettings(business, req) {
+    const payload = typeof business.toObject === "function"
+        ? business.toObject()
+        : { ...business }
+
+    for (const field of [...SENSITIVE_BUSINESS_FIELDS, ...INTERNAL_PAYMENT_FIELDS]) {
+        delete payload[field]
+    }
+
+    const canViewBilling = resolveManagementAccess({
+        role: req.session?.user?.role,
+        coOwnerRestrictions: req.resolvedCoOwnerRestrictions || [],
+    }, { area: MANAGEMENT_ACCESS_AREAS.PAYMENTS_AND_BILLING })
+
+    if (!canViewBilling) {
+        for (const field of BILLING_WORKSPACE_FIELDS) delete payload[field]
+    }
+
+    return attachBusinessCapabilities(payload)
 }
 
 function buildManagerSettingsPayload(business, permissions = []) {
@@ -96,7 +159,6 @@ function buildManagerSettingsPayload(business, permissions = []) {
 const ALLOWED_SETTINGS_UPDATE_FIELDS = [
     "name", "displayName", "slug", "address", "phoneNumber", "contactEmail",
     "currency", "timezone", "country", "language", "taxRate", "businessType",
-    "logoUrl", "logoPublicId", "platformFeeLabel", "passPlatformFeeToCustomer",
     "menuCategories",
 ]
 
@@ -169,7 +231,7 @@ export async function getSettings(req, res) {
             ))
         }
 
-        return res.json(attachBusinessCapabilities(bizObj))
+        return res.json(sanitizeManagementSettings(bizObj, req))
     } catch (err) {
         console.error("Get settings error:", err)
         return res.status(500).json({ message: "Server error" })

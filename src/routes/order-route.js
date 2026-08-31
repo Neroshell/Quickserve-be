@@ -99,7 +99,7 @@ router.post("/", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MAN
  *       200:
  *         description: Orders session deleted
  */
-router.delete("/session", requireAuth, requireRole("owner", "admin", "manager"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), deleteOrdersBySession)
+router.delete("/session", requireAuth, requireRole("owner", "co_owner", "admin", "manager"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), deleteOrdersBySession)
 
 /**
  * @openapi
@@ -248,7 +248,7 @@ router.patch("/:orderId/mark-paid", requireAuth, requireRole("waiter", "manager"
  *       200:
  *         description: Receipt sent
  */
-router.post("/:orderId/receipt", receiptLimiter, requireAuth, requireRole("waiter", "owner", "admin", "manager"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), sendReceipt)
+router.post("/:orderId/receipt", receiptLimiter, requireAuth, requireRole("waiter", "owner", "co_owner", "admin", "manager"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), sendReceipt)
 
 /**
  * @openapi

@@ -67,6 +67,7 @@ docker-data/
 
 test/*
 !test/managerPermissions.test.js
+!test/coOwnerAccess.test.js
 !test/crmAnalyticsService.test.js
 !test/crmAnalyticsController.test.js
 !test/customerJourneyService.test.js
