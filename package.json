@@ -16,6 +16,7 @@
     "test:restaurant-flow": "node --test test/restaurantFlow.test.js test/orderReceiptFlow.test.js",
     "test:lodging-analytics": "node --test test/lodgingAnalyticsService.test.js",
     "test:bullmq": "node --test test/bullmqInfrastructure.test.js test/bullmqEmailDelivery.test.js test/bullmqPhase2Reservation.test.js test/bullmqPhase2Billing.test.js test/bullmqPhase3PostPayment.test.js test/bullmqWorkerRuntime.test.js test/reservationArrival.test.js",
+    "test:billing-hardening": "node --test test/billingHardening.test.js test/bullmqPhase2Billing.test.js",
     "test:restaurant-arrival": "node --test test/reservationArrival.test.js",
     "test:collections": "node --test test/collectionNameMigration.test.js",
     "test:manager-permissions": "node --test test/managerPermissions.test.js test/coOwnerAccess.test.js test/entitlementEnforcement.test.js",

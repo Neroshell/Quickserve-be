@@ -225,6 +225,33 @@ test("restoration is conditionally durable before its notification", async () =>
     );
 });
 
+test("email failure does not roll back or retry a durable restriction transition", async () => {
+    const now = new Date("2026-08-10T12:00:00.000Z");
+    const store = businessStore({
+        billingFailedAt: new Date("2026-08-01T12:00:00.000Z"),
+    });
+    const jobName = BILLING_JOB_NAMES.RESTRICT_SERVICE;
+    const periodKey = getBillingActionPeriodKey(jobName, store.document);
+    const result = await processBillingLifecycleAction({
+        jobName,
+        businessId: store.document.businessId,
+        periodKey,
+        now,
+        businessModel: store,
+        sendNotification: async () => {
+            throw new Error("provider offline");
+        },
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.notification.reason, "dispatch_failed");
+    assert.equal(store.document.offlineServiceRestricted, true);
+    assert.equal(
+        store.document.billingLifecycleClaims.restrictService.status,
+        "completed",
+    );
+});
+
 test("one business failure does not block other billing candidates", async () => {
     const now = new Date("2026-08-10T12:00:00.000Z");
     const businesses = [

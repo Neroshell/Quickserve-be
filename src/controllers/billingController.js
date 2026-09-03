@@ -4,6 +4,8 @@ import Plan from "../models/Plan.js"
 import Order from "../models/order.js"
 import BillingInvoice from "../models/BillingInvoice.js"
 import { getPlanOfflineCommissionRate } from "../utils/platformFee.js"
+import { attemptPastDueInvoicePayment } from "../services/billingRecoveryService.js"
+import { listBillingInvoicesForBusiness } from "../services/billingInvoiceLedgerService.js"
 import {
     invalidateBusinessConfiguration,
     invalidatePublicBusinessConfig,
@@ -1198,6 +1200,7 @@ export async function getBillingOverview(req, res) {
         res.json({
             billingStatus: biz.billingStatus || 'incomplete',
             billingEnabled: biz.billingEnabled || false,
+            currency: String(biz.currency || "EUR").toUpperCase(),
             currentPlan: biz.currentPlan || 'basic',
             planActivatedAt: biz.planActivatedAt || null,
             billingCycle: biz.billingCycle || 'monthly',
@@ -1278,10 +1281,14 @@ export async function verifyPaymentMethod(req, res) {
         const businessId = resolveBusinessId(req)
         if (!businessId) return res.status(401).json({ message: "Unauthorized" })
 
+        const stripeClient = req.app?.locals?.stripeBillingClient || stripe
+        const existingBiz = await Business.findOne({ businessId }).lean()
+        if (!existingBiz) return res.status(404).json({ message: "Business not found" })
+
         const { setupIntentId } = req.body
         if (!setupIntentId) return res.status(400).json({ message: "Missing setupIntentId" })
 
-        const setupIntent = await stripe.setupIntents.retrieve(setupIntentId)
+        const setupIntent = await stripeClient.setupIntents.retrieve(setupIntentId)
 
         if (setupIntent.status !== "succeeded") {
             return res.status(400).json({ message: `SetupIntent status is "${setupIntent.status}", expected "succeeded"` })
@@ -1291,11 +1298,24 @@ export async function verifyPaymentMethod(req, res) {
             return res.status(400).json({ message: "No payment method attached to SetupIntent" })
         }
 
-        const paymentMethod = await stripe.paymentMethods.retrieve(setupIntent.payment_method)
+        const setupCustomerId = typeof setupIntent.customer === "string"
+            ? setupIntent.customer
+            : setupIntent.customer?.id
+        if (!setupCustomerId || setupCustomerId !== existingBiz.stripeCustomerId) {
+            return res.status(403).json({ message: "SetupIntent does not belong to this business" })
+        }
+
+        const setupPaymentMethodId = typeof setupIntent.payment_method === "string"
+            ? setupIntent.payment_method
+            : setupIntent.payment_method?.id
+        if (!setupPaymentMethodId) {
+            return res.status(400).json({ message: "SetupIntent payment method is invalid" })
+        }
+        const paymentMethod = await stripeClient.paymentMethods.retrieve(setupPaymentMethodId)
 
         // Set as customer default payment method
         if (setupIntent.customer) {
-            await stripe.customers.update(setupIntent.customer, {
+            await stripeClient.customers.update(setupCustomerId, {
                 invoice_settings: {
                     default_payment_method: paymentMethod.id
                 }
@@ -1303,21 +1323,30 @@ export async function verifyPaymentMethod(req, res) {
         }
 
         // Save safe display metadata to our database
+        const wasPastDue = existingBiz.billingStatus === "past_due"
         const biz = await Business.findOneAndUpdate(
             { businessId },
-            {
-                billingStatus: 'active',
+            { $set: {
+                billingStatus: wasPastDue ? 'past_due' : 'active',
                 billingEnabled: true,
                 defaultPaymentMethodId: paymentMethod.id,
                 paymentMethodBrand: paymentMethod.card?.brand,
                 paymentMethodLast4: paymentMethod.card?.last4,
                 paymentMethodExpMonth: paymentMethod.card?.exp_month,
                 paymentMethodExpYear: paymentMethod.card?.exp_year,
-            },
+            } },
             { new: true }
         ).lean()
 
         await invalidateBusinessConfiguration(businessId)
+
+        const recovery = wasPastDue
+            ? await attemptPastDueInvoicePayment({
+                stripeClient,
+                business: biz,
+                paymentMethodId: paymentMethod.id,
+            })
+            : { attempted: false, recovered: false, pending: false, reason: "not_past_due" }
 
         const verifyPaymentMethodBillingPeriod = await getCurrentBillingPeriod(biz)
 
@@ -1325,6 +1354,7 @@ export async function verifyPaymentMethod(req, res) {
         res.json({
             billingStatus: biz.billingStatus || 'incomplete',
             billingEnabled: biz.billingEnabled || false,
+            currency: String(biz.currency || "EUR").toUpperCase(),
             currentPlan: biz.currentPlan === 'enterprise' ? 'pro' : (biz.currentPlan || 'basic'),
             planActivatedAt: biz.planActivatedAt || null,
             billingCycle: biz.billingCycle || 'monthly',
@@ -1339,7 +1369,11 @@ export async function verifyPaymentMethod(req, res) {
             paymentMethodExpMonth: biz.paymentMethodExpMonth || null,
             paymentMethodExpYear: biz.paymentMethodExpYear || null,
             scheduledDowngradePlan: biz.scheduledDowngradePlan || null,
-            scheduledPlanEffectiveDate: biz.scheduledPlanEffectiveDate || null
+            scheduledPlanEffectiveDate: biz.scheduledPlanEffectiveDate || null,
+            paymentMethodUpdated: true,
+            invoicePaymentAttempted: recovery.attempted,
+            paymentRecovered: recovery.recovered ? true : (recovery.pending ? "pending" : false),
+            recoveryState: recovery.reason,
         })
     } catch (err) {
         console.error("[verifyPaymentMethod] Error:", err)
@@ -1703,6 +1737,7 @@ export async function getCommissionSummary(req, res) {
 
         res.json({
             currentPlan,
+            currency: String(biz.currency || currentPlanDoc?.currency || "EUR").toUpperCase(),
             offlineCommissionRate,
             totalGross: allOfflineBreakdown.gross,
             customerPaidFees: allOfflineBreakdown.customerPaidFees,
@@ -1740,24 +1775,11 @@ export async function getInvoices(req, res) {
         const businessId = resolveBusinessId(req)
         if (!businessId) return res.status(401).json({ message: "Unauthorized" })
 
-        const dbInvoices = await BillingInvoice.find({ businessId }).sort({ createdAt: -1 }).lean()
-
-        const invoices = await Promise.all(dbInvoices.map(async (inv) => {
-            if (inv.stripeInvoiceId) {
-                try {
-                    const stripeInvoice = await stripe.invoices.retrieve(inv.stripeInvoiceId)
-                    return {
-                        ...inv,
-                        hosted_invoice_url: stripeInvoice.hosted_invoice_url,
-                        invoice_pdf: stripeInvoice.invoice_pdf
-                    }
-                } catch (e) {
-                    console.error(`[getInvoices] Failed to retrieve Stripe invoice ${inv.stripeInvoiceId}:`, e.message)
-                    return inv
-                }
-            }
-            return inv
-        }))
+        const stripeClient = req.app?.locals?.stripeBillingClient || stripe
+        const invoices = await listBillingInvoicesForBusiness({
+            businessId,
+            stripeClient,
+        })
 
         res.json(invoices)
     } catch (err) {

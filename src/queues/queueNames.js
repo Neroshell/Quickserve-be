@@ -17,6 +17,12 @@ export const EMAIL_JOB_NAMES = Object.freeze({
     RESERVATION_ARRIVAL_REMINDER: "reservation-arrival-reminder",
     ORDER_RECEIPT: "order-receipt",
     REFUND_CONFIRMATION: "refund-confirmation",
+    BILLING_UPCOMING_INVOICE: "billing-email-upcoming-invoice",
+    BILLING_PAYMENT_SUCCESS: "billing-email-payment-success",
+    BILLING_OVERDUE_DAY_3: "billing-email-overdue-day-3",
+    BILLING_OVERDUE_DAY_5: "billing-email-overdue-day-5",
+    BILLING_OFFLINE_RESTRICTED: "billing-email-offline-restricted",
+    BILLING_SERVICE_RESTORED: "billing-email-service-restored",
 });
 
 export const RESERVATION_JOB_NAMES = Object.freeze({

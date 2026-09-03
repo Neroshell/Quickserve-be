@@ -9,6 +9,15 @@ const RESERVATION_JOB_NAMES = new Set([
   EMAIL_JOB_NAMES.RESERVATION_ARRIVAL_REMINDER,
 ]);
 
+const BILLING_EMAIL_JOB_NAMES = new Set([
+  EMAIL_JOB_NAMES.BILLING_UPCOMING_INVOICE,
+  EMAIL_JOB_NAMES.BILLING_PAYMENT_SUCCESS,
+  EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_3,
+  EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_5,
+  EMAIL_JOB_NAMES.BILLING_OFFLINE_RESTRICTED,
+  EMAIL_JOB_NAMES.BILLING_SERVICE_RESTORED,
+]);
+
 const EMAIL_JOB_OPTIONS = Object.freeze({
   [EMAIL_JOB_NAMES.RESERVATION_REQUEST_OWNER]: { attempts: 5 },
   [EMAIL_JOB_NAMES.RESERVATION_REQUEST_GUEST]: { attempts: 5 },
@@ -17,6 +26,12 @@ const EMAIL_JOB_OPTIONS = Object.freeze({
   [EMAIL_JOB_NAMES.RESERVATION_ARRIVAL_REMINDER]: { attempts: 5 },
   [EMAIL_JOB_NAMES.ORDER_RECEIPT]: { attempts: 6 },
   [EMAIL_JOB_NAMES.REFUND_CONFIRMATION]: { attempts: 8 },
+  [EMAIL_JOB_NAMES.BILLING_UPCOMING_INVOICE]: { attempts: 8 },
+  [EMAIL_JOB_NAMES.BILLING_PAYMENT_SUCCESS]: { attempts: 8 },
+  [EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_3]: { attempts: 8 },
+  [EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_5]: { attempts: 8 },
+  [EMAIL_JOB_NAMES.BILLING_OFFLINE_RESTRICTED]: { attempts: 8 },
+  [EMAIL_JOB_NAMES.BILLING_SERVICE_RESTORED]: { attempts: 8 },
 });
 
 function requiredId(value, field) {
@@ -61,6 +76,14 @@ export function validateEmailJobPayload(jobName, payload) {
       orderId: requiredId(payload.orderId, "orderId"),
     };
   }
+  if (BILLING_EMAIL_JOB_NAMES.has(jobName)) {
+    return {
+      businessId,
+      deliveryId: requiredId(payload.deliveryId, "deliveryId"),
+      entityId: requiredId(payload.entityId, "entityId"),
+      deliveryVersion: requiredId(payload.deliveryVersion, "deliveryVersion"),
+    };
+  }
   return {
     businessId,
     refundId: requiredId(payload.refundId, "refundId"),
@@ -86,6 +109,13 @@ export function buildEmailJobId(jobName, payload) {
       return `email-order-receipt-${businessId}-${sanitizeEmailJobIdComponent(data.orderId)}`;
     case EMAIL_JOB_NAMES.REFUND_CONFIRMATION:
       return `email-refund-${businessId}-${sanitizeEmailJobIdComponent(data.refundId)}`;
+    case EMAIL_JOB_NAMES.BILLING_UPCOMING_INVOICE:
+    case EMAIL_JOB_NAMES.BILLING_PAYMENT_SUCCESS:
+    case EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_3:
+    case EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_5:
+    case EMAIL_JOB_NAMES.BILLING_OFFLINE_RESTRICTED:
+    case EMAIL_JOB_NAMES.BILLING_SERVICE_RESTORED:
+      return `email-billing-${businessId}-${sanitizeEmailJobIdComponent(jobName)}-${sanitizeEmailJobIdComponent(data.entityId)}-${sanitizeEmailJobIdComponent(data.deliveryVersion)}`;
     default:
       throw new TypeError("Unsupported email job name");
   }
@@ -93,7 +123,7 @@ export function buildEmailJobId(jobName, payload) {
 
 export function getEmailJobEntityId(jobName, payload) {
   const data = validateEmailJobPayload(jobName, payload);
-  return data.reservationId || data.orderId || data.refundId;
+  return data.reservationId || data.orderId || data.refundId || data.entityId;
 }
 
 export async function enqueueEmailJob(
@@ -133,4 +163,4 @@ export async function enqueueEmailJob(
   return { jobId: job.id, recovered };
 }
 
-export { EMAIL_JOB_OPTIONS, RESERVATION_JOB_NAMES };
+export { BILLING_EMAIL_JOB_NAMES, EMAIL_JOB_OPTIONS, RESERVATION_JOB_NAMES };

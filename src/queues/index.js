@@ -16,6 +16,7 @@ export {
 } from "./queueNames.js";
 export {
     buildEmailJobId,
+    BILLING_EMAIL_JOB_NAMES,
     EMAIL_JOB_OPTIONS,
     enqueueEmailJob,
     getEmailJobEntityId,

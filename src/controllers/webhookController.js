@@ -12,7 +12,6 @@ import { publishEvent } from "../utils/sseManager.js";
 import {
     getOrderReceiptIdempotencyKey,
     sendReceiptEmail,
-    sendEmail,
 } from "../utils/emailService.js";
 import {
     dispatchCrmOrder,
@@ -31,12 +30,20 @@ import {
     reconcileStripeReservationRefund,
     ReservationCancellationError,
 } from "../services/reservationCancellationService.js";
-import { dispatchAutomaticOrderReceipt } from "../services/email/emailDispatchService.js";
+import {
+    dispatchAutomaticOrderReceipt,
+    dispatchBillingNotification,
+} from "../services/email/emailDispatchService.js";
 import {
     getBillingActionPeriodKey,
     processBillingLifecycleAction,
 } from "../services/billingLifecycleService.js";
-import { BILLING_JOB_NAMES } from "../queues/index.js";
+import { BILLING_JOB_NAMES, EMAIL_JOB_NAMES } from "../queues/index.js";
+import {
+    getStripeInvoiceCustomerId,
+    getStripeInvoiceSubscriptionId,
+    upsertBillingInvoiceFromStripe,
+} from "../services/billingInvoiceLedgerService.js";
 import {
     claimStripeWebhookEvent,
     completeStripeWebhookEvent,
@@ -191,6 +198,14 @@ export async function handleStripeWebhook(req, res) {
     const crmOrderDispatcher =
         req.app?.locals?.dispatchCrmOrder ||
         dispatchCrmOrder;
+    const stripeBillingClient = req.app?.locals?.stripeBillingClient || stripe;
+    const billingInvoiceUpsert = req.app?.locals?.upsertBillingInvoiceFromStripe ||
+        upsertBillingInvoiceFromStripe;
+    const billingEmailDispatcher = req.app?.locals?.dispatchBillingNotification ||
+        dispatchBillingNotification;
+    const businessConfigurationInvalidator =
+        req.app?.locals?.invalidateBusinessConfiguration ||
+        invalidateBusinessConfiguration;
     const sig = req.headers["stripe-signature"];
     let event = req.stripeWebhookEvent || null;
 
@@ -231,15 +246,34 @@ export async function handleStripeWebhook(req, res) {
 
         if (event.type === "invoice.paid") {
             const invoice = event.data.object;
-            if (invoice.subscription) {
-                const biz = await Business.findOne({ stripeSubscriptionId: invoice.subscription });
-                if (biz) {
+            const subscriptionId = getStripeInvoiceSubscriptionId(invoice);
+            const customerId = getStripeInvoiceCustomerId(invoice);
+            const biz = subscriptionId
+                ? await Business.findOne({ stripeSubscriptionId: subscriptionId })
+                : customerId
+                    ? await Business.findOne({ stripeCustomerId: customerId })
+                    : null;
+            if (biz) {
+                    const wasOfflineRestricted = biz.offlineServiceRestricted === true;
+                    await billingInvoiceUpsert({
+                        businessId: biz.businessId,
+                        invoice,
+                        eventType: event.type,
+                    });
                     let subscription = null;
-                    try {
-                        subscription = await stripe.subscriptions.retrieve(invoice.subscription);
-                    } catch (err) {
-                        console.error(`[webhook] Failed to retrieve subscription ${invoice.subscription}:`, err.message);
+                    if (subscriptionId) {
+                        try {
+                            subscription = await stripeBillingClient.subscriptions.retrieve(subscriptionId);
+                        } catch (err) {
+                            console.error(`[webhook] Failed to retrieve subscription ${subscriptionId}:`, err.message);
+                        }
                     }
+
+                    let updatedBusiness = await Business.findOneAndUpdate(
+                        { _id: biz._id, businessId: biz.businessId },
+                        { $set: { billingStatus: "active", billingFailedAt: null } },
+                        { new: true },
+                    );
 
                     if (biz.scheduledDowngradePlan) {
                         console.log(`[webhook] Applying scheduled downgrade for business ${biz.businessId} to ${biz.scheduledDowngradePlan}`);
@@ -266,7 +300,7 @@ export async function handleStripeWebhook(req, res) {
                                 itemsToUpdate.push({ price: targetPlan.stripeMeteredPriceId });
                             }
 
-                            const updated = await stripe.subscriptions.update(invoice.subscription, {
+                            const updated = await stripeBillingClient.subscriptions.update(subscriptionId, {
                                 items: itemsToUpdate,
                                 proration_behavior: 'none',
                                 metadata: {
@@ -293,11 +327,11 @@ export async function handleStripeWebhook(req, res) {
                                 billingFailedAt: null,
                                 ...periodUpdate,
                             };
-                            await Business.findOneAndUpdate(
-                                { _id: biz._id },
-                                { $set: updateFields }
+                            updatedBusiness = await Business.findOneAndUpdate(
+                                { _id: biz._id, businessId: biz.businessId },
+                                { $set: updateFields },
+                                { new: true },
                             );
-                            await restoreBusinessAfterDurableBillingUpdate(biz);
                             console.log(`[webhook] Downgrade complete for business ${biz.businessId}`);
                         }
                     } else if (subscription) {
@@ -309,55 +343,56 @@ export async function handleStripeWebhook(req, res) {
                                 billingFailedAt: null,
                                 ...periodUpdate,
                             };
-                            await Business.findOneAndUpdate(
-                                { _id: biz._id },
-                                { $set: updateFields }
+                            updatedBusiness = await Business.findOneAndUpdate(
+                                { _id: biz._id, businessId: biz.businessId },
+                                { $set: updateFields },
+                                { new: true },
                             );
-                            await restoreBusinessAfterDurableBillingUpdate(biz);
                         }
                     }
 
-                    await invalidateBusinessConfiguration(biz.businessId);
+                    await restoreBusinessAfterDurableBillingUpdate(updatedBusiness || biz);
+                    await businessConfigurationInvalidator(biz.businessId);
 
-                    if (!biz.offlineServiceRestricted) {
+                    if (!wasOfflineRestricted) {
                         const recipient = biz.ownerEmail || biz.contactEmail || null;
                         if (recipient) {
-                            const displayName = biz.displayName || biz.name || "there";
-                            const hasAmount = typeof invoice.total === "number";
-                            const amount = hasAmount ? (invoice.total / 100).toFixed(2) : null;
-                            const amountText = amount ? ` of €${amount}` : "";
-                            const emailBody = `
-                                <div style="font-family: sans-serif; color: #333; line-height: 1.6;">
-                                    <p>Hi ${displayName},</p>
-                                    <p>Your recent QuickServe payment${amountText} has been successfully processed.</p>
-                                    <p>Thank you for your continued partnership!</p>
-                                </div>
-                            `;
-                            const from = process.env.EMAIL_FROM_BILLING || "QuickServe Billing <billing@quickservehq.com>";
                             try {
-                                await sendEmail({
-                                    to: recipient,
-                                    subject: "QuickServe Payment Successful",
-                                    html: emailBody,
-                                    from,
+                                await billingEmailDispatcher({
+                                    jobName: EMAIL_JOB_NAMES.BILLING_PAYMENT_SUCCESS,
+                                    businessId: biz.businessId,
+                                    entityId: invoice.id,
+                                    deliveryVersion: "1",
+                                    recipient,
+                                    metadata: { stripeInvoiceId: invoice.id },
                                 });
-                            } catch (err) {
-                                console.error(`[webhook] Failed to send payment receipt email to ${recipient}:`, err.message);
+                            } catch (error) {
+                                console.error("[webhook] Billing email dispatch failed after paid state persisted", {
+                                    businessId: biz.businessId,
+                                    stripeInvoiceId: invoice.id,
+                                    reason: error?.code || error?.name || "billing_email_dispatch_failed",
+                                });
                             }
                         }
                     }
                 }
-            }
             return res.status(200).send();
         }
 
         if (event.type === "invoice.payment_failed") {
             const invoice = event.data.object;
-            if (invoice.subscription) {
+            const subscriptionId = getStripeInvoiceSubscriptionId(invoice);
+            const customerId = getStripeInvoiceCustomerId(invoice);
+            const biz = subscriptionId
+                ? await Business.findOne({ stripeSubscriptionId: subscriptionId })
+                : customerId
+                    ? await Business.findOne({ stripeCustomerId: customerId })
+                    : null;
+            if (biz) {
                 const failedAt = new Date();
                 const stamped = await Business.findOneAndUpdate(
                     {
-                        stripeSubscriptionId: invoice.subscription,
+                        businessId: biz.businessId,
                         $or: [
                             { billingFailedAt: null },
                             { billingFailedAt: { $exists: false } },
@@ -373,14 +408,19 @@ export async function handleStripeWebhook(req, res) {
                 let fallbackBiz = null;
                 if (!stamped) {
                     fallbackBiz = await Business.findOneAndUpdate(
-                        { stripeSubscriptionId: invoice.subscription },
+                        { businessId: biz.businessId },
                         { $set: { billingStatus: 'past_due' } },
                     );
                 }
 
                 const affectedBusiness = stamped || fallbackBiz;
                 if (affectedBusiness) {
-                    await invalidateBusinessConfiguration(affectedBusiness.businessId);
+                    await billingInvoiceUpsert({
+                        businessId: affectedBusiness.businessId,
+                        invoice,
+                        eventType: event.type,
+                    });
+                    await businessConfigurationInvalidator(affectedBusiness.businessId);
                 }
             }
             return res.status(200).send();

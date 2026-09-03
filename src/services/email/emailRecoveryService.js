@@ -14,6 +14,10 @@ import {
   markReservationEmailEnqueued,
   markReservationEmailEnqueueFailed,
 } from "./reservationEmailDeliveryService.js";
+import {
+  markBillingEmailEnqueued,
+  markBillingEmailEnqueueFailed,
+} from "./billingEmailDeliveryService.js";
 
 const CLAIM_TTL_MS = 5 * 60 * 1000;
 
@@ -32,15 +36,23 @@ export async function recoverEmailDeliveries({
   enqueue = enqueueEmailJob,
 }) {
   const staleBefore = new Date(now.getTime() - CLAIM_TTL_MS);
-  const [reservationDeliveries, orders, refunds] = await Promise.all([
+  const retryableDeliveryFilter = {
+    businessId,
+    retryable: { $ne: false },
+    sentAt: null,
+    $or: [
+      { status: { $in: ["pending", "failed"] } },
+      { status: "processing", claimedAt: { $lt: staleBefore } },
+    ],
+  };
+  const [reservationDeliveries, billingDeliveries, orders, refunds] = await Promise.all([
     queryRows(deliveryModel.find({
-      businessId,
-      retryable: { $ne: false },
-      sentAt: null,
-      $or: [
-        { status: { $in: ["pending", "failed"] } },
-        { status: "processing", claimedAt: { $lt: staleBefore } },
-      ],
+      ...retryableDeliveryFilter,
+      entityType: "reservation",
+    }), limit),
+    queryRows(deliveryModel.find({
+      ...retryableDeliveryFilter,
+      entityType: "billing",
     }), limit),
     queryRows(orderModel.find({
       businessId,
@@ -75,6 +87,7 @@ export async function recoverEmailDeliveries({
     requeued: 0,
     failed: 0,
     reservation: 0,
+    billing: 0,
     orderReceipt: 0,
     refund: 0,
   };
@@ -103,6 +116,34 @@ export async function recoverEmailDeliveries({
       summary.reservation += 1;
     } catch (error) {
       await markReservationEmailEnqueueFailed({
+        deliveryId: delivery.deliveryId,
+        businessId,
+        error,
+        deliveryModel,
+      });
+      summary.failed += 1;
+    }
+  }
+
+  for (const delivery of billingDeliveries) {
+    summary.attempted += 1;
+    try {
+      await enqueue(delivery.jobName, {
+        businessId,
+        entityId: delivery.entityId,
+        deliveryId: delivery.deliveryId,
+        deliveryVersion: delivery.deliveryVersion,
+      }, { recover: true });
+      await markBillingEmailEnqueued({
+        deliveryId: delivery.deliveryId,
+        businessId,
+        deliveryModel,
+        now,
+      });
+      summary.requeued += 1;
+      summary.billing += 1;
+    } catch (error) {
+      await markBillingEmailEnqueueFailed({
         deliveryId: delivery.deliveryId,
         businessId,
         error,

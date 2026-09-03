@@ -1,9 +1,12 @@
 import crypto from "crypto";
-import Stripe from "stripe";
 import Business from "../models/Business.js";
-import { BILLING_JOB_NAMES, enqueueBillingJob } from "../queues/index.js";
-import { sendEmailWithResult } from "../utils/emailService.js";
+import {
+    BILLING_JOB_NAMES,
+    EMAIL_JOB_NAMES,
+    enqueueBillingJob,
+} from "../queues/index.js";
 import { invalidatePublicBusinessConfig } from "./cacheInvalidationService.js";
+import { dispatchBillingNotification } from "./email/emailDispatchService.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
@@ -30,6 +33,14 @@ export const BILLING_ACTIONS = Object.freeze({
         claimField: "restoreService",
         stage: "restore_service",
     }),
+});
+
+const BILLING_EMAIL_JOB_BY_ACTION = Object.freeze({
+    [BILLING_JOB_NAMES.UPCOMING_INVOICE]: EMAIL_JOB_NAMES.BILLING_UPCOMING_INVOICE,
+    [BILLING_JOB_NAMES.OVERDUE_WARNING_DAY_3]: EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_3,
+    [BILLING_JOB_NAMES.OVERDUE_WARNING_DAY_5]: EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_5,
+    [BILLING_JOB_NAMES.RESTRICT_SERVICE]: EMAIL_JOB_NAMES.BILLING_OFFLINE_RESTRICTED,
+    [BILLING_JOB_NAMES.RESTORE_SERVICE]: EMAIL_JOB_NAMES.BILLING_SERVICE_RESTORED,
 });
 
 function toUtcDateString(value) {
@@ -318,82 +329,6 @@ function getRecipient(business) {
     return business.ownerEmail || business.contactEmail || null;
 }
 
-function getDisplayName(business) {
-    return business.displayName || business.name || "there";
-}
-
-function billingEmailFrom() {
-    return process.env.EMAIL_FROM_BILLING ||
-        "QuickServe Billing <billing@quickservehq.com>";
-}
-
-function billingLink() {
-    return `${process.env.FRONTEND_BASE_URL || "http://localhost:3000"}/owner/billing`;
-}
-
-async function upcomingAmountHtml({ business, stripe }) {
-    if (!business.stripeCustomerId || !stripe) {
-        return "<p>Your invoice amount will be finalized by Stripe before billing.</p>";
-    }
-    try {
-        const params = { customer: business.stripeCustomerId };
-        if (business.stripeSubscriptionId) {
-            params.subscription = business.stripeSubscriptionId;
-        }
-        const invoice = await stripe.invoices.createPreview(params);
-        if (typeof invoice?.total === "number") {
-            return `<p>Estimated amount:<br/><strong style="font-size: 1.2em;">&euro;${(invoice.total / 100).toFixed(2)}</strong></p>`;
-        }
-    } catch (error) {
-        console.warn("[BillingLifecycle] Invoice preview unavailable", {
-            businessId: business.businessId,
-            reason: error?.code || error?.name || "stripe_preview_failed",
-        });
-    }
-    return "<p>Your invoice amount will be finalized by Stripe before billing.</p>";
-}
-
-async function buildNotification(jobName, business, { stripe }) {
-    const name = getDisplayName(business);
-    const link = billingLink();
-    if (jobName === BILLING_JOB_NAMES.UPCOMING_INVOICE) {
-        const invoice = getStoredInvoiceVersion(business);
-        const formatted = invoice.date.toLocaleDateString("en-US", {
-            month: "long",
-            day: "numeric",
-            year: "numeric",
-            timeZone: "UTC",
-        });
-        const amountHtml = await upcomingAmountHtml({ business, stripe });
-        return {
-            subject: "Your QuickServe invoice is coming tomorrow",
-            html: `<div><p>Hi ${name},</p><p>Your next QuickServe invoice will be charged on <strong>${formatted}</strong>.</p>${amountHtml}<p>This includes your subscription (if any) and offline commission fees for this billing period.</p><p><a href="${link}">Manage billing</a></p></div>`,
-        };
-    }
-    if (jobName === BILLING_JOB_NAMES.OVERDUE_WARNING_DAY_3) {
-        return {
-            subject: "Action Required: QuickServe Payment Overdue",
-            html: `<div><p>Hi ${name},</p><p>We were unable to process your recent QuickServe payment. Your account is currently <strong>overdue</strong>.</p><p>Please update your payment method to avoid service interruption.</p><p><a href="${link}">Update billing</a></p></div>`,
-        };
-    }
-    if (jobName === BILLING_JOB_NAMES.OVERDUE_WARNING_DAY_5) {
-        return {
-            subject: "Final Warning: QuickServe Payment Overdue",
-            html: `<div><p>Hi ${name},</p><p>Your QuickServe account is significantly overdue. <strong>If payment is not resolved, offline services will be restricted soon.</strong></p><p><a href="${link}">Update billing</a></p></div>`,
-        };
-    }
-    if (jobName === BILLING_JOB_NAMES.RESTRICT_SERVICE) {
-        return {
-            subject: "QuickServe Offline Services Restricted",
-            html: `<div><p>Hi ${name},</p><p>Because your QuickServe payment has been overdue for 7 days, <strong>your offline ordering services have been temporarily restricted</strong>.</p><p>You can still access your dashboard and receive online-paid orders.</p><p><a href="${link}">Update billing to restore</a></p></div>`,
-        };
-    }
-    return {
-        subject: "QuickServe Services Restored",
-        html: `<div><p>Hi ${name},</p><p>Good news! Your QuickServe billing has been resolved and <strong>your offline ordering services have been fully restored</strong>.</p><p>Thank you for your prompt attention.</p></div>`,
-    };
-}
-
 async function applyStateTransition({
     jobName,
     business,
@@ -459,35 +394,13 @@ async function applyStateTransition({
     return business;
 }
 
-function completionFields(jobName, business, now) {
-    if (jobName === BILLING_JOB_NAMES.UPCOMING_INVOICE) {
-        return {
-            billingReminderSentAt: now,
-            billingReminderSentForPeriod: toUtcDateString(
-                getStoredInvoiceVersion(business).date,
-            ),
-        };
-    }
-    if (jobName === BILLING_JOB_NAMES.OVERDUE_WARNING_DAY_3) {
-        return { overdueReminderSentAt: now };
-    }
-    if (jobName === BILLING_JOB_NAMES.OVERDUE_WARNING_DAY_5) {
-        return { finalWarningSentAt: now };
-    }
-    if (jobName === BILLING_JOB_NAMES.RESTRICT_SERVICE) {
-        return { offlineRestrictionEmailSentAt: now };
-    }
-    return { billingRestoredEmailSentAt: now };
-}
-
 export async function processBillingLifecycleAction({
     jobName,
     businessId,
     periodKey,
     now = new Date(),
     businessModel = Business,
-    sendNotification = sendEmailWithResult,
-    stripe,
+    sendNotification = dispatchBillingNotification,
     claimId = crypto.randomUUID(),
 } = {}) {
     if (!BILLING_ACTIONS[jobName]) {
@@ -583,29 +496,33 @@ export async function processBillingLifecycleAction({
         }
 
         const recipient = getRecipient(transitioned);
-        let providerMessageId = null;
+        let notificationResult = { queued: false, reason: "recipient_missing" };
         if (recipient) {
-            const stripeClient = jobName === BILLING_JOB_NAMES.UPCOMING_INVOICE
-                ? stripe || new Stripe(process.env.STRIPE_SECRET_KEY)
-                : stripe;
-            const notification = await buildNotification(
-                jobName,
-                transitioned,
-                { stripe: stripeClient },
-            );
-            const delivery = await sendNotification({
-                to: recipient,
-                from: billingEmailFrom(),
-                ...notification,
-                idempotencyKey:
-                    `billing-${jobName}-${businessId}-${periodKey}`,
-            });
-            if (!delivery || delivery.success === false) {
-                const error = new Error("Billing email provider did not accept the message");
-                error.code = "BILLING_EMAIL_NOT_ACCEPTED";
-                throw error;
+            try {
+                notificationResult = await sendNotification({
+                    jobName: BILLING_EMAIL_JOB_BY_ACTION[jobName],
+                    businessId,
+                    entityId: periodKey,
+                    deliveryVersion: "1",
+                    recipient,
+                    metadata: {
+                        periodKey,
+                        invoiceDate: jobName === BILLING_JOB_NAMES.UPCOMING_INVOICE
+                            ? getStoredInvoiceVersion(transitioned)?.date
+                            : null,
+                    },
+                });
+            } catch (error) {
+                // Financial state and the lifecycle claim are authoritative and
+                // must remain independent from queue/provider availability.
+                console.error("[BillingLifecycle] Billing email dispatch failed", {
+                    businessId,
+                    jobName,
+                    periodKey,
+                    reason: error?.code || error?.name || "billing_email_dispatch_failed",
+                });
+                notificationResult = { queued: false, success: false, reason: "dispatch_failed" };
             }
-            providerMessageId = delivery.messageId || null;
         }
 
         await markClaimCompleted({
@@ -614,10 +531,8 @@ export async function processBillingLifecycleAction({
             periodKey,
             claimId,
             now,
-            providerMessageId,
-            extraFields: recipient
-                ? completionFields(jobName, transitioned, now)
-                : {},
+            providerMessageId: null,
+            extraFields: {},
             businessModel,
         });
         return {
@@ -626,6 +541,7 @@ export async function processBillingLifecycleAction({
             businessId,
             stage: BILLING_ACTIONS[jobName].stage,
             notified: Boolean(recipient),
+            notification: notificationResult,
         };
     } catch (error) {
         await markClaimFailed({
@@ -786,8 +702,7 @@ export function runBillingLifecycleRecovery(options = {}) {
         handleCandidate: (action) => processAction({
             ...action,
             businessModel: options.businessModel || Business,
-            sendNotification: options.sendNotification || sendEmailWithResult,
-            stripe: options.stripe,
+            sendNotification: options.sendNotification || dispatchBillingNotification,
         }),
     });
 }

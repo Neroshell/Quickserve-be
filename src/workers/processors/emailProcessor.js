@@ -1,11 +1,13 @@
 import { UnrecoverableError } from "bullmq";
 import {
+  BILLING_EMAIL_JOB_NAMES,
   EMAIL_JOB_NAMES,
   validateEmailJobPayload,
 } from "../../queues/index.js";
 import { processOrderReceiptDelivery } from "../../services/email/orderReceiptDeliveryService.js";
 import { processRefundEmailDelivery } from "../../services/email/refundEmailDeliveryService.js";
 import { processReservationEmailDelivery } from "../../services/email/reservationEmailDeliveryService.js";
+import { processBillingEmailDelivery } from "../../services/email/billingEmailDeliveryService.js";
 
 const RESERVATION_JOBS = new Set([
   EMAIL_JOB_NAMES.RESERVATION_REQUEST_OWNER,
@@ -30,6 +32,9 @@ export async function processEmailJob(job, dependencies = {}) {
     }
     if (job.name === EMAIL_JOB_NAMES.REFUND_CONFIRMATION) {
       return await processRefundEmailDelivery(job, dependencies.refund);
+    }
+    if (BILLING_EMAIL_JOB_NAMES.has(job.name)) {
+      return await processBillingEmailDelivery(job, dependencies.billing);
     }
     throw new TypeError("Unsupported email job");
   } catch (error) {
