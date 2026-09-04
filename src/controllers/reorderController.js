@@ -55,6 +55,7 @@ export async function reorderFromOrder(req, res) {
     const liveItems = await MenuItem.find({
       businessId,
       name: { $in: originalItemNames },
+      archivedAt: null,
     }).lean()
 
     // Build a lookup map: itemName -> liveMenuItem

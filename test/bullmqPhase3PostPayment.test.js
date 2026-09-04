@@ -489,9 +489,9 @@ test("post-payment repair scheduler registers only in the worker and respects it
     const worker = await registerWorkerSchedulers({ runtime: "worker", env, createQueueFn });
     const disabled = await registerWorkerSchedulers({ runtime: "worker", env: {}, createQueueFn });
 
-    assert.deepEqual(api, { reservation: false, billing: false, postPayment: false, aiAnalyst: false });
-    assert.deepEqual(worker, { reservation: false, billing: false, postPayment: true, aiAnalyst: false });
-    assert.deepEqual(disabled, { reservation: false, billing: false, postPayment: false, aiAnalyst: false });
+    assert.deepEqual(api, { reservation: false, billing: false, postPayment: false, aiAnalyst: false, inventory: false });
+    assert.deepEqual(worker, { reservation: false, billing: false, postPayment: true, aiAnalyst: false, inventory: false });
+    assert.deepEqual(disabled, { reservation: false, billing: false, postPayment: false, aiAnalyst: false, inventory: false });
     assert.equal(registrations.length, 1);
     assert.equal(registrations[0].job.name, POST_PAYMENT_JOB_NAMES.CRM_ORDER_REPAIR_SCAN);
 });

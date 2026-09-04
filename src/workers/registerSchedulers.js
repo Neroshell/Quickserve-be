@@ -9,6 +9,9 @@ import {
     RESERVATION_JOB_OPTIONS,
     POST_PAYMENT_JOB_NAMES,
     POST_PAYMENT_JOB_OPTIONS,
+    INVENTORY_JOB_NAMES,
+    INVENTORY_JOB_OPTIONS,
+    isInventorySchedulersEnabled,
 } from "../queues/index.js";
 import {
     AI_ANALYST_JOB_OPTIONS,
@@ -25,13 +28,21 @@ export const CRM_ORDER_REPAIR_SCHEDULER_ID =
     "crm-order-repair-scan-every-10-minutes";
 export const AI_ANALYST_WEEKLY_SCHEDULER_ID =
     "ai-analyst-weekly-scan-monday-6am-utc";
+export const INVENTORY_HOLD_REPAIR_SCHEDULER_ID =
+    "inventory-hold-repair-scan-every-5-minutes";
 
 export async function registerWorkerSchedulers({
     runtime = null,
     env = process.env,
     createQueueFn = createQueue,
 } = {}) {
-    const result = { reservation: false, billing: false, postPayment: false, aiAnalyst: false };
+    const result = {
+        reservation: false,
+        inventory: false,
+        billing: false,
+        postPayment: false,
+        aiAnalyst: false,
+    };
     if (runtime !== "worker") return result;
 
     if (isReservationSchedulersEnabled(env)) {
@@ -46,6 +57,20 @@ export async function registerWorkerSchedulers({
             },
         );
         result.reservation = true;
+    }
+
+    if (isInventorySchedulersEnabled(env)) {
+        const inventoryQueue = createQueueFn(QUEUE_NAMES.INVENTORY, { env });
+        await inventoryQueue.upsertJobScheduler(
+            INVENTORY_HOLD_REPAIR_SCHEDULER_ID,
+            { every: 5 * 60 * 1000 },
+            {
+                name: INVENTORY_JOB_NAMES.HOLD_REPAIR_SCAN,
+                data: {},
+                opts: INVENTORY_JOB_OPTIONS,
+            },
+        );
+        result.inventory = true;
     }
 
     if (isBillingSchedulersEnabled(env)) {

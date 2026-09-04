@@ -1,4 +1,5 @@
 import { DateTime } from "luxon"
+import crypto from "node:crypto"
 import Order from "../models/order.js"
 import MenuItem from "../models/menuItem.js"
 import Business from "../models/Business.js"
@@ -10,10 +11,22 @@ import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
 import { calculateOfflinePricing } from "../services/pricingService.js"
-import { validateTrackedStock, deductTrackedStock, restoreTrackedStock } from "../services/inventoryService.js"
+import { restoreTrackedStock } from "../services/inventoryService.js"
 import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstimate.js"
 import { normalizeTip } from "../utils/tips.js"
-import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
+import { invalidateMenuItems, invalidateSetupProgress } from "../services/cacheInvalidationService.js"
+import { withCanonicalInventoryTransaction } from "../services/canonicalInventoryService.js"
+import {
+  buildInventoryRequestFingerprint,
+  releaseInventoryReservationWithinTransaction,
+  reserveInventoryForSource,
+  validateInventoryRequirements,
+} from "../services/inventoryReservationService.js"
+import {
+  INVENTORY_RESERVATION_RELEASE_EVIDENCE,
+  INVENTORY_RESERVATION_SOURCE_TYPES,
+  INVENTORY_RESERVATION_STATUSES,
+} from "../constants/inventoryReservation.js"
 // Restaurant-flow defect safeguards for waiter-created orders:
 // keep cart validation, business feature checks, payment rules, and currency
 // consistent with the guest and online-checkout order paths.
@@ -27,6 +40,13 @@ import {
 } from "../utils/restaurantOrderValidation.js"
 
 import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/businessDate.js"
+
+function getOrderIdempotencyKey(req, fallback) {
+  const supplied = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"]
+  const normalized = String(supplied || "").trim()
+  if (normalized && normalized.length <= 160) return `waitstaff-order:${normalized}`
+  return `waitstaff-order:${fallback || crypto.randomUUID()}`
+}
 
 function escapeRegex(value = "") {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -583,10 +603,10 @@ export async function createWaiterOrder(req, res) {
     let calculatedTotal = 0
     const enrichedItems = []
     for (const item of normalizedItems) {
-      const menuItem = await MenuItem.findOne({ name: item.itemName, businessId }).lean()
-      if (!menuItem || menuItem.isAvailable === false) {
+      const menuItem = await MenuItem.findOne({ name: item.itemName, businessId, archivedAt: null }).lean()
+      if (!menuItem) {
         return res.status(400).json({
-          message: `Menu item '${item.itemName}' is no longer available.`,
+          message: `Menu item '${item.itemName}' was not found.`,
         })
       }
 
@@ -612,10 +632,14 @@ export async function createWaiterOrder(req, res) {
       })
     }
 
-    const stockFailures = await validateTrackedStock(enrichedItems, businessId)
+    const stockFailures = await validateInventoryRequirements({
+      businessId,
+      items: enrichedItems,
+    })
     if (stockFailures.length > 0) {
-      return res.status(400).json({
-        message: "Some items are no longer available in the requested quantity.",
+      return res.status(409).json({
+        code: "INSUFFICIENT_STOCK",
+        message: "One or more items in your order are no longer available. Please review your cart.",
         items: stockFailures,
       })
     }
@@ -654,7 +678,24 @@ export async function createWaiterOrder(req, res) {
 
     const estimate = buildOrderEstimate(enrichedItems, now)
 
-    const saved = await Order.create({
+    const creationIdempotencyKey = getOrderIdempotencyKey(req, orderId)
+    const creationRequestFingerprint = buildInventoryRequestFingerprint({
+      businessId,
+      servicePointLabel,
+      orderType: finalOrderType,
+      items: enrichedItems.map(({ menuItemId, quantity, notes, allergies }) => ({
+        menuItemId: String(menuItemId),
+        quantity,
+        notes,
+        allergies,
+      })),
+      subtotal,
+      taxAmount,
+      total: finalTotal,
+      tip,
+      createdByStaffId: staffId,
+    })
+    const orderInput = {
       orderId,
       businessId,
       servicePointLabel,
@@ -689,43 +730,98 @@ export async function createWaiterOrder(req, res) {
       platformFeeRateAtOrder: commissionRateApplied,
       orderSource: "waitstaff",
       createdBy: "staff",
-      createdByStaffId: staffId
-    })
-
-    await invalidateSetupProgress(businessId)
-
-    // --- Offline Inventory Deduction ---
-    try {
-      const inventoryDeducted = await deductTrackedStock(saved)
-      if (inventoryDeducted) {
-        saved.inventoryDeducted = true
-        await saved.save()
-      }
-    } catch (err) {
-      console.error("[createWaiterOrder] Failed to deduct stock:", err)
-      // We don't fail the order if deduction fails, we just don't mark it deducted.
+      createdByStaffId: staffId,
+      creationIdempotencyKey,
+      creationRequestFingerprint,
     }
+
+    let replayed = false
+    let saved
+    try {
+      saved = await withCanonicalInventoryTransaction(async (session) => {
+        const existing = await Order.findOne({
+          businessId,
+          creationIdempotencyKey,
+        }, null, { session })
+        if (existing) {
+          if (existing.creationRequestFingerprint !== creationRequestFingerprint) {
+            const error = new Error("Idempotency-Key was already used for another order")
+            error.code = "ORDER_IDEMPOTENCY_CONFLICT"
+            error.statusCode = 409
+            throw error
+          }
+          replayed = true
+          return existing
+        }
+        const [created] = await Order.create([orderInput], { session })
+        await reserveInventoryForSource({
+          businessId,
+          items: enrichedItems,
+          sourceType: INVENTORY_RESERVATION_SOURCE_TYPES.WAITSTAFF_ORDER,
+          sourceId: orderId,
+          order: created,
+          orderId,
+          status: INVENTORY_RESERVATION_STATUSES.COMMITTED,
+          idempotencyKey: `inventory:${creationIdempotencyKey}`,
+          requestFingerprint: creationRequestFingerprint,
+          actor: {
+            staffId,
+            role: req.session?.user?.role || "staff",
+            name: req.session?.user?.name || "Staff",
+          },
+          session,
+        })
+        return Order.findOne({ businessId, orderId }, null, { session })
+      })
+    } catch (error) {
+      if (error?.code !== 11000) throw error
+      const existing = await Order.findOne({ businessId, creationIdempotencyKey })
+      if (!existing || existing.creationRequestFingerprint !== creationRequestFingerprint) throw error
+      replayed = true
+      saved = existing
+    }
+    if (!replayed && (saved.inventoryReservationId || saved.inventoryDeducted)) {
+      await invalidateMenuItems(businessId)
+    }
+
+    if (!replayed) await invalidateSetupProgress(businessId)
 
     const orderDTO = toOrderDTO(saved)
 
     const foodItems = saved.items.filter(i => i.type === "food")
     const drinkItems = saved.items.filter(i => i.type === "drinks")
 
-    if (foodItems.length > 0) {
+    if (!replayed && foodItems.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems }
       await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO })
     }
 
-    if (drinkItems.length > 0) {
+    if (!replayed && drinkItems.length > 0) {
       const barDTO = { ...orderDTO, items: drinkItems }
       await publishEvent("order_created", businessId, ["bar"], { order: barDTO })
     }
 
-    await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
+    if (!replayed) {
+      await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
+    }
 
-    return res.status(201).json({ orderId: saved.orderId, businessId: saved.businessId, status: saved.status })
+    return res.status(replayed ? 200 : 201).json({
+      orderId: saved.orderId,
+      businessId: saved.businessId,
+      status: saved.status,
+      replayed,
+    })
   } catch (err) {
     console.error("Create waiter order error:", err)
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        message: err.message,
+        code: err.code,
+        ...(Array.isArray(err.failures) && err.failures.length > 0
+          ? { items: err.failures }
+          : {}),
+      })
+    }
     return res.status(500).json({ message: "Server error" })
   }
 }
@@ -757,31 +853,57 @@ export async function cancelWaiterOrder(req, res) {
       return res.status(400).json({ error: "Order is already cancelled." })
     }
 
-    order.status = "cancelled"
-    order.cancelledAt = new Date()
-    order.cancelledByStaffId = staffId
-
-    // Restore inventory only if it was actually deducted
-    if (order.inventoryDeducted && !order.inventoryRestored) {
-      try {
-        await restoreTrackedStock(order)
-        order.inventoryRestored = true
-        order.inventoryRestoredAt = new Date()
-      } catch (err) {
-        console.error(`[cancelWaiterOrder] Failed to restore inventory for order ${orderId}:`, err)
-        // We still save the order as cancelled, even if inventory restore fails, 
-        // to prevent blocking the business operation.
+    const cancelledOrder = await withCanonicalInventoryTransaction(async (session) => {
+      const current = await Order.findOne({ orderId, businessId }, null, { session })
+      if (!current) {
+        const error = new Error("Order not found")
+        error.statusCode = 404
+        throw error
       }
+      if (current.paymentChannel !== "offline" || current.status !== "placed") {
+        const error = new Error("Order can no longer be cancelled.")
+        error.statusCode = 409
+        throw error
+      }
+      if (current.inventoryReservationId && !current.inventoryReleased) {
+        await releaseInventoryReservationWithinTransaction({
+          businessId,
+          reservationId: current.inventoryReservationId,
+          releaseEvidence: INVENTORY_RESERVATION_RELEASE_EVIDENCE.ORDER_CANCELLED_BEFORE_FULFILMENT,
+          actor: {
+            staffId,
+            role: req.session?.user?.role || "staff",
+            name: req.session?.user?.name || "Staff",
+          },
+          session,
+        })
+      } else if (current.inventoryDeducted && !current.inventoryRestored) {
+        await restoreTrackedStock(current, {
+          session,
+          actor: {
+            staffId,
+            role: req.session?.user?.role || "staff",
+            name: req.session?.user?.name || "Staff",
+          },
+        })
+      }
+      current.status = "cancelled"
+      current.cancelledAt = new Date()
+      current.cancelledByStaffId = staffId
+      await current.save({ session })
+      return Order.findOne({ businessId, orderId }, null, { session })
+    })
+    if (cancelledOrder.inventoryReleased || cancelledOrder.inventoryRestored) {
+      await invalidateMenuItems(businessId)
     }
 
-    await order.save()
-
-    const orderDTO = toOrderDTO(order)
+    const orderDTO = toOrderDTO(cancelledOrder)
     await publishEvent("order_updated", businessId, ["waiter", "kitchen", "bar", "table"], { order: orderDTO })
 
-    return res.json({ success: true, orderId: order.orderId, status: order.status })
+    return res.json({ success: true, orderId: cancelledOrder.orderId, status: cancelledOrder.status })
   } catch (err) {
     console.error("[cancelWaiterOrder] Error:", err)
+    if (err?.statusCode) return res.status(err.statusCode).json({ message: err.message, code: err.code })
     return res.status(500).json({ message: "Server error" })
   }
 }

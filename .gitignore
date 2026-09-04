@@ -43,6 +43,7 @@ coverage/
 # =========================
 .cache/
 .eslintcache
+.tmp/
 
 # =========================
 # OS files
@@ -66,13 +67,24 @@ docker-data/
 
 
 test/*
-!test/managerPermissions.test.js
+test/managerPermissions.test.js
 !test/coOwnerAccess.test.js
 !test/billingHardening.test.js
 !test/crmAnalyticsService.test.js
-!test/crmAnalyticsController.test.js
-!test/customerJourneyService.test.js
-!test/onlineCustomerJourneyFlow.test.js
+test/crmAnalyticsController.test.js
+test/customerJourneyService.test.js
+test/onlineCustomerJourneyFlow.test.js
+test/inventoryFoundation.test.js
+test/inventoryPhase2A.integration.test.js
+test/inventoryPhase2A.test.js
+test/inventoryPhase2B.test.js
+test/inventoryPhase2B.integration.test.js
+test/inventoryPhase3.test.js
+test/inventoryPhase3.integration.test.js
+test/inventoryPhase4.test.js
+test/inventoryPhase4.integration.test.js
+est/inventoryTransaction.integration.test.js
+test/ownerInventoryReadService.test.js
 test/hotelRoomTypes.test.js
 test/responseCache.test.js
 test/stage1ResponseCaching.test.js

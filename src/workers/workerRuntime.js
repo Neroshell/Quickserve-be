@@ -10,6 +10,7 @@ import {
     isDiagnosticQueueEnabled,
     isPostPaymentQueueEnabled,
     isReservationSchedulersEnabled,
+    isInventorySchedulersEnabled,
     QUEUE_NAMES,
 } from "../queues/index.js";
 import { isBullMqEmailsEnabled } from "../services/email/emailDispatchService.js";
@@ -20,6 +21,7 @@ import { processEmailJob } from "./processors/emailProcessor.js";
 import { processPostPaymentJob } from "./processors/postPaymentProcessor.js";
 import { processReservationJob } from "./processors/reservationProcessor.js";
 import { processAiAnalystJob } from "./processors/aiAnalystProcessor.js";
+import { processInventoryJob } from "./processors/inventoryProcessor.js";
 
 /**
  * AI Analyst jobs call Cloudflare Workers AI which can legitimately take
@@ -65,6 +67,15 @@ const WORKER_DEFINITIONS = Object.freeze([
         concurrency: 1,
         enabled: isReservationSchedulersEnabled,
         processor: processReservationJob,
+        getEntityId: (job) => job.data?.reservationId || null,
+    }),
+    Object.freeze({
+        feature: "inventory",
+        queueName: QUEUE_NAMES.INVENTORY,
+        flagName: "BULLMQ_INVENTORY_SCHEDULERS_ENABLED",
+        concurrency: 1,
+        enabled: isInventorySchedulersEnabled,
+        processor: processInventoryJob,
         getEntityId: (job) => job.data?.reservationId || null,
     }),
     Object.freeze({

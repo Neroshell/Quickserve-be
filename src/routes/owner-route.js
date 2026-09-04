@@ -3,6 +3,27 @@ import { ownerOrders, ownerTransactions, getTableSessionsOverview, getDashboardD
 import { getLatestReport, getReportHistory, getReportByPeriod, getCurrentWeekSnapshot } from "../controllers/ownerAnalystReportController.js"
 import { ownerAnalytics } from "../controllers/ownerAnalyticsController.js"
 import { dismissSetupGuide, getSetupProgress } from "../controllers/setupProgressController.js"
+import {
+    adjustOwnerInventory,
+    adjustOwnerSimpleStockMenuItem,
+    createOwnerSimpleStockMenuItem,
+    createOwnerInventoryItem,
+    getOwnerSimpleStockDrift,
+    getInventoryItem,
+    getInventoryOverview,
+    getOwnerInventoryRecipe,
+    listInventoryItems,
+    listInventoryMovements,
+    listOwnerInventoryRecipes,
+    migrateOwnerMenuItemToSimpleStock,
+    reconcileOwnerSimpleStock,
+    receiveOwnerInventory,
+    putOwnerInventoryRecipe,
+    updateOwnerInventoryItem,
+    updateOwnerSimpleStockSettings,
+    wasteOwnerInventory,
+    rollbackOwnerSimpleStock,
+} from "../controllers/inventoryController.js"
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
 import { getCoOwnerAccess, getTeam, inviteCoOwner, removeCoOwner, updateCoOwnerAccess } from "../controllers/teamController.js"
 import {
@@ -179,6 +200,116 @@ router.get("/transactions", requirePermission(PERMISSIONS.TRANSACTIONS_VIEW), ow
 router.get("/dashboard", requirePermission(PERMISSIONS.DASHBOARD_VIEW), getDashboardData)
 router.get("/setup-progress", requirePermission(PERMISSIONS.DASHBOARD_VIEW), getSetupProgress)
 router.post("/setup-progress/dismiss", requirePrimaryOwner, dismissSetupGuide)
+
+// ─── Canonical Inventory Foundation ─────────────────────────────────────────
+// Canonical inventory foundation plus the Phase 2B Simple Stock owner bridge.
+router.get(
+    "/inventory/overview",
+    requirePermission(PERMISSIONS.INVENTORY_VIEW),
+    getInventoryOverview,
+)
+router.get(
+    "/inventory/items",
+    requirePermission(PERMISSIONS.INVENTORY_VIEW),
+    listInventoryItems,
+)
+router.post(
+    "/inventory/items",
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    createOwnerInventoryItem,
+)
+router.get(
+    "/inventory/items/:inventoryItemId",
+    requirePermission(PERMISSIONS.INVENTORY_VIEW),
+    getInventoryItem,
+)
+router.patch(
+    "/inventory/items/:inventoryItemId",
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    updateOwnerInventoryItem,
+)
+router.post(
+    "/inventory/items/:inventoryItemId/receive",
+    requirePermission(PERMISSIONS.INVENTORY_RECEIVE),
+    receiveOwnerInventory,
+)
+router.post(
+    "/inventory/items/:inventoryItemId/waste",
+    requirePermission(PERMISSIONS.INVENTORY_WASTE),
+    wasteOwnerInventory,
+)
+router.post(
+    "/inventory/items/:inventoryItemId/adjust",
+    requirePermission(PERMISSIONS.INVENTORY_ADJUST),
+    adjustOwnerInventory,
+)
+router.get(
+    "/inventory/movements",
+    requirePermission(PERMISSIONS.INVENTORY_VIEW),
+    listInventoryMovements,
+)
+router.get(
+    "/inventory/recipes",
+    requirePermission(PERMISSIONS.MENU_VIEW),
+    requirePermission(PERMISSIONS.INVENTORY_VIEW),
+    listOwnerInventoryRecipes,
+)
+router.get(
+    "/inventory/recipes/:menuItemId",
+    requirePermission(PERMISSIONS.MENU_VIEW),
+    requirePermission(PERMISSIONS.INVENTORY_VIEW),
+    getOwnerInventoryRecipe,
+)
+router.put(
+    "/inventory/recipes/:menuItemId",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_RECIPE_MANAGE),
+    putOwnerInventoryRecipe,
+)
+router.post(
+    "/inventory/simple-stock/menu-items",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_ADJUST),
+    createOwnerSimpleStockMenuItem,
+)
+router.post(
+    "/inventory/simple-stock/menu-items/:menuItemId/adjust",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_ADJUST),
+    adjustOwnerSimpleStockMenuItem,
+)
+router.patch(
+    "/inventory/simple-stock/menu-items/:menuItemId/settings",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    updateOwnerSimpleStockSettings,
+)
+router.post(
+    "/inventory/simple-stock/menu-items/:menuItemId/migrate",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_ADJUST),
+    migrateOwnerMenuItemToSimpleStock,
+)
+router.get(
+    "/inventory/simple-stock/drift",
+    requirePermission(PERMISSIONS.MENU_VIEW),
+    requirePermission(PERMISSIONS.INVENTORY_VIEW),
+    getOwnerSimpleStockDrift,
+)
+router.post(
+    "/inventory/simple-stock/reconcile",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    reconcileOwnerSimpleStock,
+)
+router.post(
+    "/inventory/simple-stock/menu-items/:menuItemId/rollback",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    rollbackOwnerSimpleStock,
+)
 
 /**
  * @openapi

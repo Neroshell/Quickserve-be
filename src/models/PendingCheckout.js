@@ -4,7 +4,8 @@ import { getPendingCheckoutExpiresAt } from "../constants/checkoutRetention.js"
 /**
  * Temporary storage for cart data while the customer is completing
  * Stripe Checkout. Once payment is confirmed via webhook, the data
- * here is used to create the real Order, and this document is deleted.
+ * here is used to create the real Order. Phase 4 checkouts are retained for
+ * durable request/provider idempotency until the TTL window closes.
  *
  * Auto-expires only after Stripe's payment and webhook-delivery windows close.
  */
@@ -43,9 +44,38 @@ const PendingCheckoutSchema = new mongoose.Schema(
         currency: { type: String, default: "EUR" },
         receiptEmail: { type: String, default: null },
 
+        // Durable request identity. New restaurant checkouts retain this record
+        // through the Stripe/webhook retry window instead of deleting it as
+        // soon as the first webhook arrives.
+        idempotencyKey: { type: String, default: null, trim: true, maxlength: 200 },
+        requestFingerprint: {
+            type: String,
+            default: null,
+            match: /^[a-f0-9]{64}$/,
+        },
+        status: {
+            type: String,
+            enum: [
+                "provider_pending",
+                "open",
+                "completed",
+                "expired",
+                "creation_failed",
+                "inventory_exception",
+            ],
+            default: "provider_pending",
+        },
+        inventoryReservationId: { type: String, default: null, trim: true, maxlength: 100 },
+
         // Stripe reference
         stripeSessionId: { type: String, default: null },
+        stripeCheckoutUrl: { type: String, default: null },
         stripeExpiresAt: { type: Date, default: null },
+        stripeRequestIdempotencyKey: { type: String, default: null, trim: true, maxlength: 255 },
+        // Exact provider request snapshot used only for crash-safe replay with
+        // Stripe's idempotency key. It is temporary along with PendingCheckout.
+        stripeRequestSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
+        stripeCreationFailureCode: { type: String, default: null, maxlength: 100 },
 
         // Stripe Connect split metadata â€” populated at checkout session creation
         stripePaymentIntentId: { type: String, default: null },
@@ -79,5 +109,17 @@ const PendingCheckoutSchema = new mongoose.Schema(
 )
 
 PendingCheckoutSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+PendingCheckoutSchema.index(
+    { businessId: 1, idempotencyKey: 1 },
+    {
+        unique: true,
+        partialFilterExpression: { idempotencyKey: { $type: "string" } },
+    },
+)
+PendingCheckoutSchema.index({ businessId: 1, inventoryReservationId: 1 })
+PendingCheckoutSchema.index({ stripeSessionId: 1 }, {
+    unique: true,
+    partialFilterExpression: { stripeSessionId: { $type: "string" } },
+})
 
 export default mongoose.models.PendingCheckout || mongoose.model("PendingCheckout", PendingCheckoutSchema)

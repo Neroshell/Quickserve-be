@@ -29,9 +29,15 @@ const MenuItemSchema = new mongoose.Schema({
     imageUrl: { type: String, default: "" },
     imagePublicId: { type: String, default: "" },
     isAvailable: { type: Boolean, default: true },
+    // Phase 2A foundation only. Null means the legacy isAvailable value remains
+    // the fallback owner intent until an explicit Simple Stock cutover.
+    manualIsAvailable: { type: Boolean, default: null },
     trackStock: { type: Boolean, default: false },
     stockQuantity: { type: Number, default: null },
-    lowStockThreshold: { type: Number, default: 5 }
+    lowStockThreshold: { type: Number, default: 5 },
+    archivedAt: { type: Date, default: null, index: true }
 }, { timestamps: true })
+
+MenuItemSchema.index({ businessId: 1, archivedAt: 1, createdAt: -1 })
 
 export default mongoose.models.MenuItem || mongoose.model("MenuItem", MenuItemSchema)

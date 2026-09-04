@@ -1,5 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import mongoose from "mongoose"
+import MenuInventoryRecipe from "../src/models/MenuInventoryRecipe.js"
+import InventoryReservation from "../src/models/InventoryReservation.js"
 
 process.env.REDIS_URL = ""
 process.env.BULLMQ_EMAILS_ENABLED = "false"
@@ -274,20 +277,36 @@ test("online checkout preserves journey through webhook, CRM identification, and
   t.mock.method(Plan, "findOne", () => mockQuery(plan))
   t.mock.method(MenuItem, "findOne", () => mockQuery(menuItem))
   t.mock.method(MenuItem, "findOneAndUpdate", async () => null)
+  t.mock.method(MenuItem, "find", () => mockQuery([menuItem]))
+  t.mock.method(MenuInventoryRecipe, "find", () => mockQuery([]))
+  t.mock.method(InventoryReservation, "findOne", () => mockQuery(null))
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work() },
+    async endSession() {},
+  }))
 
   let pending = null
   t.mock.method(PendingCheckout, "create", async (fields) => {
-    pending = createPendingCheckoutDocument(fields)
-    return pending
+    const input = Array.isArray(fields) ? fields[0] : fields
+    pending = createPendingCheckoutDocument(input)
+    return Array.isArray(fields) ? [pending] : pending
   })
+  t.mock.method(PendingCheckout, "findOne", (filter) => mockQuery(
+    pending && pending.businessId === filter.businessId &&
+      (filter._id === undefined || String(pending._id) === String(filter._id)) &&
+      (filter.idempotencyKey === undefined || pending.idempotencyKey === filter.idempotencyKey)
+      ? pending
+      : null,
+  ))
 
-  const stripeExpiresAt = Math.floor(Date.now() / 1000) + 24 * 60 * 60
+  let stripeExpiresAt = null
   const stripeConfigs = []
   const stripeClient = {
     checkout: {
       sessions: {
         async create(config) {
           stripeConfigs.push(config)
+          stripeExpiresAt = config.expires_at
           return {
             id: "cs_online_journey",
             url: "https://checkout.stripe.test/online-journey",
@@ -322,7 +341,8 @@ test("online checkout preserves journey through webhook, CRM identification, and
   )
   assert.equal(PENDING_CHECKOUT_RETENTION_MS, 97 * HOUR_MS)
   assert.equal(stripeConfigs.length, 1)
-  assert.equal(stripeConfigs[0].expires_at, undefined)
+  assert.equal(stripeConfigs[0].expires_at, stripeExpiresAt)
+  assert.ok(stripeExpiresAt >= Math.floor(Date.now() / 1000) + 30 * 60)
 
   const orderRef = { current: null }
   t.mock.method(Order, "findOne", async (filter) => {

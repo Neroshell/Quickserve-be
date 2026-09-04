@@ -1,9 +1,9 @@
 import Order from "../models/order.js"
+import crypto from "node:crypto"
 import GuestSession from "../models/GuestSession.js"
 import PendingCheckout from "../models/PendingCheckout.js"
 import { generateOrderId } from "../utils/orderId.js"
 import MenuItem from "../models/menuItem.js"
-import { validateTrackedStock, deductTrackedStock } from "../services/inventoryService.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
 import { publishEvent } from "../utils/sseManager.js"
 import {
@@ -36,6 +36,17 @@ import {
 } from "../services/pricingService.js"
 import { dispatchAutomaticOrderReceipt } from "../services/email/emailDispatchService.js"
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
+import { invalidateMenuItems } from "../services/cacheInvalidationService.js"
+import { withCanonicalInventoryTransaction } from "../services/canonicalInventoryService.js"
+import {
+  buildInventoryRequestFingerprint,
+  reserveInventoryForSource,
+  validateInventoryRequirements,
+} from "../services/inventoryReservationService.js"
+import {
+  INVENTORY_RESERVATION_SOURCE_TYPES,
+  INVENTORY_RESERVATION_STATUSES,
+} from "../constants/inventoryReservation.js"
 // Restaurant-flow defect safeguards for direct/offline orders:
 // validate and normalize the cart, enforce business ordering/payment settings,
 // and derive currency from the business instead of accepting client values.
@@ -64,6 +75,13 @@ function resolveBusinessId(req) {
     req.body?.businessId ||
     req.params?.businessId
   )
+}
+
+function getRequestIdempotencyKey(req, fallback) {
+  const supplied = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"]
+  const normalized = String(supplied || "").trim()
+  if (normalized && normalized.length <= 160) return `order:${normalized}`
+  return `order:${fallback || crypto.randomUUID()}`
 }
 
 export async function listOrders(req, res) {
@@ -236,10 +254,10 @@ export async function createOrder(req, res) {
     let calculatedTotal = 0
     const enrichedItems = []
     for (const item of normalizedItems) {
-      const menuItem = await MenuItem.findOne({ name: item.itemName, businessId }).lean()
-      if (!menuItem || menuItem.isAvailable === false) {
+      const menuItem = await MenuItem.findOne({ name: item.itemName, businessId, archivedAt: null }).lean()
+      if (!menuItem) {
         return res.status(400).json({
-          message: `Menu item '${item.itemName}' is no longer available.`,
+          message: `Menu item '${item.itemName}' was not found.`,
         })
       }
 
@@ -266,10 +284,14 @@ export async function createOrder(req, res) {
       })
     }
 
-    const stockFailures = await validateTrackedStock(enrichedItems, businessId)
+    const stockFailures = await validateInventoryRequirements({
+      businessId,
+      items: enrichedItems,
+    })
     if (stockFailures.length > 0) {
-      return res.status(400).json({
-        message: "Some items are no longer available in the requested quantity.",
+      return res.status(409).json({
+        code: "INSUFFICIENT_STOCK",
+        message: "One or more items in your order are no longer available. Please review your cart.",
         items: stockFailures,
       })
     }
@@ -322,7 +344,25 @@ export async function createOrder(req, res) {
     })
     const resolvedJourneyId = journey?.journeyId || null
 
-    const saved = await Order.create({
+    const creationIdempotencyKey = getRequestIdempotencyKey(req, orderId)
+    const creationRequestFingerprint = buildInventoryRequestFingerprint({
+      businessId,
+      servicePointLabel,
+      orderType: finalOrderType,
+      sessionId,
+      items: enrichedItems.map(({ menuItemId, quantity, notes, allergies }) => ({
+        menuItemId: String(menuItemId),
+        quantity,
+        notes,
+        allergies,
+      })),
+      subtotal,
+      taxAmount,
+      total: finalTotal,
+      tip,
+      paymentChannel: "offline",
+    })
+    const orderInput = {
       orderId,
       businessId,
       servicePointLabel,
@@ -358,9 +398,65 @@ export async function createOrder(req, res) {
       commissionRateAtOrder: commissionRateApplied,
       platformFeeRateAtOrder: commissionRateApplied,
       orderSource: isWaiter ? "waitstaff" : "self",
-    })
+      creationIdempotencyKey,
+      creationRequestFingerprint,
+    }
 
-    if (saved.journeyId) {
+    // The order record, every stock mutation, every movement, and the immutable
+    // restoration linkage commit together. A losing stock race creates no order.
+    let replayed = false
+    let saved
+    try {
+      saved = await withCanonicalInventoryTransaction(async (session) => {
+        const existing = await Order.findOne({
+          businessId,
+          creationIdempotencyKey,
+        }, null, { session })
+        if (existing) {
+          if (existing.creationRequestFingerprint !== creationRequestFingerprint) {
+            const error = new Error("Idempotency-Key was already used for another order")
+            error.code = "ORDER_IDEMPOTENCY_CONFLICT"
+            error.statusCode = 409
+            throw error
+          }
+          replayed = true
+          return existing
+        }
+
+        const [created] = await Order.create([orderInput], { session })
+        await reserveInventoryForSource({
+          businessId,
+          items: enrichedItems,
+          sourceType: isWaiter
+            ? INVENTORY_RESERVATION_SOURCE_TYPES.WAITSTAFF_ORDER
+            : INVENTORY_RESERVATION_SOURCE_TYPES.OFFLINE_ORDER,
+          sourceId: orderId,
+          order: created,
+          orderId,
+          status: INVENTORY_RESERVATION_STATUSES.COMMITTED,
+          idempotencyKey: `inventory:${creationIdempotencyKey}`,
+          requestFingerprint: creationRequestFingerprint,
+          actor: isWaiter ? {
+            staffId: req.session?.user?.staffId || req.session?.user?.id,
+            role: req.session?.user?.role || "staff",
+            name: req.session?.user?.name || "Staff",
+          } : null,
+          session,
+        })
+        return Order.findOne({ businessId, orderId }, null, { session })
+      })
+    } catch (error) {
+      if (error?.code !== 11000) throw error
+      const existing = await Order.findOne({ businessId, creationIdempotencyKey })
+      if (!existing || existing.creationRequestFingerprint !== creationRequestFingerprint) throw error
+      replayed = true
+      saved = existing
+    }
+    if (!replayed && (saved.inventoryReservationId || saved.inventoryDeducted)) {
+      await invalidateMenuItems(businessId)
+    }
+
+    if (!replayed && saved.journeyId) {
       await recordOrderPlacementForJourney({
         businessId: saved.businessId,
         journeyId: saved.journeyId,
@@ -369,19 +465,7 @@ export async function createOrder(req, res) {
       })
     }
 
-    await invalidateSetupProgress(businessId)
-
-    // --- Offline Inventory Deduction ---
-    try {
-      const inventoryDeducted = await deductTrackedStock(saved)
-      if (inventoryDeducted) {
-        saved.inventoryDeducted = true
-        await saved.save()
-      }
-    } catch (err) {
-      console.error("[createOrder] Failed to deduct stock:", err)
-      // We don't fail the order if deduction fails, we just don't mark it deducted.
-    }
+    if (!replayed) await invalidateSetupProgress(businessId)
 
     const orderDTO = toOrderDTO(saved)
 
@@ -390,25 +474,28 @@ export async function createOrder(req, res) {
     const drinkItems = saved.items.filter(i => i.type === "drinks")
 
     // 1. Kitchen: food items only
-    if (foodItems.length > 0) {
+    if (!replayed && foodItems.length > 0) {
       const kitchenDTO = { ...orderDTO, items: foodItems }
       await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO })
     }
 
     // 2. Bar: drink items only
-    if (drinkItems.length > 0) {
+    if (!replayed && drinkItems.length > 0) {
       const barDTO = { ...orderDTO, items: drinkItems }
       await publishEvent("order_created", businessId, ["bar"], { order: barDTO })
     }
 
     // 3. Waiter + table: full order
-    await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
+    if (!replayed) {
+      await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
+    }
 
-    return res.status(201).json({
+    return res.status(replayed ? 200 : 201).json({
       orderId: saved.orderId,
       businessId: saved.businessId,
       status: saved.status,
       journeyId: saved.journeyId || null,
+      replayed,
       pricing: {
         ...getCustomerPricingBreakdown(pricing),
         tipAmount: tip.tipAmount,
@@ -418,6 +505,15 @@ export async function createOrder(req, res) {
     })
   } catch (err) {
     console.error("Create order error:", err)
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        message: err.message,
+        code: err.code,
+        ...(Array.isArray(err.failures) && err.failures.length > 0
+          ? { items: err.failures }
+          : {}),
+      })
+    }
     return res.status(500).json({ message: "Server error" })
   }
 }

@@ -483,7 +483,9 @@ test("paid food-order webhook creates one paid order and sends exactly one recei
   });
   t.mock.method(Order, "findOne", async () => storedOrder);
   t.mock.method(Order, "create", async (fields) => {
-    storedOrder = createOrderDocument(fields);
+    // Inventory concurrency is covered by the real replica-set Phase 2B suite;
+    // this receipt-only fixture starts after the inventory step.
+    storedOrder = createOrderDocument({ ...fields, inventoryDeducted: true });
     return storedOrder;
   });
   t.mock.method(Order, "updateOne", async () => ({ acknowledged: true }));

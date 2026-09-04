@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import mongoose from "mongoose";
+import MenuInventoryRecipe from "../src/models/MenuInventoryRecipe.js";
+import InventoryReservation from "../src/models/InventoryReservation.js";
 
 process.env.REDIS_URL = "";
 process.env.BULLMQ_EMAILS_ENABLED = "false";
@@ -100,6 +103,12 @@ function installOfflineOrderMocks(t, options = {}) {
     servicePointQueries: [],
     sessionClaims: [],
   };
+  let createdOrder = null;
+
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  }));
 
   t.mock.method(GuestSession, "findOne", () => mockQuery(guestSession));
   t.mock.method(GuestSession, "findOneAndUpdate", async (query) => {
@@ -123,15 +132,28 @@ function installOfflineOrderMocks(t, options = {}) {
     return mockQuery(item || null);
   });
   t.mock.method(MenuItem, "findOneAndUpdate", async () => null);
+  t.mock.method(MenuItem, "find", (query) => {
+    const ids = new Set((query?.$or || []).flatMap((clause) => clause?._id?.$in || []).map(String));
+    const names = new Set((query?.$or || []).flatMap((clause) => clause?.name?.$in || []));
+    return mockQuery(menuItems.filter((candidate) => (
+      candidate.businessId === query.businessId &&
+      (ids.has(String(candidate._id)) || names.has(candidate.name))
+    )));
+  });
+  t.mock.method(MenuInventoryRecipe, "find", () => mockQuery([]));
+  t.mock.method(InventoryReservation, "findOne", () => mockQuery(null));
   t.mock.method(CustomerJourney, "findOne", async () => ({
     journeyId: `jrn_${"b".repeat(32)}`,
     async save() { return this; },
   }));
   t.mock.method(CustomerJourney, "findOneAndUpdate", async () => null);
   t.mock.method(Order, "create", async (fields) => {
-    capture.orderCreates.push(fields);
-    return createOrderDocument(fields);
+    const input = Array.isArray(fields) ? fields[0] : fields;
+    capture.orderCreates.push(input);
+    createdOrder = createOrderDocument(input);
+    return Array.isArray(fields) ? [createdOrder] : createdOrder;
   });
+  t.mock.method(Order, "findOne", () => mockQuery(createdOrder));
 
   return { business, servicePoint, guestSession, menuItems, plan, capture };
 }
@@ -150,9 +172,15 @@ function installOnlineCheckoutMocks(t, options = {}) {
   const capture = {
     pendingCreates: [],
     stripeConfigs: [],
+    stripeOptions: [],
     menuQueries: [],
     sessionClaims: [],
   };
+
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  }));
 
   t.mock.method(GuestSession, "findOne", () => mockQuery(guestSession));
   t.mock.method(GuestSession, "findOneAndUpdate", async (query) => {
@@ -173,10 +201,35 @@ function installOnlineCheckoutMocks(t, options = {}) {
   t.mock.method(ServicePoint, "findOne", () => mockQuery(servicePoint));
   t.mock.method(Plan, "findOne", () => mockQuery(plan));
   t.mock.method(PendingCheckout, "create", async (fields) => {
-    const pending = createPendingCheckoutDocument(fields);
+    const input = Array.isArray(fields) ? fields[0] : fields;
+    const pending = createPendingCheckoutDocument(input);
     capture.pendingCreates.push(pending);
-    return pending;
+    return Array.isArray(fields) ? [pending] : pending;
   });
+  t.mock.method(PendingCheckout, "findOne", (filter) => {
+    const pending = capture.pendingCreates.find((candidate) =>
+      candidate.businessId === filter.businessId &&
+      (filter._id === undefined || String(candidate._id) === String(filter._id)) &&
+      (filter.idempotencyKey === undefined || candidate.idempotencyKey === filter.idempotencyKey));
+    return mockQuery(pending || null);
+  });
+  t.mock.method(PendingCheckout, "updateOne", async (filter, update) => {
+    const pending = capture.pendingCreates.find((candidate) =>
+      String(candidate._id) === String(filter._id) && candidate.businessId === filter.businessId);
+    if (!pending) return { matchedCount: 0, modifiedCount: 0 };
+    Object.assign(pending, update.$set || {});
+    return { matchedCount: 1, modifiedCount: 1 };
+  });
+  t.mock.method(MenuItem, "find", (query) => {
+    const ids = new Set((query?.$or || []).flatMap((clause) => clause?._id?.$in || []).map(String));
+    const names = new Set((query?.$or || []).flatMap((clause) => clause?.name?.$in || []));
+    return mockQuery(menuItems.filter((candidate) => (
+      candidate.businessId === query.businessId &&
+      (ids.has(String(candidate._id)) || names.has(candidate.name))
+    )));
+  });
+  t.mock.method(MenuInventoryRecipe, "find", () => mockQuery([]));
+  t.mock.method(InventoryReservation, "findOne", () => mockQuery(null));
   t.mock.method(CustomerJourney, "findOne", async () => ({
     journeyId: `jrn_${"c".repeat(32)}`,
     async save() { return this; },
@@ -185,13 +238,16 @@ function installOnlineCheckoutMocks(t, options = {}) {
   const stripeClient = {
     checkout: {
       sessions: {
-        async create(config) {
+        async create(config, requestOptions) {
           capture.stripeConfigs.push(config);
+          capture.stripeOptions.push(requestOptions);
           if (options.stripeError) throw options.stripeError;
           return {
             id: "cs_restaurant_flow",
             url: "https://checkout.stripe.test/session",
             payment_intent: "pi_restaurant_flow",
+            expires_at: config.expires_at,
+            status: "open",
           };
         },
       },
@@ -361,18 +417,16 @@ test("public menu is tenant-scoped and hides unavailable items while owning staf
   const filters = [];
   t.mock.method(MenuItem, "find", (filter) => {
     filters.push(filter);
-    const result = filter.isAvailable
-      ? items.filter((item) => item.isAvailable)
-      : items;
-    return mockQuery(result);
+    return mockQuery(items);
   });
+  t.mock.method(MenuInventoryRecipe, "find", () => mockQuery([]));
 
   const publicRes = createResponse();
   await getMenuItems(
     { query: { businessId: "business-a" }, body: {}, session: {} },
     publicRes,
   );
-  assert.deepEqual(filters[0], { businessId: "business-a", isAvailable: true });
+  assert.deepEqual(filters[0], { businessId: "business-a", archivedAt: null });
   assert.deepEqual(publicRes.body.map((item) => item.name), ["Margherita Pizza"]);
 
   const staffRes = createResponse();
@@ -384,7 +438,7 @@ test("public menu is tenant-scoped and hides unavailable items while owning staf
     },
     staffRes,
   );
-  assert.deepEqual(filters[1], { businessId: "business-a" });
+  assert.deepEqual(filters[1], { businessId: "business-a", archivedAt: null });
   assert.equal(staffRes.body.length, 2);
 });
 
@@ -584,7 +638,7 @@ test("item disabled after menu load and inactive ServicePoint are rejected befor
 
   const unavailableRes = createResponse();
   await createOrder(createPublicOrderRequest(), unavailableRes);
-  assert.equal(unavailableRes.statusCode, 400);
+  assert.equal(unavailableRes.statusCode, 409);
   assert.match(unavailableRes.body.message, /no longer available/i);
   assert.equal(capture.orderCreates.length, 0);
 });
@@ -606,8 +660,8 @@ test("tracked item stock is revalidated at checkout", async (t) => {
     res,
   );
 
-  assert.equal(res.statusCode, 400);
-  assert.match(res.body.message, /requested quantity/i);
+  assert.equal(res.statusCode, 409);
+  assert.match(res.body.message, /no longer available/i);
   assert.equal(res.body.items[0].available, 1);
   assert.equal(capture.orderCreates.length, 0);
 });
@@ -1375,7 +1429,7 @@ test("Scenario B: online checkout ignores client price/currency and persists the
   assert.equal(pending.stripePaymentIntentId, "pi_restaurant_flow");
   assert.equal(pending.stripeConnectedAccountId, "acct_business_a");
   assert.equal(pending.commissionAmountCents, 75);
-  assert.equal(pending.saveCount, 1);
+  assert.equal(pending.saveCount, 2);
 
   assert.equal(stripeConfig.line_items[0].price_data.unit_amount, 1250);
   assert.equal(stripeConfig.line_items[0].quantity, 2);
@@ -1393,6 +1447,9 @@ test("Scenario B: online checkout ignores client price/currency and persists the
   assert.equal(stripeConfig.customer_email, "customer@example.com");
   assert.match(stripeConfig.success_url, /payment=success/);
   assert.match(stripeConfig.cancel_url, /payment=cancelled/);
+  assert.ok(Number.isSafeInteger(stripeConfig.expires_at));
+  assert.ok(stripeConfig.expires_at >= Math.floor(Date.now() / 1000) + 30 * 60);
+  assert.match(capture.stripeOptions[0].idempotencyKey, /^inventory-checkout:/);
 });
 
 test("online checkout rejects unavailable items, disabled online payments, and invalid quantities before Stripe", async (t) => {
@@ -1408,7 +1465,7 @@ test("online checkout rejects unavailable items, disabled online payments, and i
     withStripeClient(createPublicOrderRequest(), stripeClient),
     unavailableRes,
   );
-  assert.equal(unavailableRes.statusCode, 400);
+  assert.equal(unavailableRes.statusCode, 409);
   assert.equal(capture.stripeConfigs.length, 0);
   assert.equal(capture.pendingCreates.length, 0);
 
@@ -1463,7 +1520,7 @@ test("online checkout rejects expired sessions and inactive ServicePoints", asyn
   assert.equal(capture.stripeConfigs.length, 0);
 });
 
-test("Stripe checkout creation failure is surfaced and leaves only TTL-backed pending state", async (t) => {
+test("definitive Stripe checkout creation failure is surfaced and marks pending state failed", async (t) => {
   const { capture, stripeClient } = installOnlineCheckoutMocks(t, {
     stripeError: new Error("Stripe unavailable"),
   });
@@ -1475,9 +1532,10 @@ test("Stripe checkout creation failure is surfaced and leaves only TTL-backed pe
     res,
   );
 
-  assert.equal(res.statusCode, 500);
+  assert.equal(res.statusCode, 502);
   assert.equal(capture.pendingCreates.length, 1);
   assert.equal(capture.pendingCreates[0].stripeSessionId, undefined);
+  assert.equal(capture.pendingCreates[0].status, "creation_failed");
 });
 
 test("customer history is scoped by business and device session and preserves snapshots", async (t) => {
@@ -1638,6 +1696,10 @@ test("database failure during order creation returns an error without a persiste
   const business = createBusinessFixture();
   const guest = createGuestSessionFixture({ boundSessionId: "device-a" });
   let createAttempts = 0;
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  }));
   t.mock.method(GuestSession, "findOne", () => mockQuery(guest));
   t.mock.method(Business, "findOne", () => mockQuery(business));
   t.mock.method(ServicePoint, "findOne", () =>
@@ -1647,6 +1709,10 @@ test("database failure during order creation returns an error without a persiste
   t.mock.method(MenuItem, "findOne", () =>
     mockQuery(createMenuItemFixture()),
   );
+  t.mock.method(MenuItem, "find", () => mockQuery([createMenuItemFixture()]));
+  t.mock.method(MenuInventoryRecipe, "find", () => mockQuery([]));
+  t.mock.method(InventoryReservation, "findOne", () => mockQuery(null));
+  t.mock.method(Order, "findOne", () => mockQuery(null));
   t.mock.method(Order, "create", async () => {
     createAttempts += 1;
     throw new Error("database unavailable");

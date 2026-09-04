@@ -1,4 +1,6 @@
 import Stripe from "stripe";
+import crypto from "node:crypto";
+import mongoose from "mongoose";
 import GuestSession from "../models/GuestSession.js";
 import PendingCheckout from "../models/PendingCheckout.js";
 import { resolveOrStartCustomerJourney } from "../services/customerJourneyService.js";
@@ -13,10 +15,27 @@ import {
     ensureReservationPricingSnapshot,
     getCustomerReservationPricing,
 } from "../services/reservationPricingService.js";
-import { validateTrackedStock } from "../services/inventoryService.js";
 import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
 import { normalizeTip } from "../utils/tips.js";
-import { getPendingCheckoutExpiresAt } from "../constants/checkoutRetention.js";
+import {
+    INVENTORY_PROVIDER_CREATION_REPAIR_DELAY_MS,
+    INVENTORY_RESERVATION_SOURCE_TYPES,
+    INVENTORY_RESERVATION_STATUSES,
+    STRIPE_INVENTORY_HOLD_LIFETIME_MS,
+} from "../constants/inventoryReservation.js";
+import { generateInventoryReservationId } from "../models/InventoryReservation.js";
+import {
+    buildInventoryRequestFingerprint,
+    reserveInventoryForSource,
+    validateInventoryRequirements,
+} from "../services/inventoryReservationService.js";
+import { withCanonicalInventoryTransaction } from "../services/canonicalInventoryService.js";
+import {
+    compensateStripeCheckoutCreationFailure,
+    persistStripeCheckoutLink,
+} from "../services/inventoryReservationRepairService.js";
+import { invalidateMenuItems } from "../services/cacheInvalidationService.js";
+import { enqueueInventoryReservationReconciliation } from "../queues/index.js";
 // Restaurant-flow defect safeguards for online checkout:
 // validate and normalize the cart, reject disabled business/order/payment modes,
 // and derive Stripe currency from the business instead of the client request.
@@ -31,6 +50,34 @@ import {
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+
+function getCheckoutIdempotencyKey(req, fallback) {
+    const supplied = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"];
+    const normalized = String(supplied || "").trim();
+    if (normalized && normalized.length <= 160) return `checkout:${normalized}`;
+    return `checkout:${fallback || crypto.randomUUID()}`;
+}
+
+function isIndeterminateStripeCreationError(error) {
+    return error?.type === "StripeConnectionError" ||
+        error?.type === "StripeAPIError" ||
+        ["ECONNRESET", "ECONNABORTED", "ETIMEDOUT", "EPIPE"].includes(error?.code);
+}
+
+async function enqueueInventoryRepairSafely(payload, req) {
+    const enqueue = req.app?.locals?.enqueueInventoryReservationReconciliation ||
+        enqueueInventoryReservationReconciliation;
+    try {
+        return await enqueue(payload);
+    } catch (error) {
+        console.error("[checkout] Inventory reconciliation enqueue failed", {
+            businessId: payload.businessId,
+            reservationId: payload.reservationId,
+            reason: error?.code || error?.name || "queue_error",
+        });
+        return { queued: false, reason: "queue_error" };
+    }
+}
 
 /**
  * POST /payments/checkout
@@ -160,10 +207,11 @@ export async function createCheckoutSession(req, res) {
             const menuItem = await MenuItem.findOne({
                 name: item.itemName,
                 businessId: businessIdToUse,
+                archivedAt: null,
             }).lean();
 
-            if (!menuItem || menuItem.isAvailable === false) {
-                return res.status(400).json({ message: `Menu item '${item.itemName}' is no longer available.` });
+            if (!menuItem) {
+                return res.status(400).json({ message: `Menu item '${item.itemName}' was not found.` });
             }
 
             const price = Number(menuItem.price) || 0;
@@ -193,11 +241,16 @@ export async function createCheckoutSession(req, res) {
             });
         }
 
-        // --- Validate stock before touching Stripe or PendingCheckout ---
-        const stockFailures = await validateTrackedStock(enrichedItems, businessIdToUse);
+        // Fast feedback uses the same resolver that re-runs inside the commit
+        // transaction. Only the in-transaction pass authorizes the hold.
+        const stockFailures = await validateInventoryRequirements({
+            businessId: businessIdToUse,
+            items: enrichedItems,
+        });
         if (stockFailures.length > 0) {
-            return res.status(400).json({
-                message: "Some items are no longer available in the requested quantity.",
+            return res.status(409).json({
+                code: "INSUFFICIENT_STOCK",
+                message: "One or more items in your order are no longer available. Please review your cart.",
                 items: stockFailures,
             });
         }
@@ -272,25 +325,6 @@ export async function createCheckoutSession(req, res) {
         });
         const resolvedJourneyId = journey?.journeyId || null;
 
-        const pending = await PendingCheckout.create({
-            businessId: businessIdToUse,
-            orderId,
-            servicePointLabel,   // internal servicePointId — preserved for routing
-            displayLabel,        // human-friendly — copied to Order by webhook
-            orderType: finalOrderType,
-            sessionId,
-            items: enrichedItems,
-            subtotal,
-            taxAmount,
-            tipAmount: tip.tipAmount,
-            tipType: tip.tipType,
-            tipPercentage: tip.tipPercentage,
-            total: subtotal + taxAmount + tip.tipAmount,
-            currency: finalCurrency.toUpperCase(),
-            receiptEmail: receiptEmail || null,
-            journeyId: resolvedJourneyId,
-        });
-
         if (customerPlatformFeeCents > 0) {
             lineItems.push({
                 price_data: {
@@ -302,76 +336,245 @@ export async function createCheckoutSession(req, res) {
             });
         }
 
-        // --- Create Stripe Checkout Session (Connect destination charge) ---
-        const stripeSessionConfig = {
+        const pendingCheckoutId = new mongoose.Types.ObjectId();
+        const proposedReservationId = generateInventoryReservationId();
+        const checkoutIdempotencyKey = getCheckoutIdempotencyKey(
+            req,
+            pendingCheckoutId.toString(),
+        );
+        const requestFingerprint = buildInventoryRequestFingerprint({
+            businessId: businessIdToUse,
+            servicePointLabel,
+            orderType: finalOrderType,
+            sessionId,
+            journeyId: resolvedJourneyId,
+            receiptEmail: receiptEmail || null,
+            items: enrichedItems.map(({ menuItemId, quantity, notes, allergies }) => ({
+                menuItemId: String(menuItemId),
+                quantity,
+                notes,
+                allergies,
+            })),
+            subtotal,
+            taxAmount,
+            total: pricing.total,
+            currency: finalCurrency,
+            tip,
+        });
+        const stripeRequestIdempotencyKey = `inventory-checkout:${pendingCheckoutId}`;
+        // Two seconds absorb transaction/network transit while retaining the
+        // provider's minimum 30-minute restaurant Checkout lifetime.
+        const stripeExpiresAtSeconds = Math.ceil(Date.now() / 1000) +
+            Math.ceil(STRIPE_INVENTORY_HOLD_LIFETIME_MS / 1000) + 2;
+        const intendedStripeExpiresAt = new Date(stripeExpiresAtSeconds * 1000);
+        const baseStripeSessionConfig = {
             payment_method_types: ["card"],
             mode: "payment",
             line_items: lineItems,
-            metadata: {
-                pendingCheckoutId: pending._id.toString(),
-                orderId,
-                servicePointLabel: displayLabel,
-                businessId: businessIdToUse,
-            },
-            // Route payment to connected account; platform fee stays with QuickServe
+            expires_at: stripeExpiresAtSeconds,
             payment_intent_data: {
                 application_fee_amount: commissionAmountCents,
-                transfer_data: {
-                    destination: business.stripeAccountId,
-                },
-                metadata: {
-                    orderId,
-                    businessId: businessIdToUse,
-                },
+                transfer_data: { destination: business.stripeAccountId },
+                metadata: { orderId, businessId: businessIdToUse },
             },
             success_url: `${FRONTEND_BASE_URL}/s/${servicePointLabel}/confirmation?payment=success&orderId=${orderId}&businessId=${businessIdToUse}`,
             cancel_url: `${FRONTEND_BASE_URL}/s/${servicePointLabel}/order?payment=cancelled&businessId=${businessIdToUse}`,
+            ...(receiptEmail ? { customer_email: receiptEmail } : {}),
         };
 
-        if (receiptEmail) {
-            stripeSessionConfig.customer_email = receiptEmail;
+        let replayed = false;
+        let reservationChanged = false;
+        let pending;
+        try {
+            pending = await withCanonicalInventoryTransaction(async (mongoSession) => {
+                const existing = await PendingCheckout.findOne({
+                    businessId: businessIdToUse,
+                    idempotencyKey: checkoutIdempotencyKey,
+                }, null, { session: mongoSession });
+                if (existing) {
+                    if (existing.requestFingerprint !== requestFingerprint) {
+                        const error = new Error("Idempotency-Key was already used for another checkout");
+                        error.code = "CHECKOUT_IDEMPOTENCY_CONFLICT";
+                        error.statusCode = 409;
+                        throw error;
+                    }
+                    if (["expired", "creation_failed", "inventory_exception"].includes(existing.status)) {
+                        const error = new Error("This checkout attempt can no longer be reused");
+                        error.code = "CHECKOUT_NOT_REUSABLE";
+                        error.statusCode = 409;
+                        throw error;
+                    }
+                    replayed = true;
+                    return existing;
+                }
+
+                const [created] = await PendingCheckout.create([{
+                    _id: pendingCheckoutId,
+                    businessId: businessIdToUse,
+                    orderId,
+                    servicePointLabel,
+                    displayLabel,
+                    orderType: finalOrderType,
+                    sessionId,
+                    items: enrichedItems,
+                    subtotal,
+                    taxAmount,
+                    tipAmount: tip.tipAmount,
+                    tipType: tip.tipType,
+                    tipPercentage: tip.tipPercentage,
+                    total: pricing.total,
+                    currency: finalCurrency.toUpperCase(),
+                    receiptEmail: receiptEmail || null,
+                    journeyId: resolvedJourneyId,
+                    idempotencyKey: checkoutIdempotencyKey,
+                    requestFingerprint,
+                    status: "provider_pending",
+                    stripeExpiresAt: intendedStripeExpiresAt,
+                    stripeRequestIdempotencyKey,
+                    stripeConnectedAccountId: business.stripeAccountId,
+                    commissionAmountCents,
+                    commissionRateApplied,
+                    planApplied,
+                    planAtOrder: planApplied,
+                    commissionRateAtOrder: commissionRateApplied,
+                    platformFeeRateAtOrder: commissionRateApplied,
+                    platformFeeCents: commissionAmountCents,
+                    customerPlatformFeeCents,
+                    businessAbsorbedPlatformFeeCents,
+                    platformFeeMode,
+                    customerPlatformFeePercent,
+                    grossAmount: pricing.grossAmountCents,
+                    netToBusinessAmount: pricing.netToBusinessAmountCents,
+                }], { session: mongoSession });
+
+                const held = await reserveInventoryForSource({
+                    businessId: businessIdToUse,
+                    items: enrichedItems,
+                    sourceType: INVENTORY_RESERVATION_SOURCE_TYPES.STRIPE_CHECKOUT,
+                    sourceId: orderId,
+                    orderId,
+                    pendingCheckoutId: created._id,
+                    status: INVENTORY_RESERVATION_STATUSES.HELD,
+                    expiresAt: intendedStripeExpiresAt,
+                    reservationId: proposedReservationId,
+                    idempotencyKey: `inventory:${checkoutIdempotencyKey}`,
+                    requestFingerprint,
+                    session: mongoSession,
+                });
+                reservationChanged = held.tracked;
+                created.inventoryReservationId = held.reservation?.reservationId || null;
+                created.stripeRequestSnapshot = {
+                    ...baseStripeSessionConfig,
+                    metadata: {
+                        pendingCheckoutId: created._id.toString(),
+                        orderId,
+                        servicePointLabel: displayLabel,
+                        businessId: businessIdToUse,
+                        ...(held.reservation
+                            ? { inventoryReservationId: held.reservation.reservationId }
+                            : {}),
+                    },
+                };
+                await created.save({ session: mongoSession });
+                return created;
+            });
+        } catch (error) {
+            if (error?.code !== 11000) throw error;
+            const existing = await PendingCheckout.findOne({
+                businessId: businessIdToUse,
+                idempotencyKey: checkoutIdempotencyKey,
+            });
+            if (!existing || existing.requestFingerprint !== requestFingerprint) throw error;
+            replayed = true;
+            pending = existing;
+        }
+
+        if (reservationChanged) await invalidateMenuItems(businessIdToUse);
+        if (pending.inventoryReservationId && !replayed) {
+            await enqueueInventoryRepairSafely({
+                businessId: businessIdToUse,
+                reservationId: pending.inventoryReservationId,
+                runAt: new Date(Date.now() + INVENTORY_PROVIDER_CREATION_REPAIR_DELAY_MS),
+            }, req);
+        }
+
+        if (pending.status === "completed" && pending.stripeCheckoutUrl) {
+            return res.status(200).json({
+                sessionUrl: pending.stripeCheckoutUrl,
+                journeyId: pending.journeyId || resolvedJourneyId,
+                replayed: true,
+            });
         }
 
         const stripeClient = req.app?.locals?.stripe || stripe;
-        const stripeSession = await stripeClient.checkout.sessions.create(stripeSessionConfig);
+        let stripeSession;
+        try {
+            stripeSession = await stripeClient.checkout.sessions.create(
+                pending.stripeRequestSnapshot,
+                { idempotencyKey: pending.stripeRequestIdempotencyKey },
+            );
+        } catch (error) {
+            const indeterminate = isIndeterminateStripeCreationError(error);
+            if (!indeterminate) {
+                try {
+                    const compensated = await compensateStripeCheckoutCreationFailure({
+                        businessId: businessIdToUse,
+                        pendingCheckoutId: pending._id,
+                        inventoryReservationId: pending.inventoryReservationId,
+                        failureCode: error?.code || error?.type || "stripe_create_failed",
+                    });
+                    if (compensated.released) await invalidateMenuItems(businessIdToUse);
+                } catch (releaseError) {
+                    console.error("[checkout] Stripe failure compensation failed", {
+                        businessId: businessIdToUse,
+                        reservationId: pending.inventoryReservationId,
+                        reason: releaseError?.code || releaseError?.name || "release_failed",
+                    });
+                }
+            }
+            const wrapped = new Error(indeterminate
+                ? "Checkout initialization is still being reconciled. Please retry shortly."
+                : "Unable to create Stripe Checkout");
+            wrapped.code = indeterminate
+                ? "CHECKOUT_PROVIDER_RESULT_UNKNOWN"
+                : "STRIPE_CHECKOUT_CREATION_FAILED";
+            wrapped.statusCode = indeterminate ? 503 : 502;
+            throw wrapped;
+        }
 
-        console.log(`[checkout] Stripe session created — sessionId=${stripeSession.id}`);
-
-        pending.stripeSessionId = stripeSession.id;
-        pending.stripeExpiresAt = stripeSession.expires_at !== null &&
-            stripeSession.expires_at !== undefined &&
-            Number.isFinite(Number(stripeSession.expires_at))
-            ? new Date(Number(stripeSession.expires_at) * 1000)
-            : null;
-        pending.expiresAt = getPendingCheckoutExpiresAt({
-            stripeExpiresAt: stripeSession.expires_at,
+        console.log(`[checkout] Stripe session created sessionId=${stripeSession.id}`);
+        const linked = await persistStripeCheckoutLink({
+            businessId: businessIdToUse,
+            pendingCheckoutId: pending._id,
+            inventoryReservationId: pending.inventoryReservationId,
+            stripeSession,
         });
-        pending.stripePaymentIntentId = stripeSession.payment_intent || null;
-        pending.stripeConnectedAccountId = business.stripeAccountId;
-        pending.commissionAmountCents = commissionAmountCents;
-        pending.commissionRateApplied = commissionRateApplied;
-        pending.planApplied = planApplied;
-        pending.planAtOrder = planApplied;
-        pending.commissionRateAtOrder = commissionRateApplied;
-        pending.platformFeeRateAtOrder = commissionRateApplied;
+        pending = linked.pending;
 
-        pending.platformFeeCents = commissionAmountCents;
-        pending.customerPlatformFeeCents = customerPlatformFeeCents;
-        pending.businessAbsorbedPlatformFeeCents = businessAbsorbedPlatformFeeCents;
-        pending.platformFeeMode = platformFeeMode;
-        pending.customerPlatformFeePercent = customerPlatformFeePercent;
+        if (pending.inventoryReservationId) {
+            await enqueueInventoryRepairSafely({
+                businessId: businessIdToUse,
+                reservationId: pending.inventoryReservationId,
+                runAt: pending.stripeExpiresAt || intendedStripeExpiresAt,
+            }, req);
+        }
 
-        pending.grossAmount = pricing.grossAmountCents;
-        pending.netToBusinessAmount = pricing.netToBusinessAmountCents;
-        pending.total = pricing.total;
-        await pending.save();
-
-        return res.status(201).json({
+        return res.status(replayed ? 200 : 201).json({
             sessionUrl: stripeSession.url,
             journeyId: resolvedJourneyId,
+            replayed,
         });
     } catch (err) {
         console.error("[createCheckoutSession] Error:", err);
+        if (err?.statusCode) {
+            return res.status(err.statusCode).json({
+                message: err.message,
+                code: err.code,
+                ...(Array.isArray(err.failures) && err.failures.length > 0
+                    ? { items: err.failures }
+                    : {}),
+            });
+        }
         return res.status(500).json({ message: "Server error creating checkout session" });
     }
 }

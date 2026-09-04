@@ -20,13 +20,15 @@ import { getRegisteredQueue } from "../src/queues/createQueue.js";
 import { DIAGNOSTIC_JOB_NAME, QUEUE_NAMES } from "../src/queues/queueNames.js";
 import { processDiagnosticJob } from "../src/workers/processors/diagnosticProcessor.js";
 
-test("queue names expose only the Phase 0 queue set", () => {
+test("queue names expose the registered durable worker queues", () => {
     assert.deepEqual(QUEUE_NAMES, {
         DIAGNOSTIC: "diagnostic",
         EMAIL: "email",
         RESERVATIONS: "reservations",
         BILLING: "billing",
         POST_PAYMENT: "post-payment",
+        AI_ANALYST: "ai-analyst",
+        INVENTORY: "inventory",
     });
     assert.equal(DIAGNOSTIC_JOB_NAME, "diagnostic-ping");
 });

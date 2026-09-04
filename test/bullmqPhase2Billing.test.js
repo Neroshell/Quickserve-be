@@ -326,6 +326,7 @@ test("only worker runtime registers the five-minute and hourly schedulers", asyn
         billing: true,
         postPayment: false,
         aiAnalyst: false,
+        inventory: false,
     });
     assert.equal(calls.length, 2);
     assert.equal(calls[0].repeat.every, 5 * 60 * 1000);

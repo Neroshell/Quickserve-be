@@ -3,6 +3,7 @@ import test from "node:test"
 
 import Business from "../src/models/Business.js"
 import MenuItem from "../src/models/menuItem.js"
+import MenuInventoryRecipe from "../src/models/MenuInventoryRecipe.js"
 import Order from "../src/models/order.js"
 import Plan from "../src/models/Plan.js"
 import ServicePoint from "../src/models/ServicePoint.js"
@@ -356,10 +357,14 @@ test("menu cache separates public and owner views, avoids DB reads, and refreshe
     const originals = {
         find: MenuItem.find,
         findOneAndUpdate: MenuItem.findOneAndUpdate,
+        mappingFind: MenuInventoryRecipe.find,
+        mappingExists: MenuInventoryRecipe.exists,
     }
     t.after(() => {
         MenuItem.find = originals.find
         MenuItem.findOneAndUpdate = originals.findOneAndUpdate
+        MenuInventoryRecipe.find = originals.mappingFind
+        MenuInventoryRecipe.exists = originals.mappingExists
     })
 
     const itemsByBusiness = new Map([
@@ -396,6 +401,8 @@ test("menu cache separates public and owner views, avoids DB reads, and refreshe
         Object.assign(item, update.$set)
         return structuredClone(item)
     }
+    MenuInventoryRecipe.find = () => ({ async lean() { return [] } })
+    MenuInventoryRecipe.exists = async () => null
 
     const publicMiss = mockReqRes({ query: { businessId: "biz_alpha" } })
     await getMenuItems(publicMiss.req, publicMiss.res)
@@ -410,8 +417,8 @@ test("menu cache separates public and owner views, avoids DB reads, and refreshe
     await getMenuItems(ownerMiss.req, ownerMiss.res)
     assert.deepEqual(ownerMiss.res.body.map(item => item.name), ["Soup", "Hidden special"])
     assert.equal(menuReads, 2)
-    assert.deepEqual(filters[0], { businessId: "biz_alpha", isAvailable: true })
-    assert.deepEqual(filters[1], { businessId: "biz_alpha" })
+    assert.deepEqual(filters[0], { businessId: "biz_alpha", archivedAt: null })
+    assert.deepEqual(filters[1], { businessId: "biz_alpha", archivedAt: null })
 
     const publicHit = mockReqRes({ query: { businessId: "biz_alpha" } })
     await getMenuItems(publicHit.req, publicHit.res)
@@ -456,6 +463,8 @@ test("all three endpoints and a mutation fall back to MongoDB when Redis is unav
         businessFindOne: Business.findOne,
         menuFind: MenuItem.find,
         menuFindOneAndUpdate: MenuItem.findOneAndUpdate,
+        mappingFind: MenuInventoryRecipe.find,
+        mappingExists: MenuInventoryRecipe.exists,
         menuCount: MenuItem.countDocuments,
         orderCount: Order.countDocuments,
         planFindOne: Plan.findOne,
@@ -466,6 +475,8 @@ test("all three endpoints and a mutation fall back to MongoDB when Redis is unav
         Business.findOne = originals.businessFindOne
         MenuItem.find = originals.menuFind
         MenuItem.findOneAndUpdate = originals.menuFindOneAndUpdate
+        MenuInventoryRecipe.find = originals.mappingFind
+        MenuInventoryRecipe.exists = originals.mappingExists
         MenuItem.countDocuments = originals.menuCount
         Order.countDocuments = originals.orderCount
         Plan.findOne = originals.planFindOne
@@ -522,6 +533,8 @@ test("all three endpoints and a mutation fall back to MongoDB when Redis is unav
         name: "Soup",
         isAvailable: true,
     })
+    MenuInventoryRecipe.find = () => ({ async lean() { return [] } })
+    MenuInventoryRecipe.exists = async () => null
 
     const setup = mockReqRes({ user: { businessId: "biz_alpha", role: "owner" } })
     const publicConfig = mockReqRes({ query: { businessId: "biz_alpha" } })

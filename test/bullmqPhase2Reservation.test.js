@@ -193,12 +193,14 @@ test("disabled flags preserve behavior and only worker runtime registers schedul
         billing: false,
         postPayment: false,
         aiAnalyst: false,
+        inventory: false,
     });
     assert.deepEqual(disabledWorker, {
         reservation: false,
         billing: false,
         postPayment: false,
         aiAnalyst: false,
+        inventory: false,
     });
     assert.equal(queueCreates, 0);
 });
@@ -288,6 +290,7 @@ test("acceptance enqueues delayed expiry only after payment expiry is persisted"
                         scheduledPayload = payload;
                         return { queued: true };
                     },
+                    publishEvent: async () => ({ published: false }),
                 },
             },
         },

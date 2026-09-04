@@ -13,6 +13,7 @@ export {
     POST_PAYMENT_JOB_NAMES,
     RESERVATION_JOB_NAMES,
     AI_ANALYST_JOB_NAMES,
+    INVENTORY_JOB_NAMES,
 } from "./queueNames.js";
 export {
     buildEmailJobId,
@@ -53,3 +54,10 @@ export {
     validateAiAnalystGeneratePayload,
     validateAiAnalystScanPayload,
 } from "./aiAnalystQueue.js";
+export {
+    buildInventoryReconciliationJobId,
+    enqueueInventoryReservationReconciliation,
+    INVENTORY_JOB_OPTIONS,
+    isInventorySchedulersEnabled,
+    validateInventoryReconciliationPayload,
+} from "./inventoryQueue.js";

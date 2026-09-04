@@ -6,6 +6,12 @@ import {
     responseCache,
 } from "../services/responseCacheService.js"
 import { invalidateMenuMutation } from "../services/cacheInvalidationService.js"
+import {
+    archiveMappedMenuItem,
+    enrichMenuItemsWithInventory,
+    hasAnyMenuInventoryMapping,
+    setMappedMenuManualAvailability,
+} from "../services/simpleStockMenuService.js"
 
 /** Accept businessId with fallback to legacy businessId */
 function resolveBusinessId(req) {
@@ -22,6 +28,13 @@ function normalizePrepTimeMinutes(value) {
     const minutes = Number(value)
     if (!Number.isInteger(minutes) || minutes < 1) return null
     return minutes
+}
+
+function handleMenuError(res, err, fallback) {
+    if (Number.isInteger(err?.statusCode)) {
+        return res.status(err.statusCode).json({ error: err.message, code: err.code })
+    }
+    return res.status(500).json({ error: fallback })
 }
 
 // GET /menu-items?businessId=...
@@ -41,14 +54,13 @@ export async function getMenuItems(req, res) {
             return res.json(cached.value)
         }
 
-        const filter = { businessId }
-        if (!isOwningStaff) filter.isAvailable = true
+        const filter = { businessId, archivedAt: null }
 
         const items = await MenuItem.find(filter).sort({ createdAt: -1 })
-
-        const payload = items.map(item =>
-            typeof item?.toJSON === "function" ? item.toJSON() : item
-        )
+        const enriched = await enrichMenuItemsWithInventory({ businessId, menuItems: items })
+        const payload = isOwningStaff
+            ? enriched
+            : enriched.filter((item) => item.isAvailable === true)
 
         await responseCache.set(
             cacheKey,
@@ -59,7 +71,7 @@ export async function getMenuItems(req, res) {
         return res.json(payload)
     } catch (err) {
         console.error("[getMenuItems]", err)
-        return res.status(500).json({ error: "Failed to fetch menu items" })
+        return handleMenuError(res, err, "Failed to fetch menu items")
     }
 }
 
@@ -68,6 +80,13 @@ export async function createMenuItem(req, res) {
     try {
         const businessId = resolveBusinessId(req)
         const { name, price, prepTimeMinutes, category, type, description, imageUrl, isAvailable, trackStock, stockQuantity, lowStockThreshold } = req.body
+
+        if (trackStock === true) {
+            return res.status(409).json({
+                error: "Tracked menu items must be created through Simple Stock.",
+                code: "SIMPLE_STOCK_CREATE_REQUIRED",
+            })
+        }
 
         if (!businessId || !name || price === undefined || prepTimeMinutes === undefined || !category || !type) {
             return res.status(400).json({ error: "Missing required fields (businessId, name, price, prepTimeMinutes, category, type)" })
@@ -108,7 +127,7 @@ export async function createMenuItem(req, res) {
         return res.status(201).json(newItem)
     } catch (err) {
         console.error("[createMenuItem]", err)
-        return res.status(500).json({ error: "Failed to create menu item" })
+        return handleMenuError(res, err, "Failed to create menu item")
     }
 }
 
@@ -120,6 +139,21 @@ export async function updateMenuItem(req, res) {
 
         if (!businessId) {
             return res.status(400).json({ error: "Missing businessId" })
+        }
+
+        const mapped = await hasAnyMenuInventoryMapping({ businessId, menuItemId: id })
+        const protectedStockFields = [
+            "trackStock",
+            "stockQuantity",
+            "lowStockThreshold",
+            "isAvailable",
+            "manualIsAvailable",
+        ]
+        if (mapped && protectedStockFields.some((field) => req.body[field] !== undefined)) {
+            return res.status(409).json({
+                error: "Mapped stock and availability must be changed through inventory controls.",
+                code: "DIRECT_MAPPED_STOCK_MUTATION_FORBIDDEN",
+            })
         }
 
         // Validate description word count if provided
@@ -147,7 +181,7 @@ export async function updateMenuItem(req, res) {
         }
 
         const item = await MenuItem.findOneAndUpdate(
-            { _id: id, businessId },
+            { _id: id, businessId, archivedAt: null },
             { $set: updates },
             { new: true, runValidators: true }
         )
@@ -161,7 +195,7 @@ export async function updateMenuItem(req, res) {
         return res.json(item)
     } catch (err) {
         console.error("[updateMenuItem]", err)
-        return res.status(500).json({ error: "Failed to update menu item" })
+        return handleMenuError(res, err, "Failed to update menu item")
     }
 }
 
@@ -175,7 +209,12 @@ export async function deleteMenuItem(req, res) {
             return res.status(400).json({ error: "Missing businessId" })
         }
 
-        const deletedItem = await MenuItem.findOneAndDelete({ _id: id, businessId })
+        if (await hasAnyMenuInventoryMapping({ businessId, menuItemId: id })) {
+            await archiveMappedMenuItem({ businessId, menuItemId: id })
+            return res.json({ message: "Menu item archived successfully", archived: true })
+        }
+
+        const deletedItem = await MenuItem.findOneAndDelete({ _id: id, businessId, archivedAt: null })
 
         if (!deletedItem) {
             return res.status(404).json({ error: "Menu item not found or unauthorized" })
@@ -186,7 +225,7 @@ export async function deleteMenuItem(req, res) {
         return res.json({ message: "Menu item deleted successfully" })
     } catch (err) {
         console.error("[deleteMenuItem]", err)
-        return res.status(500).json({ error: "Failed to delete menu item" })
+        return handleMenuError(res, err, "Failed to delete menu item")
     }
 }
 
@@ -201,11 +240,20 @@ export async function toggleMenuItemAvailability(req, res) {
             return res.status(400).json({ error: "Missing businessId or isAvailable flag" })
         }
 
-        const item = await MenuItem.findOneAndUpdate(
-            { _id: id, businessId },
-            { $set: { isAvailable } },
-            { new: true }
-        )
+        let item
+        if (await hasAnyMenuInventoryMapping({ businessId, menuItemId: id })) {
+            item = await setMappedMenuManualAvailability({
+                businessId,
+                menuItemId: id,
+                isAvailable,
+            })
+        } else {
+            item = await MenuItem.findOneAndUpdate(
+                { _id: id, businessId, archivedAt: null },
+                { $set: { isAvailable } },
+                { new: true }
+            )
+        }
 
         if (!item) {
             return res.status(404).json({ error: "Menu item not found or unauthorized" })
@@ -216,7 +264,7 @@ export async function toggleMenuItemAvailability(req, res) {
         return res.json(item)
     } catch (err) {
         console.error("[toggleMenuItemAvailability]", err)
-        return res.status(500).json({ error: "Failed to toggle availability" })
+        return handleMenuError(res, err, "Failed to toggle availability")
     }
 }
 
@@ -267,13 +315,16 @@ export async function getPopularItems(req, res) {
         const popularNames = aggregated.map(a => a._id)
         const items = await MenuItem.find({
             businessId,
-            name: { $in: popularNames }
+            name: { $in: popularNames },
+            archivedAt: null,
         })
 
         // Sort by popularity rank, inject orderCount for frontend use
-        const sorted = items
+        const enrichedItems = await enrichMenuItemsWithInventory({ businessId, menuItems: items })
+        const sorted = enrichedItems
+            .filter((item) => item.isAvailable === true)
             .map(item => ({
-                ...item.toObject(),
+                ...item,
                 orderCount: aggregated.find(a => a._id === item.name)?.totalOrdered ?? 0
             }))
             .sort((a, b) => (rankMap[a.name] ?? 99) - (rankMap[b.name] ?? 99))
@@ -281,7 +332,7 @@ export async function getPopularItems(req, res) {
         return res.json(sorted)
     } catch (err) {
         console.error("[getPopularItems]", err)
-        return res.status(500).json({ error: "Failed to fetch popular items" })
+        return handleMenuError(res, err, "Failed to fetch popular items")
     }
 }
 

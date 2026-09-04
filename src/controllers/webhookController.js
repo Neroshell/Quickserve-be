@@ -50,8 +50,17 @@ import {
 } from "../services/stripeWebhookEventService.js";
 import {
     invalidateBusinessConfiguration,
+    invalidateMenuItems,
     invalidateSetupProgress,
 } from "../services/cacheInvalidationService.js";
+import {
+    INVENTORY_RESERVATION_RELEASE_EVIDENCE,
+} from "../constants/inventoryReservation.js";
+import {
+    recordInventoryPaymentException,
+    releaseInventoryReservation,
+} from "../services/inventoryReservationService.js";
+import { finalizePaidOrderWithInventory } from "../services/paidOrderInventoryService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -90,6 +99,47 @@ function getStoredCheckoutAmountCents(checkoutRecord) {
     const total = Number(checkoutRecord?.total);
     const totalCents = Math.round(total * 100);
     return Number.isSafeInteger(totalCents) && totalCents > 0 ? totalCents : null;
+}
+
+async function handleExpiredOrderCheckout({ checkoutSession, metadata }) {
+    const pendingCheckoutId = metadata.pendingCheckoutId;
+    if (!pendingCheckoutId) return { handled: false };
+    const pending = await PendingCheckout.findById(pendingCheckoutId);
+    if (!pending) return { handled: true, missing: true };
+    if (
+        (metadata.businessId && metadata.businessId !== pending.businessId) ||
+        (pending.stripeSessionId && pending.stripeSessionId !== checkoutSession.id) ||
+        (
+            metadata.inventoryReservationId &&
+            pending.inventoryReservationId &&
+            metadata.inventoryReservationId !== pending.inventoryReservationId
+        )
+    ) {
+        const error = new Error("Expired Stripe session does not match PendingCheckout");
+        error.code = "STRIPE_SESSION_MISMATCH";
+        error.statusCode = 400;
+        throw error;
+    }
+
+    let released = { changed: false };
+    const inventoryReservationId = pending.inventoryReservationId ||
+        metadata.inventoryReservationId;
+    if (inventoryReservationId) {
+        released = await releaseInventoryReservation({
+            businessId: pending.businessId,
+            reservationId: inventoryReservationId,
+            expectedStripeSessionId: checkoutSession.id,
+            releaseEvidence: INVENTORY_RESERVATION_RELEASE_EVIDENCE.STRIPE_EXPIRED_EVENT,
+        });
+        if (released.changed) await invalidateMenuItems(pending.businessId);
+    }
+    pending.status = "expired";
+    pending.stripeSessionId = pending.stripeSessionId || checkoutSession.id;
+    pending.stripeExpiresAt = Number.isFinite(Number(checkoutSession.expires_at))
+        ? new Date(Number(checkoutSession.expires_at) * 1000)
+        : pending.stripeExpiresAt;
+    await pending.save();
+    return { handled: true, released: released.changed };
 }
 
 export function validateOrderCheckoutPayment(session, checkoutRecord) {
@@ -141,6 +191,189 @@ export function validateOrderCheckoutPayment(session, checkoutRecord) {
         expectedCurrency,
         stripeCurrency,
     };
+}
+
+async function processCanonicalInventoryCheckout({
+    req,
+    event,
+    checkoutSession,
+    pending,
+    orderReceiptDispatcher,
+    crmOrderDispatcher,
+}) {
+    const businessId = pending.businessId;
+    const orderId = pending.orderId;
+    const customerEmail = pending.receiptEmail ||
+        checkoutSession.customer_details?.email || null;
+    let displayLabel = pending.displayLabel || "";
+    if (!displayLabel) {
+        const servicePoint = await ServicePoint.findOne({
+            servicePointId: pending.servicePointLabel,
+            businessId,
+        }).lean();
+        displayLabel = servicePoint?.label || servicePoint?.code || pending.servicePointLabel;
+    }
+    const orderCreatedAt = new Date();
+    const estimate = buildOrderEstimate(pending.items, orderCreatedAt);
+    const hasFood = pending.items.some((item) => item.category === "food" || item.type === "food");
+    const orderInput = {
+        servicePointLabel: pending.servicePointLabel,
+        displayLabel,
+        orderType: pending.orderType,
+        sessionId: pending.sessionId,
+        items: pending.items,
+        status: hasFood ? "placed" : "ready",
+        createdAt: orderCreatedAt,
+        estimatedPrepMinutes: estimate.estimatedPrepMinutes,
+        estimatedReadyAt: estimate.estimatedReadyAt,
+        total: pending.total,
+        currency: pending.currency,
+        paymentChannel: "online",
+        paymentStatus: "paid",
+        paidVia: "online_card",
+        paidAt: orderCreatedAt,
+        stripeSessionId: checkoutSession.id,
+        stripeCheckoutUrl: pending.stripeCheckoutUrl || null,
+        stripePaymentIntentId: pending.stripePaymentIntentId ||
+            checkoutSession.payment_intent || null,
+        stripeConnectedAccountId: pending.stripeConnectedAccountId || null,
+        grossAmount: pending.grossAmount ?? null,
+        netToBusinessAmount: pending.netToBusinessAmount ?? null,
+        planApplied: pending.planApplied ?? null,
+        commissionRateApplied: pending.commissionRateApplied ?? null,
+        commissionAmountCents: pending.commissionAmountCents ?? 0,
+        planAtOrder: pending.planAtOrder ?? pending.planApplied ?? null,
+        commissionRateAtOrder: pending.commissionRateAtOrder ??
+            pending.commissionRateApplied ?? null,
+        platformFeeRateAtOrder: pending.platformFeeRateAtOrder ??
+            pending.commissionRateApplied ?? null,
+        platformFeeCents: pending.platformFeeCents ?? 0,
+        customerPlatformFeeCents: pending.customerPlatformFeeCents ?? 0,
+        businessAbsorbedPlatformFeeCents: pending.businessAbsorbedPlatformFeeCents ?? 0,
+        platformFeeMode: pending.platformFeeMode ?? "business_absorbs",
+        customerPlatformFeePercent: pending.customerPlatformFeePercent ?? 0,
+        platformFeeTotal: pending.customerPlatformFeeCents
+            ? Number((pending.customerPlatformFeeCents / 100).toFixed(2))
+            : 0,
+        tipAmount: pending.tipAmount ?? 0,
+        tipType: pending.tipType ?? null,
+        tipPercentage: pending.tipPercentage ?? null,
+        subtotal: pending.subtotal > 0
+            ? pending.subtotal
+            : pending.items.reduce((sum, item) => sum + (item.lineTotal || 0), 0),
+        taxAmount: pending.taxAmount || 0,
+        receiptEmail: customerEmail,
+        receiptSent: false,
+        crmEmail: customerEmail ? customerEmail.toLowerCase().trim() : null,
+        crmProcessingStatus: customerEmail ? "pending" : null,
+        crmProcessingRetryable: true,
+        journeyId: pending.journeyId || null,
+    };
+
+    const finalize = req.app?.locals?.finalizePaidOrderWithInventory ||
+        finalizePaidOrderWithInventory;
+    let result;
+    try {
+        result = await finalize({
+            businessId,
+            pendingCheckoutId: pending._id,
+            inventoryReservationId: pending.inventoryReservationId,
+            stripeSessionId: checkoutSession.id,
+            orderId,
+            orderInput,
+        });
+    } catch (error) {
+        if (error?.code !== "PAID_CHECKOUT_INVENTORY_RELEASED") throw error;
+        await recordInventoryPaymentException({
+            businessId,
+            orderId,
+            pendingCheckoutId: pending._id,
+            inventoryReservationId: pending.inventoryReservationId,
+            stripeSessionId: checkoutSession.id,
+            stripeEventId: event.id,
+            reasonCode: error.code,
+            details: { paymentStatus: checkoutSession.payment_status || null },
+        });
+        pending.status = "inventory_exception";
+        pending.stripeSessionId = checkoutSession.id;
+        await pending.save();
+        return { exception: true, code: error.code };
+    }
+
+    const order = result.order;
+    await invalidateSetupProgress(businessId);
+    let receiptDeliveryFailed = false;
+    if (customerEmail && !order.receiptSentAt && !order.receiptSent) {
+        try {
+            const delivery = await dispatchPaidOrderReceipt({
+                dispatcher: orderReceiptDispatcher,
+                order,
+                email: customerEmail,
+            });
+            receiptDeliveryFailed = delivery.mode === "direct" && !delivery.success;
+        } catch (error) {
+            receiptDeliveryFailed = true;
+            console.error("[webhook] Canonical paid-order receipt failed", {
+                eventId: event.id,
+                orderId,
+                businessId,
+                reason: error?.code || error?.name || "receipt_failed",
+            });
+        }
+    }
+
+    if (customerEmail && !order.crmProcessed) {
+        try {
+            const intent = await recordCrmOrderIntent({
+                businessId,
+                orderId,
+                email: customerEmail,
+            });
+            if (intent.recorded) void crmOrderDispatcher({ businessId, orderId });
+        } catch (error) {
+            console.error("[webhook] Canonical CRM intent recording failed", {
+                businessId,
+                orderId,
+                reason: error?.code || error?.name || "crm_intent_failed",
+            });
+        }
+    }
+
+    if (order.journeyId) {
+        await recordOrderPlacementForJourney({
+            businessId,
+            journeyId: order.journeyId,
+            orderId,
+            createdAt: order.createdAt,
+        });
+        await recordOrderPaymentForJourney({
+            businessId,
+            journeyId: order.journeyId,
+            orderId,
+            spendCents: getCrmOrderRevenueCents(order),
+            paidAt: order.paidAt || order.createdAt,
+        });
+    }
+
+    if (result.created) {
+        const orderDTO = toOrderDTO(order);
+        const foodItems = order.items.filter((item) => item.category === "food" || item.type === "food");
+        const drinkItems = order.items.filter((item) => item.category === "drinks" || item.type === "drinks");
+        if (foodItems.length > 0) {
+            await publishEvent("order_created", businessId, ["kitchen"], {
+                order: { ...orderDTO, items: foodItems },
+            });
+        }
+        if (drinkItems.length > 0) {
+            await publishEvent("order_created", businessId, ["bar"], {
+                order: { ...orderDTO, items: drinkItems },
+            });
+        }
+        await publishEvent("order_created", businessId, ["waiter", "table", "anon"], {
+            order: orderDTO,
+        });
+    }
+    return { order, created: result.created, receiptDeliveryFailed };
 }
 
 function getSubscriptionPeriodFromStripe(subscription) {
@@ -491,6 +724,24 @@ export async function handleStripeWebhook(req, res) {
             }
         }
 
+        if (event.type === "checkout.session.expired") {
+            const checkoutSession = event.data.object;
+            const metadata = checkoutSession.metadata || {};
+            // Hotel reservation payments do not participate in restaurant
+            // inventory reservations.
+            if (metadata.type === "reservation_payment") {
+                return res.status(200).send();
+            }
+            const expiry = await handleExpiredOrderCheckout({ checkoutSession, metadata });
+            console.log("[webhook] Checkout expiry processed", {
+                eventId: event.id,
+                checkoutSessionId: checkoutSession.id,
+                handled: expiry.handled,
+                released: Boolean(expiry.released),
+            });
+            return res.status(200).send();
+        }
+
         if (event.type !== "checkout.session.completed") {
             return res.status(200).send();
         }
@@ -749,7 +1000,12 @@ export async function handleStripeWebhook(req, res) {
 
         if (
             (metadataBusinessId && metadataBusinessId !== businessId) ||
-            (metadataOrderId && metadataOrderId !== orderId)
+            (metadataOrderId && metadataOrderId !== orderId) ||
+            (
+                metadata.inventoryReservationId &&
+                pending.inventoryReservationId &&
+                metadata.inventoryReservationId !== pending.inventoryReservationId
+            )
         ) {
             console.error("[webhook] Stripe metadata does not match PendingCheckout", {
                 eventId: event.id,
@@ -802,7 +1058,32 @@ export async function handleStripeWebhook(req, res) {
             currency: paymentValidation.stripeCurrency,
         });
 
-        // Idempotency guard — do not create duplicate orders on Stripe retry
+        if (pending.inventoryReservationId) {
+            const canonicalResult = await processCanonicalInventoryCheckout({
+                req,
+                event,
+                checkoutSession: session,
+                pending,
+                orderReceiptDispatcher,
+                crmOrderDispatcher,
+            });
+            if (canonicalResult.exception) {
+                console.error("[webhook] Paid Checkout inventory exception recorded", {
+                    eventId: event.id,
+                    checkoutSessionId: session.id,
+                    pendingCheckoutId,
+                    inventoryReservationId: pending.inventoryReservationId,
+                    code: canonicalResult.code,
+                });
+                return res.status(500).send(canonicalResult.code);
+            }
+            if (canonicalResult.receiptDeliveryFailed) {
+                return res.status(500).send("Receipt delivery failed");
+            }
+            return res.status(200).send();
+        }
+
+        // Idempotency guard for legacy PendingCheckout records.
         let order = await Order.findOne({ businessId, orderId });
         let receiptDeliveryFailed = false;
 
@@ -1148,9 +1429,10 @@ export async function handleStripeWebhook(req, res) {
             try {
                 const anyDeducted = await deductTrackedStock(order);
                 if (anyDeducted) {
-                    order.inventoryDeducted = true;
-                    order.inventoryDeductedAt = new Date();
-                    await order.save();
+                    // The inventory service atomically persisted both the stock
+                    // mutation and immutable Order linkage. Refresh this local
+                    // document instead of independently restamping it.
+                    order = await Order.findOne({ businessId, orderId });
                 }
             } catch (err) {
                 console.error(`[Inventory][Online] Failed to deduct stock for order ${orderId}:`, err);
@@ -1169,7 +1451,14 @@ export async function handleStripeWebhook(req, res) {
             return res.status(500).send("Receipt delivery failed");
         }
 
-        await PendingCheckout.findByIdAndDelete(pendingCheckoutId);
+        if (pending.idempotencyKey) {
+            pending.status = "completed";
+            pending.stripeSessionId = pending.stripeSessionId || session.id;
+            await pending.save();
+        } else {
+            // Historical PendingCheckout documents predate durable request keys.
+            await PendingCheckout.findByIdAndDelete(pendingCheckoutId);
+        }
 
         console.log("[webhook] Food-order payment processing completed", {
             eventId: event.id,
