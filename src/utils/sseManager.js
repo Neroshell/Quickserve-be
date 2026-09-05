@@ -4,8 +4,8 @@
 //   1. Track locally-connected SSE clients (per-instance in-memory Set)
 //   2. Register/deregister clients via sseHandler
 //   3. broadcastLocal(msg) — deliver a canonical event message to matching local clients
-//   4. publishEvent(event, businessId, targets, payload) — publish to Redis
-//      OR broadcast directly (local fallback when Redis is unavailable)
+//   4. publishEvent(event, businessId, targets, payload) — deliver locally,
+//      then publish to Redis for cross-instance fan-out when configured
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // Event shape published to Redis and forwarded via SSE:
@@ -17,6 +17,7 @@
 //   }
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { randomUUID } from "node:crypto"
 import { redisPub, REDIS_CHANNEL } from "../config/redisClient.js"
 import GuestSession from "../models/GuestSession.js"
 import Staff from "../models/Staff.js"
@@ -77,6 +78,12 @@ function managerPermissionAllowsEvent(permission, event) {
 
 // ── Local client registry ────────────────────────────────────────────────────
 const clients = new Set()
+
+// Redis distributes events to other API instances. The publishing instance
+// also delivers directly to its own SSE clients so a stalled subscriber cannot
+// make a successfully committed action appear frozen until the next refresh.
+// The origin id lets the healthy Redis round-trip skip that local duplicate.
+export const REALTIME_INSTANCE_ID = randomUUID()
 
 function addClient(client) {
     clients.add(client)
@@ -440,17 +447,17 @@ export async function broadcastLocal(msg) {
     )
 }
 
-// ── Redis publish (production) / direct fallback (local dev) ─────────────────
+// ── Local delivery plus Redis cross-instance fan-out ─────────────────────────
 /**
  * The single public API for emitting realtime events from business logic.
  *
  * In production (REDIS_URL set):
- *   Publishes a canonical JSON message to the shared Redis channel. Every subscribed
- *   instance (including this one) will receive it via realtimeBus.js and call broadcastLocal.
+ *   Delivers to this instance immediately, then publishes a canonical JSON message
+ *   to the shared Redis channel for every other subscribed instance.
  *
  * In local dev (REDIS_URL not set, redisPub === null):
- *   Falls back to calling broadcastLocal directly on this process — preserving the
- *   existing single-process localhost experience with no extra setup required.
+ *   The direct in-process delivery preserves the existing single-process localhost
+ *   experience with no extra setup required.
  *
  * @param {string}            event        SSE event name, e.g. "order_created"
  * @param {string}            businessId   Business scope
@@ -458,12 +465,21 @@ export async function broadcastLocal(msg) {
  * @param {object}            payload      Data forwarded verbatim to the browser
  */
 export async function publishEvent(event, businessId, targets, payload) {
-    const msg = { event, businessId, targets: targets ?? null, payload }
+    const msg = {
+        event,
+        businessId,
+        targets: targets ?? null,
+        payload,
+        originInstanceId: REALTIME_INSTANCE_ID,
+    }
+
+    // Same-instance delivery is the latency and availability path. Redis is
+    // still used below to fan the event out to every other API instance.
+    await broadcastLocal(msg)
 
     if (!redisPub) {
-        // Local dev fallback: no Redis, broadcast directly in this process
+        // Local dev: the event has already been delivered in-process.
         console.log(`[RealtimeBus] (local fallback) publishEvent event=${event} businessId=${businessId}`)
-        await broadcastLocal(msg)
         return
     }
 
@@ -473,9 +489,8 @@ export async function publishEvent(event, businessId, targets, payload) {
             `[RealtimeBus] ✅ Published event=${event} businessId=${businessId} targets=${JSON.stringify(targets ?? "all")}`
         )
     } catch (err) {
-        console.error("[RealtimeBus] ❌ Redis PUBLISH failed, using local fallback:", err.message)
-        // Graceful fallback: deliver on this instance even if Redis is temporarily down
-        await broadcastLocal(msg)
+        console.error("[RealtimeBus] ❌ Redis PUBLISH failed; local clients were still updated:", err.message)
+        // Local clients were already updated before the cross-instance publish.
     }
 }
 

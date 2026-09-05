@@ -11,6 +11,7 @@ import { getStaffPresence } from "../services/presenceService.js"
 import MenuItem from "../models/menuItem.js"
 import { readOwnerTransactionsPage, aggregateTransactionSummary } from "../services/ownerTransactionsReadService.js"
 import {
+    decodeOwnerOrdersCursor,
     OwnerOrdersCursorError,
     readOwnerOrdersPage,
 } from "../services/ownerOrdersReadService.js"
@@ -38,6 +39,9 @@ export async function ownerOrders(req, res) {
         if (!businessId) {
             return res.status(400).json({ error: "businessId is required" })
         }
+
+        // Reject malformed untrusted input before performing tenant lookups.
+        if (cursor) decodeOwnerOrdersCursor(cursor)
 
         const business = await Business.findOne({ businessId }).lean()
         if (!business) {
@@ -203,7 +207,7 @@ export async function getDashboardData(req, res) {
         const now = new Date()
         await ServiceRequest.updateMany(
             { businessId, status: "pending", pendingExpiresAt: { $lte: now } },
-            { $set: { status: "missed", missedAt: now } }
+            { $set: { status: "missed", missedAt: now, activeScopeKey: null } }
         )
 
         // ─── Run all queries in parallel ─────────────────────────────────────────

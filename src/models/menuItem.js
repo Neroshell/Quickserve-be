@@ -6,11 +6,10 @@ const MenuItemSchema = new mongoose.Schema({
     price: { type: Number, required: true },
     prepTimeMinutes: {
         type: Number,
-        required: true,
-        min: 1,
         default: 10,
+        min: 1,
         validate: {
-            validator: Number.isInteger,
+            validator: (value) => value === null || value === undefined || Number.isInteger(value),
             message: "Preparation time must be a whole number of minutes"
         }
     },
@@ -25,6 +24,18 @@ const MenuItemSchema = new mongoose.Schema({
         required: true,
         default: "food"
     },
+    // Null is retained for historical records so the compatibility resolver
+    // can apply food -> kitchen/prepared and drinks -> bar/direct.
+    fulfillmentStation: {
+        type: String,
+        enum: ["kitchen", "bar", null],
+        default: null,
+    },
+    fulfillmentBehavior: {
+        type: String,
+        enum: ["prepared", "direct", null],
+        default: null,
+    },
     description: { type: String, default: "" },
     imageUrl: { type: String, default: "" },
     imagePublicId: { type: String, default: "" },
@@ -37,6 +48,27 @@ const MenuItemSchema = new mongoose.Schema({
     lowStockThreshold: { type: Number, default: 5 },
     archivedAt: { type: Date, default: null, index: true }
 }, { timestamps: true })
+
+MenuItemSchema.pre("validate", function () {
+    const hasExplicitFulfillment = this.fulfillmentStation || this.fulfillmentBehavior
+    if (!hasExplicitFulfillment) return
+
+    const validFood = this.type === "food" &&
+        this.fulfillmentStation === "kitchen" &&
+        this.fulfillmentBehavior === "prepared"
+    const validDrink = this.type === "drinks" &&
+        this.fulfillmentStation === "bar" &&
+        ["direct", "prepared"].includes(this.fulfillmentBehavior)
+    if (!validFood && !validDrink) {
+        this.invalidate("fulfillmentStation", "Menu fulfilment configuration is inconsistent with item type")
+    }
+    if (this.fulfillmentBehavior === "prepared" && !Number.isInteger(this.prepTimeMinutes)) {
+        this.invalidate("prepTimeMinutes", "Prepared items require a whole-number preparation time")
+    }
+    if (this.fulfillmentBehavior === "direct" && this.prepTimeMinutes !== null) {
+        this.invalidate("prepTimeMinutes", "Direct items do not use a preparation time")
+    }
+})
 
 MenuItemSchema.index({ businessId: 1, archivedAt: 1, createdAt: -1 })
 

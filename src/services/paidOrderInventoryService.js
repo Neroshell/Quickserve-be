@@ -7,6 +7,7 @@ import {
 import { withCanonicalInventoryTransaction } from "./canonicalInventoryService.js"
 import { commitHeldInventoryReservation } from "./inventoryReservationService.js"
 import { buildOrderInventoryDeductionLine } from "./orderInventorySemanticsService.js"
+import { reconcileFrozenCheckoutFulfillment } from "./orderFulfillmentService.js"
 
 function reservationSemantics(reservation) {
     const canonical = (reservation.components || []).length > 0
@@ -97,8 +98,11 @@ export async function finalizePaidOrderWithInventory({
             const {
                 createdAt: _ignoredCreatedAt,
                 paidAt: requestedPaidAt,
+                items: _ignoredItems,
+                status: _ignoredStatus,
                 ...replaySafeOrderInput
             } = orderInput
+            reconcileFrozenCheckoutFulfillment(order, _ignoredItems)
             Object.assign(order, replaySafeOrderInput, {
                 businessId,
                 orderId,

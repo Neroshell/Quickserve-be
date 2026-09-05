@@ -1,5 +1,5 @@
 import express from "express"
-import { barOrders } from "../controllers/barController.js"
+import { barOrders, updateBarFulfillment } from "../controllers/barController.js"
 import { requireAuth, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 
@@ -20,5 +20,10 @@ router.use(requireAuth, requireRole("bartender", "manager", "owner", "co_owner",
  *         description: List of bar orders
  */
 router.get("/orders", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW), barOrders)
+router.patch(
+    "/orders/:orderId/fulfillment",
+    requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE),
+    updateBarFulfillment,
+)
 
 export default router

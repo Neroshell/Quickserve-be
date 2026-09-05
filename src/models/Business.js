@@ -5,6 +5,11 @@ import {
     validateBusinessModulesForType,
 } from "../services/businessCapabilityService.js"
 import { DEFAULT_HOTEL_ROOM_TYPES } from "../constants/hotelConstants.js"
+import {
+    DEFAULT_ORDER_START_ASSISTANCE_DELAY_MINUTES,
+    MAX_ORDER_START_ASSISTANCE_DELAY_MINUTES,
+    MIN_ORDER_START_ASSISTANCE_DELAY_MINUTES,
+} from "../utils/customerOrderTiming.js"
 
 const OperatingDaySchema = new mongoose.Schema({
     enabled: { type: Boolean, default: true },
@@ -26,6 +31,16 @@ const OrderingPreferencesSchema = new mongoose.Schema({
     dineInEnabled: { type: Boolean, default: true },
     takeoutEnabled: { type: Boolean, default: false },
     callWaiterEnabled: { type: Boolean, default: true },
+    orderStartAssistanceDelayMinutes: {
+        type: Number,
+        default: DEFAULT_ORDER_START_ASSISTANCE_DELAY_MINUTES,
+        min: MIN_ORDER_START_ASSISTANCE_DELAY_MINUTES,
+        max: MAX_ORDER_START_ASSISTANCE_DELAY_MINUTES,
+        validate: {
+            validator: Number.isInteger,
+            message: "Order start assistance delay must be a whole number of minutes",
+        },
+    },
     hideOutOfStockItems: { type: Boolean, default: false },
     qrOrderingEnabled: { type: Boolean, default: true },
     // Allows waiters to place offline orders on behalf of customers without a QR scan.

@@ -7,7 +7,7 @@
 // Call startRealtimeBus() once at server startup, after connectDB().
 
 import { redisSub, REDIS_CHANNEL } from "../config/redisClient.js"
-import { broadcastLocal } from "./sseManager.js"
+import { broadcastLocal, REALTIME_INSTANCE_ID } from "./sseManager.js"
 
 export function startRealtimeBus() {
     if (!redisSub) {
@@ -36,6 +36,11 @@ export function startRealtimeBus() {
             console.error("[RealtimeBus] ❌ Failed to parse Redis message:", rawMessage, err.message)
             return
         }
+
+        // publishEvent already delivered this event to clients connected to
+        // this process. Redis is the cross-instance fan-out and must not echo
+        // the same transition back to those clients a second time.
+        if (msg.originInstanceId === REALTIME_INSTANCE_ID) return
 
         const { event, businessId, targets, payload } = msg
 

@@ -6,9 +6,26 @@ import {
   ORDER_INVENTORY_SEMANTICS,
   ORDER_INVENTORY_SEMANTICS_VALUES,
 } from "../constants/orderInventory.js"
+import {
+  FULFILLMENT_BEHAVIOR_VALUES,
+  FULFILLMENT_STATION_VALUES,
+  FULFILLMENT_STATUS_VALUES,
+  ORDER_FULFILLMENT_SCHEMA_VERSION,
+} from "../constants/orderFulfillment.js"
+import { generateOrderLineId } from "../utils/orderLineId.js"
+
+const FulfillmentActorSchema = new mongoose.Schema(
+  {
+    staffId: { type: String, default: null, maxlength: 160 },
+    name: { type: String, default: null, maxlength: 160 },
+    role: { type: String, default: null, maxlength: 80 },
+  },
+  { _id: false },
+)
 
 const OrderItemSchema = new mongoose.Schema(
   {
+    orderLineId: { type: String, default: generateOrderLineId, trim: true, maxlength: 100 },
     menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: false },
     itemName: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
@@ -27,6 +44,25 @@ const OrderItemSchema = new mongoose.Schema(
     lineTotal: { type: Number, required: true },
     prepTimeMinutes: { type: Number, default: null },
     allergies: { type: [String], default: [] },
+    fulfillmentStation: {
+      type: String,
+      enum: [...FULFILLMENT_STATION_VALUES, null],
+      default: null,
+    },
+    fulfillmentBehavior: {
+      type: String,
+      enum: [...FULFILLMENT_BEHAVIOR_VALUES, null],
+      default: null,
+    },
+    fulfillmentStatus: {
+      type: String,
+      enum: [...FULFILLMENT_STATUS_VALUES, null],
+      default: null,
+    },
+    fulfillmentStartedAt: { type: Date, default: null },
+    fulfillmentStartedBy: { type: FulfillmentActorSchema, default: null },
+    fulfillmentReadyAt: { type: Date, default: null },
+    fulfillmentReadyBy: { type: FulfillmentActorSchema, default: null },
   },
   { _id: false }
 )
@@ -112,6 +148,11 @@ const OrderSchema = new mongoose.Schema(
     journeyId: { type: String, default: null },
     status: { type: String, enum: ["placed", "in_progress", "ready", "completed", "cancelled"], default: "placed", index: true },
     items: { type: [OrderItemSchema], required: true },
+    fulfillmentSchemaVersion: {
+      type: Number,
+      default: ORDER_FULFILLMENT_SCHEMA_VERSION,
+      min: 1,
+    },
     subtotal: { type: Number, default: 0 },
     taxAmount: { type: Number, default: 0 },
     platformFeeTotal: { type: Number, default: 0 },
@@ -266,6 +307,11 @@ const OrderSchema = new mongoose.Schema(
 )
 
 OrderSchema.pre("validate", function () {
+  const orderLineIds = (this.items || []).map((item) => item.orderLineId).filter(Boolean)
+  if (new Set(orderLineIds).size !== orderLineIds.length) {
+    this.invalidate("items", "Order line IDs must be unique within an order")
+  }
+
   const lines = Array.isArray(this.inventoryDeductionLines)
     ? this.inventoryDeductionLines
     : []
@@ -341,6 +387,7 @@ OrderSchema.index(
   },
 )
 OrderSchema.index({ businessId: 1, inventoryReservationId: 1 })
+OrderSchema.index({ businessId: 1, "items.orderLineId": 1 })
 // Supports tenant-scoped paid-revenue analytics on the authoritative payment time.
 OrderSchema.index({ businessId: 1, paymentStatus: 1, paidAt: 1 })
 // Supports tenant-scoped operational analytics over order creation and status.

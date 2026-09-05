@@ -3,18 +3,22 @@ import ServicePoint from "../models/ServicePoint.js"
 import GuestSession from "../models/GuestSession.js"
 import Business from "../models/Business.js"
 import { publishEvent } from "../utils/sseManager.js"
-import { DateTime } from "luxon"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 import { normalizeFoodServiceRequestCategory } from "../services/serviceRequestClassificationService.js"
 import {
   buildActiveServiceRequestLocationScope,
+  buildActiveServiceRequestScopeKey,
   getTrustedTableServicePointId,
 } from "../services/serviceRequestScopeService.js"
 import { getWaiterRequestCooldownMs } from "../config/waiterRequest.js"
+import { isBusinessOpen } from "../utils/operatingHours.js"
+import { isCallWaiterEnabledForBusiness } from "../utils/customerOrderTiming.js"
 
-async function expireStaleCalls(businessId) {
-  const now = new Date()
-  await ServiceRequest.updateMany(
+export async function expireStaleCalls(
+  businessId,
+  { ServiceRequestModel = ServiceRequest, now = new Date() } = {},
+) {
+  await ServiceRequestModel.updateMany(
     {
       businessId,
       module: "foodService",
@@ -25,9 +29,68 @@ async function expireStaleCalls(businessId) {
       $set: {
         status: "missed",
         missedAt: now,
+        activeScopeKey: null,
       },
     }
   )
+
+  await expireStaleAcknowledgedCalls(businessId, {
+    ServiceRequestModel,
+    now,
+  })
+}
+
+async function expireStaleAcknowledgedCalls(
+  businessId,
+  { ServiceRequestModel = ServiceRequest, now = new Date() } = {},
+) {
+  const acknowledgedCutoff = new Date(
+    now.getTime() - getWaiterRequestCooldownMs(),
+  )
+  await ServiceRequestModel.updateMany(
+    {
+      businessId,
+      module: "foodService",
+      status: "acknowledged",
+      $or: [
+        { acknowledgedExpiresAt: { $lte: now } },
+        {
+          acknowledgedExpiresAt: null,
+          acknowledgedAt: { $lte: acknowledgedCutoff },
+        },
+        {
+          acknowledgedExpiresAt: null,
+          acknowledgedAt: null,
+        },
+      ],
+    },
+    {
+      $set: {
+        status: "missed",
+        missedAt: now,
+        activeScopeKey: null,
+      },
+    },
+  )
+}
+
+export async function createOrGetActiveWaiterCall({
+  callInput,
+  activeScopeKey,
+  ServiceRequestModel = ServiceRequest,
+}) {
+  try {
+    const call = await ServiceRequestModel.create({
+      ...callInput,
+      activeScopeKey,
+    })
+    return { call, created: true }
+  } catch (err) {
+    if (err?.code !== 11000) throw err
+    const call = await ServiceRequestModel.findOne({ activeScopeKey }).lean()
+    if (!call) throw err
+    return { call, created: false }
+  }
 }
 
 /**
@@ -102,14 +165,26 @@ export async function createWaiterCall(req, res) {
         error: "Food-service requests are not enabled for this business",
       })
     }
+    if (!isCallWaiterEnabledForBusiness(business)) {
+      return res.status(403).json({
+        error: "Waiter calls are disabled for this business",
+        code: "WAITER_CALL_DISABLED",
+      })
+    }
+    if (!isBusinessOpen(business).isOpen) {
+      return res.status(403).json({
+        error: "Waiter calls are unavailable while the business is closed",
+        code: "BUSINESS_CLOSED",
+      })
+    }
 
     if (!servicePointLabel || !String(servicePointLabel).trim()) {
       return res.status(400).json({ error: "servicePointLabel is required" })
     }
 
-    // Lazy expiration
-    await expireStaleCalls(businessId)
     const now = new Date()
+    // Lazy expiration
+    await expireStaleCalls(businessId, { now })
 
     // Resolve the canonical service point before checking for an active request.
     // servicePointLabel is display data and can change independently of identity.
@@ -147,6 +222,11 @@ export async function createWaiterCall(req, res) {
     if (!activeLocationScope) {
       return res.status(400).json({ error: "servicePointId is required" })
     }
+    const activeScopeKey = buildActiveServiceRequestScopeKey({
+      businessId,
+      module: "foodService",
+      servicePointId: finalServicePointId,
+    })
 
     // Sequential retries return the existing canonical service-point request.
     const existingActiveCall = await ServiceRequest.findOne({
@@ -155,8 +235,22 @@ export async function createWaiterCall(req, res) {
       $and: [
         activeLocationScope,
         {
-          status: { $in: ["pending", "acknowledged"] },
-          pendingExpiresAt: { $gt: now },
+          $or: [
+            {
+              status: "acknowledged",
+              $or: [
+                { acknowledgedExpiresAt: { $gt: now } },
+                {
+                  acknowledgedExpiresAt: null,
+                  acknowledgedAt: {
+                    $gt: new Date(now.getTime() - getWaiterRequestCooldownMs()),
+                  },
+                },
+              ],
+            },
+            { status: "pending", pendingExpiresAt: { $gt: now } },
+            { status: "pending", pendingExpiresAt: null },
+          ],
         },
       ],
     }).lean()
@@ -169,23 +263,34 @@ export async function createWaiterCall(req, res) {
       })
     }
 
-    const call = await ServiceRequest.create({
-      businessId,
-      module: "foodService",
-      contextType: resolved.contextType,
-      guestSessionId: resolved.guestSessionId,
-      servicePointId: finalServicePointId,
-      servicePointLabel: finalTableLabel,
-      servicePointQrCode: finalTableCode,
-      userDeviceId: userDeviceId ? String(userDeviceId).trim() : null,
-      reason: String(reason || "").trim(),
-      requestCategory:
-        normalizeFoodServiceRequestCategory(reason),
-      note: String(note || "").trim(),
-      status: "pending",
-      createdBy: staffId || null, // usually null because customer triggers it
-      pendingExpiresAt: new Date(now.getTime() + getWaiterRequestCooldownMs()),
+    const { call, created } = await createOrGetActiveWaiterCall({
+      activeScopeKey,
+      callInput: {
+        businessId,
+        module: "foodService",
+        contextType: resolved.contextType,
+        guestSessionId: resolved.guestSessionId,
+        servicePointId: finalServicePointId,
+        servicePointLabel: finalTableLabel,
+        servicePointQrCode: finalTableCode,
+        userDeviceId: userDeviceId ? String(userDeviceId).trim() : null,
+        reason: String(reason || "").trim(),
+        requestCategory:
+          normalizeFoodServiceRequestCategory(reason),
+        note: String(note || "").trim(),
+        status: "pending",
+        createdBy: staffId || null, // usually null because customer triggers it
+        pendingExpiresAt: new Date(now.getTime() + getWaiterRequestCooldownMs()),
+      },
     })
+
+    if (!created) {
+      return res.status(200).json({
+        success: true,
+        call,
+        message: "A waiter has already been requested for this service point.",
+      })
+    }
 
     // Notify staff and the customer's table stream (per-table scoped). The latter
     // lets other devices at the same table reflect the new call in real time.
@@ -305,6 +410,8 @@ export async function claimWaiterCall(req, res) {
 
     const now = new Date()
 
+    await expireStaleCalls(businessId, { now })
+
     const claimed = await ServiceRequest.findOneAndUpdate(
       {
         _id: id,
@@ -312,6 +419,10 @@ export async function claimWaiterCall(req, res) {
         module: "foodService",
         status: "pending",
         claimedBy: null,
+        $or: [
+          { pendingExpiresAt: { $gt: now } },
+          { pendingExpiresAt: null },
+        ],
       },
       {
         $set: {
@@ -321,6 +432,10 @@ export async function claimWaiterCall(req, res) {
           acknowledgedAt: now,
           acknowledgedByStaffId: staffId,
           acknowledgedByName: staffName,
+          pendingExpiresAt: null,
+          acknowledgedExpiresAt: new Date(
+            now.getTime() + getWaiterRequestCooldownMs(),
+          ),
         },
       },
       { new: true },
@@ -373,6 +488,8 @@ export async function resolveWaiterCall(req, res) {
 
     const now = new Date()
 
+    await expireStaleAcknowledgedCalls(businessId, { now })
+
     // Query to find the call and update it if allowed
     const query = {
       _id: id,
@@ -398,6 +515,9 @@ export async function resolveWaiterCall(req, res) {
           // If it was pending and resolved directly, mark who handled it
           claimedBy: staffId,
           claimedAt: now,
+          activeScopeKey: null,
+          pendingExpiresAt: null,
+          acknowledgedExpiresAt: null,
         },
       },
       { new: true },

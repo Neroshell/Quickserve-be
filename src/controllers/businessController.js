@@ -519,12 +519,29 @@ export async function updateOrderingPreferences(req, res) {
             return res.status(400).json({ message: "orderingPreferences is required" })
         }
 
-        // Only allow the known boolean fields to be updated
-        const { dineInEnabled, takeoutEnabled, callWaiterEnabled, hideOutOfStockItems, qrOrderingEnabled, enableWaiterOrdering } = orderingPreferences
+        // Only allow the known preference fields to be updated.
+        const {
+            dineInEnabled,
+            takeoutEnabled,
+            callWaiterEnabled,
+            orderStartAssistanceDelayMinutes,
+            hideOutOfStockItems,
+            qrOrderingEnabled,
+            enableWaiterOrdering,
+        } = orderingPreferences
         const safePrefs = {}
         if (typeof dineInEnabled === "boolean") safePrefs["orderingPreferences.dineInEnabled"] = dineInEnabled
         if (typeof takeoutEnabled === "boolean") safePrefs["orderingPreferences.takeoutEnabled"] = takeoutEnabled
         if (typeof callWaiterEnabled === "boolean") safePrefs["orderingPreferences.callWaiterEnabled"] = callWaiterEnabled
+        if (orderStartAssistanceDelayMinutes !== undefined) {
+            const delayMinutes = Number(orderStartAssistanceDelayMinutes)
+            if (!Number.isInteger(delayMinutes) || delayMinutes < 1 || delayMinutes > 240) {
+                return res.status(400).json({
+                    message: "orderStartAssistanceDelayMinutes must be a whole number from 1 to 240",
+                })
+            }
+            safePrefs["orderingPreferences.orderStartAssistanceDelayMinutes"] = delayMinutes
+        }
         if (typeof hideOutOfStockItems === "boolean") safePrefs["orderingPreferences.hideOutOfStockItems"] = hideOutOfStockItems
         if (typeof qrOrderingEnabled === "boolean") safePrefs["orderingPreferences.qrOrderingEnabled"] = qrOrderingEnabled
         if (typeof enableWaiterOrdering === "boolean") safePrefs["orderingPreferences.enableWaiterOrdering"] = enableWaiterOrdering
@@ -548,7 +565,9 @@ export async function updateOrderingPreferences(req, res) {
 
         await Promise.all([
             invalidateBusinessConfiguration(businessId),
-            Object.keys(safePrefs).some(path => path.startsWith("settings."))
+            Object.keys(safePrefs).some(path => (
+                path.startsWith("settings.") || path.startsWith("orderingPreferences.")
+            ))
                 ? invalidatePublicBusinessRoute(business.countryCode, business.slug)
                 : Promise.resolve(true),
         ])

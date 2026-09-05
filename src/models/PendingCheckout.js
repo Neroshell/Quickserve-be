@@ -1,5 +1,11 @@
 import mongoose from "mongoose"
 import { getPendingCheckoutExpiresAt } from "../constants/checkoutRetention.js"
+import {
+    FULFILLMENT_BEHAVIOR_VALUES,
+    FULFILLMENT_STATION_VALUES,
+    FULFILLMENT_STATUS_VALUES,
+} from "../constants/orderFulfillment.js"
+import { generateOrderLineId } from "../utils/orderLineId.js"
 
 /**
  * Temporary storage for cart data while the customer is completing
@@ -12,6 +18,7 @@ import { getPendingCheckoutExpiresAt } from "../constants/checkoutRetention.js"
 
 const PendingItemSchema = new mongoose.Schema(
     {
+        orderLineId: { type: String, default: generateOrderLineId, trim: true, maxlength: 100 },
         menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: false },
         itemName: { type: String, required: true },
         quantity: { type: Number, required: true, min: 1 },
@@ -21,6 +28,13 @@ const PendingItemSchema = new mongoose.Schema(
         type: { type: String, enum: ["food", "drinks"], default: "food" },
         notes: { type: String, default: "" },
         allergies: { type: [String], default: [] },
+        fulfillmentStation: { type: String, enum: [...FULFILLMENT_STATION_VALUES, null], default: null },
+        fulfillmentBehavior: { type: String, enum: [...FULFILLMENT_BEHAVIOR_VALUES, null], default: null },
+        fulfillmentStatus: { type: String, enum: [...FULFILLMENT_STATUS_VALUES, null], default: null },
+        fulfillmentStartedAt: { type: Date, default: null },
+        fulfillmentStartedBy: { type: mongoose.Schema.Types.Mixed, default: null },
+        fulfillmentReadyAt: { type: Date, default: null },
+        fulfillmentReadyBy: { type: mongoose.Schema.Types.Mixed, default: null },
     },
     { _id: false }
 )

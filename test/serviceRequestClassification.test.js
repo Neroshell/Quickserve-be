@@ -59,6 +59,12 @@ test("existing waiter-call reasons normalize only to the supported food-service 
     )
     assert.equal(
         normalizeFoodServiceRequestCategory(
+            "Delayed order"
+        ),
+        "delayed_order"
+    )
+    assert.equal(
+        normalizeFoodServiceRequestCategory(
             "Need more towels"
         ),
         "other"

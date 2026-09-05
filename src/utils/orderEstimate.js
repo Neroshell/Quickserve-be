@@ -7,6 +7,9 @@ function normalizeMinutes(value) {
 }
 
 export function getItemPrepTimeMinutes(menuItem) {
+  const isDirect = menuItem?.fulfillmentBehavior === "direct" ||
+    (!menuItem?.fulfillmentBehavior && menuItem?.type === "drinks")
+  if (isDirect) return null
   return normalizeMinutes(menuItem?.prepTimeMinutes) || DEFAULT_ESTIMATED_PREP_MINUTES
 }
 
@@ -15,7 +18,13 @@ export function getEstimatedPrepMinutes(items = []) {
     .map((item) => normalizeMinutes(item?.prepTimeMinutes))
     .filter((minutes) => minutes !== null)
 
-  if (prepTimes.length === 0) return DEFAULT_ESTIMATED_PREP_MINUTES
+  if (prepTimes.length === 0) {
+    const allDirect = items.length > 0 && items.every((item) => (
+      item?.fulfillmentBehavior === "direct" ||
+      (!item?.fulfillmentBehavior && item?.type === "drinks")
+    ))
+    return allDirect ? 0 : DEFAULT_ESTIMATED_PREP_MINUTES
+  }
   return Math.max(...prepTimes)
 }
 

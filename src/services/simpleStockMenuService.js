@@ -22,6 +22,7 @@ import {
     resolveManualMenuAvailability,
     toMenuItemWithInventoryDTO,
 } from "./menuInventoryAvailabilityService.js"
+import { normalizeMenuFulfillmentConfiguration } from "./orderFulfillmentService.js"
 
 const SIMPLE_UNITS = new Set(SIMPLE_STOCK_UNIT_VALUES)
 
@@ -187,13 +188,21 @@ export async function createSimpleStockMenuItem({
         throw new SimpleStockMenuError("Description must be 100 words or less", "INVALID_SIMPLE_STOCK_INPUT")
     }
     const identities = simpleCreationIdentities(tenantId, key)
+    const fulfillment = normalizeMenuFulfillmentConfiguration({
+        type: input?.type,
+        fulfillmentStation: input?.fulfillmentStation,
+        fulfillmentBehavior: input?.fulfillmentBehavior,
+        prepTimeMinutes: input?.prepTimeMinutes,
+    })
     const requestFingerprint = crypto.createHash("sha256").update(JSON.stringify({
         businessId: tenantId,
         name: input?.name,
         price,
-        prepTimeMinutes: input?.prepTimeMinutes,
+        prepTimeMinutes: fulfillment.prepTimeMinutes,
         category: input?.category,
         type: input?.type,
+        fulfillmentStation: fulfillment.fulfillmentStation,
+        fulfillmentBehavior: fulfillment.fulfillmentBehavior,
         description,
         imageUrl: input?.imageUrl || "",
         isAvailable: input?.isAvailable !== false,
@@ -224,22 +233,17 @@ export async function createSimpleStockMenuItem({
             return { replayed: true, menuItem: replay }
         }
 
-        const prepTimeMinutes = Number(input?.prepTimeMinutes)
-        if (!Number.isInteger(prepTimeMinutes) || prepTimeMinutes < 1) {
-            throw new SimpleStockMenuError(
-                "Preparation time must be a whole number of minutes",
-                "INVALID_SIMPLE_STOCK_INPUT",
-            )
-        }
         const manualIsAvailable = input?.isAvailable !== false
         const [menuItem] = await MenuItem.create([{
             _id: identities.menuObjectId,
             businessId: tenantId,
             name: requiredText(input?.name, "name", 30),
             price,
-            prepTimeMinutes,
+            prepTimeMinutes: fulfillment.prepTimeMinutes,
             category: requiredText(input?.category, "category", 80),
-            type: input?.type,
+            type: fulfillment.type,
+            fulfillmentStation: fulfillment.fulfillmentStation,
+            fulfillmentBehavior: fulfillment.fulfillmentBehavior,
             description,
             imageUrl: input?.imageUrl || "",
             manualIsAvailable,

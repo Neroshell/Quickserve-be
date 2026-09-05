@@ -1,8 +1,17 @@
+import { FULFILLMENT_BEHAVIORS, FULFILLMENT_STATUSES } from "../constants/orderFulfillment.js"
+import {
+    getCustomerOrderProgress,
+    resolveMenuItemFulfillment,
+} from "../services/orderFulfillmentService.js"
+
 /**
  * Consistent Order DTO Builder
  * Ensures kitchen and waiter dashboards receive the exact same fields.
  */
-export function toOrderDTO(orderDoc) {
+export function toOrderDTO(
+    orderDoc,
+    { includeFulfillment = false, customerProgressOptions = {} } = {},
+) {
     // Use .toObject() if it's a Mongoose document, or lean it out
     const o = typeof orderDoc.toObject === 'function' ? orderDoc.toObject() : orderDoc;
 
@@ -22,6 +31,57 @@ export function toOrderDTO(orderDoc) {
             firstNote = String(item.notes).trim();
         }
     });
+
+    const fulfillmentItems = (o.items || []).map((it) => {
+        const resolved = resolveMenuItemFulfillment(it)
+        const legacyStatus = ["ready", "completed"].includes(o.status)
+            ? FULFILLMENT_STATUSES.READY
+            : o.status === "in_progress" && resolved.behavior === FULFILLMENT_BEHAVIORS.PREPARED
+                ? FULFILLMENT_STATUSES.IN_PROGRESS
+                : FULFILLMENT_STATUSES.PENDING
+        const item = {
+            itemName: it.itemName,
+            quantity: it.quantity,
+            lineTotal: it.lineTotal || 0,
+            prepTimeMinutes: it.prepTimeMinutes ?? null,
+            type: it.type || "food",
+            category: it.category || "food",
+            notes: it.notes || "",
+            allergies: it.allergies || [],
+        }
+        return {
+            ...item,
+            orderLineId: it.orderLineId || null,
+            fulfillmentStation: it.fulfillmentStation || resolved.station,
+            fulfillmentBehavior: it.fulfillmentBehavior || resolved.behavior,
+            fulfillmentStatus: it.fulfillmentStatus || legacyStatus,
+            fulfillmentStartedAt: it.fulfillmentStartedAt || null,
+            fulfillmentStartedBy: it.fulfillmentStartedBy || null,
+            fulfillmentReadyAt: it.fulfillmentReadyAt || null,
+            fulfillmentReadyBy: it.fulfillmentReadyBy || null,
+        }
+    })
+    const projectedItems = includeFulfillment
+        ? fulfillmentItems
+        : fulfillmentItems.map(({
+            orderLineId,
+            fulfillmentStation,
+            fulfillmentBehavior,
+            fulfillmentStatus,
+            fulfillmentStartedAt,
+            fulfillmentStartedBy,
+            fulfillmentReadyAt,
+            fulfillmentReadyBy,
+            ...item
+        }) => item)
+
+    // A placed-state waiting message is only specific when it comes from the
+    // frozen Order-line snapshot. Keep legacy inference for established
+    // in-progress compatibility, but never use it to guess placed-state copy.
+    const customerProgress = getCustomerOrderProgress({
+        ...o,
+        items: o.status === "placed" ? (o.items || []) : fulfillmentItems,
+    }, customerProgressOptions)
 
     return {
         orderId: o.orderId,
@@ -49,16 +109,9 @@ export function toOrderDTO(orderDoc) {
         paymentStatus: o.paymentStatus || "unpaid",
         paidVia: o.paidVia || null,
         completedBy: o.completedBy || null,
-        items: (o.items || []).map((it) => ({
-            itemName: it.itemName,
-            quantity: it.quantity,
-            lineTotal: it.lineTotal || 0,
-            prepTimeMinutes: it.prepTimeMinutes ?? null,
-            type: it.type || "food",
-            category: it.category || "food",
-            notes: it.notes || "",
-            allergies: it.allergies || [],
-        })),
+        items: projectedItems,
+        customerProgress,
+        customerStatusMessage: customerProgress.headline,
         // Aggregated fields for UI cards
         allergies: Array.from(allergiesSet),
         notes: firstNote,

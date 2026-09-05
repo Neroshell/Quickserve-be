@@ -542,6 +542,9 @@ test("Scenario A: public dine-in order derives tenant, menu pricing, snapshots, 
         itemName: "Margherita Pizza",
         quantity: 2,
         price: 0.01,
+        orderLineId: "client-controlled-line-id",
+        fulfillmentStation: "bar",
+        fulfillmentBehavior: "direct",
         modifierPrice: 0.01,
         notes: "No basil",
         allergies: ["Dairy"],
@@ -567,6 +570,11 @@ test("Scenario A: public dine-in order derives tenant, menu pricing, snapshots, 
   assert.equal(stored.items[0].lineTotal, 25);
   assert.equal(stored.items[0].notes, "No basil");
   assert.deepEqual(stored.items[0].allergies, ["Dairy"]);
+  assert.match(stored.items[0].orderLineId, /^oln_[a-f0-9]{24}$/);
+  assert.notEqual(stored.items[0].orderLineId, "client-controlled-line-id");
+  assert.equal(stored.items[0].fulfillmentStation, "kitchen");
+  assert.equal(stored.items[0].fulfillmentBehavior, "prepared");
+  assert.equal(stored.items[0].fulfillmentStatus, "pending");
   assert.equal(stored.subtotal, 25);
   assert.equal(stored.taxAmount, 2.5);
   assert.equal(stored.platformFeeCents, 50);
@@ -1001,114 +1009,41 @@ test("waitstaff queue receives the full mixed order and session-scoped counts", 
   assert.equal(res.body.counts.placed, 1);
 });
 
-test("order lifecycle enforces sequential transitions, payment-before-completion, and timestamps", async (t) => {
-  let state = createOrderDocument();
-  t.mock.method(console, "log", () => {});
-  t.mock.method(Order, "findOne", () => mockQuery({ ...state }));
-  t.mock.method(
-    Order,
-    "findOneAndUpdate",
-    async (query, update) => {
-      if (query.businessId !== state.businessId || query.status !== state.status) {
-        return null;
-      }
-      Object.assign(state, update.$set, { updatedAt: new Date() });
-      return createOrderDocument(state);
-    },
-  );
-
-  const reqBase = {
-    params: { orderId: state.orderId },
-    session: createStaffSession({ role: "kitchen" }),
-  };
-
-  const skippedRes = createResponse();
-  await updateOrderStatus(
-    { ...reqBase, body: { status: "ready" } },
-    skippedRes,
-  );
-  assert.equal(skippedRes.statusCode, 400);
-
-  const progressRes = createResponse();
-  await updateOrderStatus(
-    { ...reqBase, body: { status: "in_progress" } },
-    progressRes,
-  );
-  assert.equal(progressRes.statusCode, 200);
-  assert.equal(state.status, "in_progress");
-
-  const backwardRes = createResponse();
-  await updateOrderStatus(
-    { ...reqBase, body: { status: "placed" } },
-    backwardRes,
-  );
-  assert.equal(backwardRes.statusCode, 400);
-
-  const readyRes = createResponse();
-  await updateOrderStatus(
-    { ...reqBase, body: { status: "ready" } },
-    readyRes,
-  );
-  assert.equal(readyRes.statusCode, 200);
-  assert.ok(state.readyAt instanceof Date);
-
-  const unpaidCompleteRes = createResponse();
-  await updateOrderStatus(
-    { ...reqBase, body: { status: "completed" } },
-    unpaidCompleteRes,
-  );
-  assert.equal(unpaidCompleteRes.statusCode, 400);
-
-  state.paymentStatus = "paid";
-  const completeRes = createResponse();
-  await updateOrderStatus(
-    { ...reqBase, body: { status: "completed" } },
-    completeRes,
-  );
-  assert.equal(completeRes.statusCode, 200);
-  assert.equal(state.status, "completed");
-  assert.ok(state.completedAt instanceof Date);
-
-  const afterCompletionRes = createResponse();
-  await updateOrderStatus(
-    { ...reqBase, body: { status: "ready" } },
-    afterCompletionRes,
-  );
-  assert.equal(afterCompletionRes.statusCode, 400);
+test("generic order status endpoint rejects station progress mutations", async () => {
+  for (const status of ["placed", "in_progress", "ready"]) {
+    const res = createResponse();
+    await updateOrderStatus(
+      {
+        params: { orderId: "ORDER-123" },
+        body: { status },
+        session: createStaffSession({ role: "waiter" }),
+      },
+      res,
+    );
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.error, /Kitchen and Bar actions derive order progress/i);
+  }
 });
 
-test("concurrent order transition conflict returns 409 without overwriting state", async (t) => {
-  const order = createOrderDocument();
-  t.mock.method(Order, "findOne", () => mockQuery(order));
-  t.mock.method(Order, "findOneAndUpdate", async () => null);
-
+test("generic endpoint cannot bypass line-level concurrency with an in-progress write", async () => {
   const res = createResponse();
   await updateOrderStatus(
     {
-      params: { orderId: order.orderId },
+      params: { orderId: "ORDER-123" },
       body: { status: "in_progress" },
-      session: createStaffSession({ role: "kitchen" }),
+      session: createStaffSession({ role: "waiter" }),
     },
     res,
   );
-
-  assert.equal(res.statusCode, 409);
-  assert.match(res.body.error, /another request/i);
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /derive order progress/i);
 });
 
-test("cancelled orders cannot progress and cross-tenant status updates resolve no order", async (t) => {
-  const queries = [];
-  let order = createOrderDocument({ status: "cancelled" });
-  t.mock.method(Order, "findOne", (query) => {
-    queries.push(query);
-    if (query.businessId !== order.businessId) return mockQuery(null);
-    return mockQuery(order);
-  });
-
+test("station-style status updates cannot progress cancelled or cross-tenant orders through the generic endpoint", async () => {
   const cancelledRes = createResponse();
   await updateOrderStatus(
     {
-      params: { orderId: order.orderId },
+      params: { orderId: "ORDER-CANCELLED" },
       body: { status: "in_progress" },
       session: createStaffSession(),
     },
@@ -1119,14 +1054,13 @@ test("cancelled orders cannot progress and cross-tenant status updates resolve n
   const tenantRes = createResponse();
   await updateOrderStatus(
     {
-      params: { orderId: order.orderId },
+      params: { orderId: "ORDER-CANCELLED" },
       body: { status: "in_progress" },
       session: createStaffSession({ businessId: "business-b" }),
     },
     tenantRes,
   );
-  assert.equal(tenantRes.statusCode, 404);
-  assert.equal(queries[1].businessId, "business-b");
+  assert.equal(tenantRes.statusCode, 400);
 });
 
 test("offline cash payment records staff attribution, sends one receipt, and remains paid if delivery is asynchronous", async (t) => {
@@ -1550,6 +1484,9 @@ test("customer history is scoped by business and device session and preserves sn
   });
   t.mock.method(ServicePoint, "findOne", () =>
     mockQuery(createServicePointFixture()),
+  );
+  t.mock.method(Business, "findOne", () =>
+    mockQuery(createBusinessFixture()),
   );
 
   const res = createResponse();

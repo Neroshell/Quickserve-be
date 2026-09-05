@@ -24,5 +24,8 @@ export function normalizeFoodServiceRequestCategory(reason) {
     if (normalized === "emergency") {
         return "emergency"
     }
+    if (normalized === "delayed order" || normalized === "delayed_order") {
+        return "delayed_order"
+    }
     return "other"
 }

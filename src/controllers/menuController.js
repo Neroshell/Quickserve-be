@@ -12,6 +12,7 @@ import {
     hasAnyMenuInventoryMapping,
     setMappedMenuManualAvailability,
 } from "../services/simpleStockMenuService.js"
+import { normalizeMenuFulfillmentConfiguration } from "../services/orderFulfillmentService.js"
 
 /** Accept businessId with fallback to legacy businessId */
 function resolveBusinessId(req) {
@@ -22,12 +23,6 @@ function resolveBusinessId(req) {
         req.body?.businessId ||
         req.body?.businessId
     )
-}
-
-function normalizePrepTimeMinutes(value) {
-    const minutes = Number(value)
-    if (!Number.isInteger(minutes) || minutes < 1) return null
-    return minutes
 }
 
 function handleMenuError(res, err, fallback) {
@@ -79,7 +74,11 @@ export async function getMenuItems(req, res) {
 export async function createMenuItem(req, res) {
     try {
         const businessId = resolveBusinessId(req)
-        const { name, price, prepTimeMinutes, category, type, description, imageUrl, isAvailable, trackStock, stockQuantity, lowStockThreshold } = req.body
+        const {
+            name, price, prepTimeMinutes, category, type, description, imageUrl,
+            isAvailable, trackStock, stockQuantity, lowStockThreshold,
+            fulfillmentStation, fulfillmentBehavior,
+        } = req.body
 
         if (trackStock === true) {
             return res.status(409).json({
@@ -88,14 +87,15 @@ export async function createMenuItem(req, res) {
             })
         }
 
-        if (!businessId || !name || price === undefined || prepTimeMinutes === undefined || !category || !type) {
-            return res.status(400).json({ error: "Missing required fields (businessId, name, price, prepTimeMinutes, category, type)" })
+        if (!businessId || !name || price === undefined || !category || !type) {
+            return res.status(400).json({ error: "Missing required fields (businessId, name, price, category, type)" })
         }
-
-        const normalizedPrepTimeMinutes = normalizePrepTimeMinutes(prepTimeMinutes)
-        if (normalizedPrepTimeMinutes === null) {
-            return res.status(400).json({ error: "Preparation time must be a whole number of minutes." })
-        }
+        const fulfillment = normalizeMenuFulfillmentConfiguration({
+            type,
+            fulfillmentStation,
+            fulfillmentBehavior,
+            prepTimeMinutes,
+        })
 
         // Validate description word count
         if (description) {
@@ -109,9 +109,11 @@ export async function createMenuItem(req, res) {
             businessId,
             name,
             price,
-            prepTimeMinutes: normalizedPrepTimeMinutes,
+            prepTimeMinutes: fulfillment.prepTimeMinutes,
             category,
-            type,
+            type: fulfillment.type,
+            fulfillmentStation: fulfillment.fulfillmentStation,
+            fulfillmentBehavior: fulfillment.fulfillmentBehavior,
             description,
             imageUrl,
             isAvailable: isAvailable !== undefined ? isAvailable : true,
@@ -141,6 +143,11 @@ export async function updateMenuItem(req, res) {
             return res.status(400).json({ error: "Missing businessId" })
         }
 
+        const existingItem = await MenuItem.findOne({ _id: id, businessId, archivedAt: null }).lean()
+        if (!existingItem) {
+            return res.status(404).json({ error: "Menu item not found or unauthorized" })
+        }
+
         const mapped = await hasAnyMenuInventoryMapping({ businessId, menuItemId: id })
         const protectedStockFields = [
             "trackStock",
@@ -164,17 +171,27 @@ export async function updateMenuItem(req, res) {
             }
         }
 
-        if (req.body.prepTimeMinutes !== undefined) {
-            const normalizedPrepTimeMinutes = normalizePrepTimeMinutes(req.body.prepTimeMinutes)
-            if (normalizedPrepTimeMinutes === null) {
-                return res.status(400).json({ error: "Preparation time must be a whole number of minutes." })
-            }
-            req.body.prepTimeMinutes = normalizedPrepTimeMinutes
+        if (
+            req.body.prepTimeMinutes !== undefined ||
+            req.body.type !== undefined ||
+            req.body.fulfillmentStation !== undefined ||
+            req.body.fulfillmentBehavior !== undefined
+        ) {
+            const fulfillment = normalizeMenuFulfillmentConfiguration({
+                type: req.body.type ?? existingItem.type,
+                fulfillmentStation: req.body.fulfillmentStation ?? existingItem.fulfillmentStation,
+                fulfillmentBehavior: req.body.fulfillmentBehavior ?? existingItem.fulfillmentBehavior,
+                prepTimeMinutes: req.body.prepTimeMinutes ?? existingItem.prepTimeMinutes,
+            })
+            req.body.type = fulfillment.type
+            req.body.fulfillmentStation = fulfillment.fulfillmentStation
+            req.body.fulfillmentBehavior = fulfillment.fulfillmentBehavior
+            req.body.prepTimeMinutes = fulfillment.prepTimeMinutes
         }
 
         // Whitelist updatable fields — never $set raw req.body (prevents moving the
         // item to another businessId or writing arbitrary fields).
-        const ALLOWED_FIELDS = ["name", "price", "prepTimeMinutes", "category", "type", "description", "imageUrl", "imagePublicId", "isAvailable", "trackStock", "stockQuantity", "lowStockThreshold"]
+        const ALLOWED_FIELDS = ["name", "price", "prepTimeMinutes", "category", "type", "fulfillmentStation", "fulfillmentBehavior", "description", "imageUrl", "imagePublicId", "isAvailable", "trackStock", "stockQuantity", "lowStockThreshold"]
         const updates = {}
         for (const field of ALLOWED_FIELDS) {
             if (req.body[field] !== undefined) updates[field] = req.body[field]

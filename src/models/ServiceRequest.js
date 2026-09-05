@@ -21,6 +21,9 @@ const WaiterCallSchema = new mongoose.Schema(
     servicePointId: { type: String, default: null, index: true },
     servicePointLabel: { type: String, required: true, index: true },
     servicePointQrCode: { type: String, default: "" },
+    // Present only while the request is active. The partial unique index makes
+    // simultaneous requests for one tenant/service point converge on one row.
+    activeScopeKey: { type: String, default: null },
 
     // Unique per-device identifier sent by the customer frontend
     // Used for device-level anti-spam and SSE notification targeting
@@ -53,6 +56,7 @@ const WaiterCallSchema = new mongoose.Schema(
 
     // Expiration and missed fields
     pendingExpiresAt: { type: Date, default: null, index: true },
+    acknowledgedExpiresAt: { type: Date, default: null, index: true },
     missedAt: { type: Date, default: null },
 
     // who created it (customer calls usually null)
@@ -69,5 +73,12 @@ WaiterCallSchema.index({
   createdAt: 1,
   status: 1,
 })
+WaiterCallSchema.index(
+  { activeScopeKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { activeScopeKey: { $type: "string" } },
+  },
+)
 
 export default mongoose.models.ServiceRequest || mongoose.model("ServiceRequest", WaiterCallSchema)

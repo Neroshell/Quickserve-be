@@ -5,7 +5,6 @@ import PendingCheckout from "../models/PendingCheckout.js"
 import { generateOrderId } from "../utils/orderId.js"
 import MenuItem from "../models/menuItem.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
-import { publishEvent } from "../utils/sseManager.js"
 import {
   getOrderReceiptIdempotencyKey,
   sendReceiptEmail,
@@ -14,6 +13,7 @@ import ServicePoint from "../models/ServicePoint.js"
 import Business from "../models/Business.js"
 import Plan from "../models/Plan.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
+import { getCustomerProgressOptionsForBusiness } from "../utils/customerOrderTiming.js"
 import { calculateOfflineCommission } from "../utils/platformFee.js"
 import { normalizeTip } from "../utils/tips.js"
 import CustomerConsent from "../models/CustomerConsent.js"
@@ -47,6 +47,11 @@ import {
   INVENTORY_RESERVATION_SOURCE_TYPES,
   INVENTORY_RESERVATION_STATUSES,
 } from "../constants/inventoryReservation.js"
+import {
+  completeOrderForWaitstaff,
+  createOrderLineFulfillmentSnapshot,
+} from "../services/orderFulfillmentService.js"
+import { publishOrderRealtime } from "../services/orderRealtimeService.js"
 // Restaurant-flow defect safeguards for direct/offline orders:
 // validate and normalize the cart, enforce business ordering/payment settings,
 // and derive currency from the business instead of accepting client values.
@@ -111,7 +116,11 @@ export async function listOrders(req, res) {
       filter.sessionId = sessionId
     }
 
-    const orders = await Order.find(filter).sort({ createdAt: -1 }).lean()
+    const [orders, business] = await Promise.all([
+      Order.find(filter).sort({ createdAt: -1 }).lean(),
+      Business.findOne({ businessId }).lean(),
+    ])
+    const customerProgressOptions = getCustomerProgressOptionsForBusiness(business)
 
     // Hydrate table labels for service points
     for (const order of orders) {
@@ -123,7 +132,7 @@ export async function listOrders(req, res) {
       }
     }
 
-    return res.json(orders.map(toOrderDTO))
+    return res.json(orders.map((order) => toOrderDTO(order, { customerProgressOptions })))
   } catch (err) {
     console.error("List orders error:", err)
     return res.status(500).json({ message: "Server error" })
@@ -271,6 +280,7 @@ export async function createOrder(req, res) {
       calculatedTotal += itemLineTotal
 
       enrichedItems.push({
+        ...createOrderLineFulfillmentSnapshot(menuItem),
         menuItemId: menuItem._id,
         itemName: item.itemName,
         quantity: item.quantity,
@@ -295,10 +305,6 @@ export async function createOrder(req, res) {
         items: stockFailures,
       })
     }
-
-    // Detect drinks-only order
-    const hasFood = enrichedItems.some(i => i.type === "food")
-    const initialStatus = hasFood ? "placed" : "ready"
 
     // ✅ Backend-authoritative total calculation
     const subtotal = Number(calculatedTotal.toFixed(2))
@@ -370,7 +376,7 @@ export async function createOrder(req, res) {
       orderType: finalOrderType,
       sessionId,
       items: enrichedItems,
-      status: initialStatus,
+      status: "placed",
       estimatedPrepMinutes: estimate.estimatedPrepMinutes,
       estimatedReadyAt: estimate.estimatedReadyAt,
       subtotal,
@@ -467,28 +473,7 @@ export async function createOrder(req, res) {
 
     if (!replayed) await invalidateSetupProgress(businessId)
 
-    const orderDTO = toOrderDTO(saved)
-
-    // --- SSE via Redis pub/sub ---
-    const foodItems = saved.items.filter(i => i.type === "food")
-    const drinkItems = saved.items.filter(i => i.type === "drinks")
-
-    // 1. Kitchen: food items only
-    if (!replayed && foodItems.length > 0) {
-      const kitchenDTO = { ...orderDTO, items: foodItems }
-      await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO })
-    }
-
-    // 2. Bar: drink items only
-    if (!replayed && drinkItems.length > 0) {
-      const barDTO = { ...orderDTO, items: drinkItems }
-      await publishEvent("order_created", businessId, ["bar"], { order: barDTO })
-    }
-
-    // 3. Waiter + table: full order
-    if (!replayed) {
-      await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
-    }
+    if (!replayed) await publishOrderRealtime("order_created", saved)
 
     return res.status(replayed ? 200 : 201).json({
       orderId: saved.orderId,
@@ -548,7 +533,10 @@ export async function getOrderById(req, res) {
       }
     }
 
-    return res.json(toOrderDTO(order))
+    const business = await Business.findOne({ businessId }).lean()
+    return res.json(toOrderDTO(order, {
+      customerProgressOptions: getCustomerProgressOptionsForBusiness(business),
+    }))
   } catch (err) {
     console.error("Get order error:", err)
     return res.status(500).json({ message: "Server error" })
@@ -596,62 +584,40 @@ export async function updateOrderStatus(req, res) {
       return res.status(401).json({ error: "Unauthorized" })
     }
 
-    const VALID_STATUSES = ["placed", "in_progress", "ready", "completed"]
-    if (!VALID_STATUSES.includes(nextStatus)) {
-      return res.status(400).json({ error: "Invalid status" })
-    }
-
-    const order = await Order.findOne({ orderId, businessId }).lean()
-    if (!order) return res.status(404).json({ error: "Order not found" })
-
-    const allowedNext = {
-      placed: ["in_progress"],
-      in_progress: ["ready"],
-      ready: ["completed"],
-      completed: [],
-    }
-
-    if (!(allowedNext[order.status] || []).includes(nextStatus)) {
+    if (nextStatus !== "completed") {
       return res.status(400).json({
-        error: `Invalid transition ${order.status} -> ${nextStatus}`,
+        error: "Kitchen and Bar actions derive order progress; waitstaff may only mark a ready order served.",
+      })
+    }
+    {
+      const completion = await completeOrderForWaitstaff({
+        businessId,
+        orderId,
+        actor: req.session.user,
+      })
+      const completedOrder = completion.order
+      if (completion.changed) {
+        await publishOrderRealtime("order_updated", completedOrder, {
+          action: "served",
+          customerNotification: completion.customerNotification,
+        })
+      }
+      return res.json({
+        success: true,
+        orderId: completedOrder.orderId,
+        status: completedOrder.status,
+        updatedAt: completedOrder.updatedAt,
+        readyAt: completedOrder.readyAt,
+        completedAt: completedOrder.completedAt,
+        replayed: completion.replayed,
       })
     }
 
-    // ✅ Guard: Offline orders must be paid before being marked as completed (served)
-    if (nextStatus === "completed" && order.paymentChannel === "offline" && order.paymentStatus !== "paid") {
-      return res.status(400).json({
-        error: "Offline orders must be paid before being served",
-      })
-    }
-
-    const updateObj = { status: nextStatus }
-    if (nextStatus === "ready" && !order.readyAt) updateObj.readyAt = new Date()
-    if (nextStatus === "completed" && !order.completedAt) updateObj.completedAt = new Date()
-
-    // ✅ ATOMIC UPDATE: Prevent race conditions if two waiters click the button simultaneously
-    const updatedOrder = await Order.findOneAndUpdate(
-      { orderId, businessId, status: order.status },
-      { $set: updateObj },
-      { new: true }
-    )
-
-    if (!updatedOrder) {
-      return res.status(409).json({ error: "Order status was updated by another request. Please refresh and try again." })
-    }
-
-    const orderDTO = toOrderDTO(updatedOrder)
-    await publishEvent("order_updated", updatedOrder.businessId, null, { order: orderDTO })
-
-    return res.json({
-      success: true,
-      orderId: updatedOrder.orderId,
-      status: updatedOrder.status,
-      updatedAt: updatedOrder.updatedAt,
-      readyAt: updatedOrder.readyAt,
-      completedAt: updatedOrder.completedAt,
-    })
   } catch (err) {
     console.error("[updateOrderStatus]", err)
+    if (Number.isInteger(err?.statusCode)) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code })
+    }
     return res.status(500).json({ error: "Failed to update order status" })
   }
 }
@@ -770,23 +736,7 @@ export async function markPaid(req, res) {
       })
     }
 
-    const orderDTO = toOrderDTO(updatedOrder)
-
-    // Broadcast via Redis — kitchen gets food-only, bar gets drinks-only, waiters get full order
-    const foodItems2 = updatedOrder.items.filter(i => i.type === "food")
-    const drinkItems2 = updatedOrder.items.filter(i => i.type === "drinks")
-
-    if (foodItems2.length > 0) {
-      const kitchenDTO = { ...orderDTO, items: foodItems2 }
-      await publishEvent("order_updated", updatedOrder.businessId, ["kitchen"], { order: kitchenDTO })
-    }
-
-    if (drinkItems2.length > 0) {
-      const barDTO = { ...orderDTO, items: drinkItems2 }
-      await publishEvent("order_updated", updatedOrder.businessId, ["bar"], { order: barDTO })
-    }
-
-    await publishEvent("order_updated", updatedOrder.businessId, ["waiter", "table", "anon"], { order: orderDTO, action: "payment_confirmed" })
+    await publishOrderRealtime("order_updated", updatedOrder, { action: "payment_confirmed" })
 
     // ✅ Step 3: Respond immediately — do NOT wait for email
 
@@ -1017,15 +967,14 @@ export async function saveReceiptEmail(req, res) {
 /**
  * PATCH /orders/:orderId/reconcile-complete
  *
- * Operational recovery - mark an order as completed without running through
- * the normal kitchen/bar workflow.  Intended for after-shift reconciliation
- * when a waiter forgot to tap "Complete" before ending their session.
+ * Operational recovery for a ready order whose final waitstaff handoff was
+ * missed. It cannot bypass canonical Kitchen/Bar line readiness.
  *
  * Rules:
  *   - Scoped to the authenticated user's business (session-derived).
  *   - Cancelled orders cannot be moved forward.
- *   - Already-completed orders are idempotent (returns 400 with a clear message).
- *   - Allowed source statuses: placed, in_progress, ready.
+ *   - Already-completed retries are idempotent.
+ *   - Every frozen order line must already be ready.
  *   - Sets completedAt if not already present.
  *   - Publishes SSE update so dashboards refresh.
  */
@@ -1037,70 +986,32 @@ export async function reconcileComplete(req, res) {
       return res.status(401).json({ error: "Unauthorized" })
     }
 
-    const ALLOWED_SOURCE_STATUSES = ["placed", "in_progress", "ready"]
-
-    const order = await Order.findOne({ orderId, businessId }).lean()
-    if (!order) {
-      return res.status(404).json({ error: "Order not found" })
-    }
-
-    if (order.status === "cancelled") {
-      return res.status(400).json({ error: "Cancelled orders cannot be marked as completed." })
-    }
-
-    if (order.status === "completed") {
-      return res.status(400).json({ error: "Order is already completed." })
-    }
-
-    if (!ALLOWED_SOURCE_STATUSES.includes(order.status)) {
-      return res.status(400).json({
-        error: `Cannot complete an order with status '${order.status}'. Allowed: ${ALLOWED_SOURCE_STATUSES.join(", ")}.`,
+    {
+      const completion = await completeOrderForWaitstaff({
+        businessId,
+        orderId,
+        actor: req.session.user,
+      })
+      if (completion.changed) {
+        await publishOrderRealtime("order_updated", completion.order, {
+          action: "reconcile_completed",
+          customerNotification: completion.customerNotification,
+        })
+      }
+      return res.json({
+        success: true,
+        orderId: completion.order.orderId,
+        status: completion.order.status,
+        completedAt: completion.order.completedAt,
+        replayed: completion.replayed,
       })
     }
 
-    const completedAt = new Date()
-    const updateObj = {
-      status: "completed",
-    }
-    if (!order.completedAt) updateObj.completedAt = completedAt
-    if (!order.servedAt) updateObj.servedAt = completedAt
-
-    const staffId = req.session?.user?.staffId || req.session?.user?.id
-    if (staffId) updateObj.servedByStaffId = staffId
-    if (req.session?.user?.name) {
-      updateObj.completedBy = req.session.user.name
-      updateObj.servedByName = req.session.user.name
-    }
-
-    // ATOMIC UPDATE: guard against concurrent reconciliation attempts
-    const updatedOrder = await Order.findOneAndUpdate(
-      { orderId, businessId, status: { $in: ALLOWED_SOURCE_STATUSES } },
-      { $set: updateObj },
-      { new: true }
-    )
-
-    if (!updatedOrder) {
-      return res.status(409).json({
-        error: "Order status was changed by another request. Please refresh and try again.",
-      })
-    }
-
-    const orderDTO = toOrderDTO(updatedOrder)
-
-    // Broadcast to all relevant staff channels so dashboards update in real-time
-    await publishEvent("order_updated", updatedOrder.businessId, ["waiter", "kitchen", "bar", "table", "anon"], {
-      order: orderDTO,
-      action: "reconcile_completed",
-    })
-
-    return res.json({
-      success: true,
-      orderId: updatedOrder.orderId,
-      status: updatedOrder.status,
-      completedAt: updatedOrder.completedAt,
-    })
   } catch (err) {
     console.error("[reconcileComplete] Error:", err)
+    if (Number.isInteger(err?.statusCode)) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code })
+    }
     return res.status(500).json({ error: "Failed to reconcile order" })
   }
 }

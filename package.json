@@ -27,6 +27,7 @@
     "test:inventory-phase2b": "node --test test/inventoryFoundation.test.js test/ownerInventoryReadService.test.js test/inventoryPhase2A.test.js test/inventoryPhase2B.test.js test/inventoryTransaction.integration.test.js test/inventoryPhase2A.integration.test.js test/inventoryPhase2B.integration.test.js",
     "test:inventory-phase3": "node --test test/inventoryFoundation.test.js test/ownerInventoryReadService.test.js test/inventoryPhase2A.test.js test/inventoryPhase2B.test.js test/inventoryPhase3.test.js test/inventoryTransaction.integration.test.js test/inventoryPhase2A.integration.test.js test/inventoryPhase2B.integration.test.js test/inventoryPhase3.integration.test.js",
     "test:inventory-phase4": "node --test test/inventoryFoundation.test.js test/ownerInventoryReadService.test.js test/inventoryPhase2A.test.js test/inventoryPhase2B.test.js test/inventoryPhase3.test.js test/inventoryPhase4.test.js test/inventoryTransaction.integration.test.js test/inventoryPhase2A.integration.test.js test/inventoryPhase2B.integration.test.js test/inventoryPhase3.integration.test.js test/inventoryPhase4.integration.test.js",
+    "test:fulfillment-phase5a": "node --test test/orderFulfillmentService.test.js test/orderFulfillment.integration.test.js test/customerTimingWaiterCall.test.js test/serviceRequestScopeService.test.js test/serviceRequestClassification.test.js",
     "start": "node server.js",
     "worker": "node src/workers/index.js",
     "worker:dev": "node --watch src/workers/index.js",

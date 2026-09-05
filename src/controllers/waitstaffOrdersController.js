@@ -7,8 +7,6 @@ import Plan from "../models/Plan.js"
 import ServicePoint from "../models/ServicePoint.js"
 import Staff from "../models/Staff.js"
 import { generateOrderId } from "../utils/orderId.js"
-import { toOrderDTO } from "../utils/orderDTO.js"
-import { publishEvent } from "../utils/sseManager.js"
 import { isBusinessOpen } from "../utils/operatingHours.js"
 import { calculateOfflinePricing } from "../services/pricingService.js"
 import { restoreTrackedStock } from "../services/inventoryService.js"
@@ -40,6 +38,8 @@ import {
 } from "../utils/restaurantOrderValidation.js"
 
 import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/businessDate.js"
+import { createOrderLineFulfillmentSnapshot } from "../services/orderFulfillmentService.js"
+import { publishOrderRealtime } from "../services/orderRealtimeService.js"
 
 function getOrderIdempotencyKey(req, fallback) {
   const supplied = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"]
@@ -334,7 +334,7 @@ export async function waiterPastOrders(req, res) {
       total: order.total || 0,
       currency: order.currency || "EUR",
       canMarkPaid: order.paymentChannel === "offline" && ["pending", "unpaid"].includes(order.paymentStatus) && order.status !== "cancelled",
-      canMarkCompleted: ["placed", "in_progress", "ready"].includes(order.status),
+      canMarkCompleted: order.status === "ready",
       items: (order.items || []).map((item) => ({
         itemName: item.itemName,
         quantity: item.quantity,
@@ -619,6 +619,7 @@ export async function createWaiterOrder(req, res) {
       calculatedTotal += itemLineTotal
 
       enrichedItems.push({
+        ...createOrderLineFulfillmentSnapshot(menuItem),
         menuItemId: menuItem._id,
         itemName: item.itemName,
         quantity: item.quantity,
@@ -643,9 +644,6 @@ export async function createWaiterOrder(req, res) {
         items: stockFailures,
       })
     }
-
-    const hasFood = enrichedItems.some(i => i.type === "food")
-    const initialStatus = hasFood ? "placed" : "ready"
 
     const subtotal = Number(calculatedTotal.toFixed(2))
     const totalInCentsForFee = Math.round(subtotal * 100)
@@ -703,7 +701,7 @@ export async function createWaiterOrder(req, res) {
       orderType: finalOrderType,
       sessionId: `waiter_${staffId}_${Date.now()}`,
       items: enrichedItems,
-      status: initialStatus,
+      status: "placed",
       estimatedPrepMinutes: estimate.estimatedPrepMinutes,
       estimatedReadyAt: estimate.estimatedReadyAt,
       subtotal,
@@ -786,24 +784,7 @@ export async function createWaiterOrder(req, res) {
 
     if (!replayed) await invalidateSetupProgress(businessId)
 
-    const orderDTO = toOrderDTO(saved)
-
-    const foodItems = saved.items.filter(i => i.type === "food")
-    const drinkItems = saved.items.filter(i => i.type === "drinks")
-
-    if (!replayed && foodItems.length > 0) {
-      const kitchenDTO = { ...orderDTO, items: foodItems }
-      await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO })
-    }
-
-    if (!replayed && drinkItems.length > 0) {
-      const barDTO = { ...orderDTO, items: drinkItems }
-      await publishEvent("order_created", businessId, ["bar"], { order: barDTO })
-    }
-
-    if (!replayed) {
-      await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO })
-    }
+    if (!replayed) await publishOrderRealtime("order_created", saved)
 
     return res.status(replayed ? 200 : 201).json({
       orderId: saved.orderId,
@@ -897,8 +878,7 @@ export async function cancelWaiterOrder(req, res) {
       await invalidateMenuItems(businessId)
     }
 
-    const orderDTO = toOrderDTO(cancelledOrder)
-    await publishEvent("order_updated", businessId, ["waiter", "kitchen", "bar", "table"], { order: orderDTO })
+    await publishOrderRealtime("order_updated", cancelledOrder, { action: "cancelled" })
 
     return res.json({ success: true, orderId: cancelledOrder.orderId, status: cancelledOrder.status })
   } catch (err) {

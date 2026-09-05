@@ -21,9 +21,9 @@ router.get("/", kitchenOrders)
 
 /**
  * @openapi
- * /kitchen/orders/{orderId}/status:
+ * /kitchen/orders/{orderId}/fulfillment:
  *   patch:
- *     summary: Update order status from kitchen (Kitchen only)
+ *     summary: Advance kitchen order-line fulfilment (Kitchen only)
  *     tags:
  *       - Kitchen
  *     parameters:
@@ -39,15 +39,15 @@ router.get("/", kitchenOrders)
  *           schema:
  *             type: object
  *             required:
- *               - status
+ *               - action
  *             properties:
- *               status:
+ *               action:
  *                 type: string
- *                 enum: [placed, in_progress, ready, completed]
+ *                 enum: [start, ready]
  *     responses:
  *       200:
  *         description: Order status updated successfully
  */
-router.patch("/orders/:orderId/status", updateOrderStatus)
+router.patch("/orders/:orderId/fulfillment", updateOrderStatus)
 
 export default router

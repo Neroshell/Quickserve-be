@@ -162,7 +162,7 @@ router.post(
  * @openapi
  * /orders/{orderId}/status:
  *   patch:
- *     summary: Update status of an order (Waiter/Kitchen/Bar only)
+ *     summary: Perform the final ready-to-served handoff (Waitstaff/management)
  *     tags:
  *       - Orders
  *     parameters:
@@ -182,12 +182,12 @@ router.post(
  *             properties:
  *               status:
  *                 type: string
- *                 enum: [placed, in_progress, ready, completed]
+ *                 enum: [completed]
  *     responses:
  *       200:
  *         description: Status updated successfully
  */
-router.patch("/:orderId/status", requireAuth, requireRole("waiter", "kitchen", "bar"), updateOrderStatus)
+router.patch("/:orderId/status", requireAuth, requireRole("waiter", "manager", "owner", "co_owner"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), updateOrderStatus)
 
 /**
  * @openapi

@@ -1,7 +1,6 @@
 import express from "express"
 import { waiterOrders, waiterPastOrders, createWaiterOrder, cancelWaiterOrder } from "../controllers/waitstaffOrdersController.js"
-import { updateOrderStatus } from "../controllers/kitchenController.js"
-import { markPaid, reconcileComplete } from "../controllers/orderController.js"
+import { markPaid, reconcileComplete, updateOrderStatus } from "../controllers/orderController.js"
 import {
     createWaiterCall,
     listWaiterCalls,
@@ -183,7 +182,7 @@ router.post("/orders", requireOfflineServiceActive, createWaiterOrder)
  * @openapi
  * /waitstaff/orders/{orderId}/status:
  *   patch:
- *     summary: Update status of an order
+ *     summary: Mark a fully ready order served
  *     tags:
  *       - Waiter
  *     parameters:
@@ -203,7 +202,7 @@ router.post("/orders", requireOfflineServiceActive, createWaiterOrder)
  *             properties:
  *               status:
  *                 type: string
- *                 enum: [placed, in_progress, ready, completed]
+ *                 enum: [completed]
  *     responses:
  *       200:
  *         description: Order status updated successfully

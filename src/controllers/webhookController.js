@@ -7,8 +7,6 @@ import ServicePoint from "../models/ServicePoint.js";
 import Plan from "../models/Plan.js";
 import MenuItem from "../models/menuItem.js";
 import { generateOrderId } from "../utils/orderId.js";
-import { toOrderDTO } from "../utils/orderDTO.js";
-import { publishEvent } from "../utils/sseManager.js";
 import {
     getOrderReceiptIdempotencyKey,
     sendReceiptEmail,
@@ -61,6 +59,8 @@ import {
     releaseInventoryReservation,
 } from "../services/inventoryReservationService.js";
 import { finalizePaidOrderWithInventory } from "../services/paidOrderInventoryService.js";
+import { publishOrderRealtime } from "../services/orderRealtimeService.js";
+import { reconcileFrozenCheckoutFulfillment } from "../services/orderFulfillmentService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -215,14 +215,13 @@ async function processCanonicalInventoryCheckout({
     }
     const orderCreatedAt = new Date();
     const estimate = buildOrderEstimate(pending.items, orderCreatedAt);
-    const hasFood = pending.items.some((item) => item.category === "food" || item.type === "food");
     const orderInput = {
         servicePointLabel: pending.servicePointLabel,
         displayLabel,
         orderType: pending.orderType,
         sessionId: pending.sessionId,
         items: pending.items,
-        status: hasFood ? "placed" : "ready",
+        status: "placed",
         createdAt: orderCreatedAt,
         estimatedPrepMinutes: estimate.estimatedPrepMinutes,
         estimatedReadyAt: estimate.estimatedReadyAt,
@@ -356,22 +355,7 @@ async function processCanonicalInventoryCheckout({
     }
 
     if (result.created) {
-        const orderDTO = toOrderDTO(order);
-        const foodItems = order.items.filter((item) => item.category === "food" || item.type === "food");
-        const drinkItems = order.items.filter((item) => item.category === "drinks" || item.type === "drinks");
-        if (foodItems.length > 0) {
-            await publishEvent("order_created", businessId, ["kitchen"], {
-                order: { ...orderDTO, items: foodItems },
-            });
-        }
-        if (drinkItems.length > 0) {
-            await publishEvent("order_created", businessId, ["bar"], {
-                order: { ...orderDTO, items: drinkItems },
-            });
-        }
-        await publishEvent("order_created", businessId, ["waiter", "table", "anon"], {
-            order: orderDTO,
-        });
+        await publishOrderRealtime("order_created", order);
     }
     return { order, created: result.created, receiptDeliveryFailed };
 }
@@ -1088,7 +1072,7 @@ export async function handleStripeWebhook(req, res) {
         let receiptDeliveryFailed = false;
 
         if (order) {
-            let updated = false;
+            let updated = reconcileFrozenCheckoutFulfillment(order, pending.items);
 
             // If the order existed but wasn't paid yet (offline-to-online flow)
             if (order.paymentStatus !== "paid") {
@@ -1229,8 +1213,7 @@ export async function handleStripeWebhook(req, res) {
 
             if (updated) {
                 // Notify waiter/table that the order was paid online
-                const orderDTO = toOrderDTO(order);
-                await publishEvent("order_updated", businessId, ["waiter", "table"], { order: orderDTO });
+                await publishOrderRealtime("order_updated", order, { action: "payment_confirmed" });
             }
 
             if (customerEmail && !order.crmProcessed) {
@@ -1254,8 +1237,6 @@ export async function handleStripeWebhook(req, res) {
                 }
             }
         } else {
-            const hasFood = pending.items.some((i) => i.category === "food" || i.type === "food");
-            const initialStatus = hasFood ? "placed" : "ready";
             // Match offline order creation: the ETA starts when the real Order is created.
             const orderCreatedAt = new Date();
             const estimate = buildOrderEstimate(pending.items, orderCreatedAt);
@@ -1279,7 +1260,7 @@ export async function handleStripeWebhook(req, res) {
                 orderType: pending.orderType,
                 sessionId: pending.sessionId,
                 items: pending.items,
-                status: initialStatus,
+                status: "placed",
                 createdAt: orderCreatedAt,
                 estimatedPrepMinutes: estimate.estimatedPrepMinutes,
                 estimatedReadyAt: estimate.estimatedReadyAt,
@@ -1395,15 +1376,7 @@ export async function handleStripeWebhook(req, res) {
                 void crmOrderDispatcher({ businessId, orderId: order.orderId });
             }
 
-            const orderDTO = toOrderDTO(order);
-            const foodItems = order.items.filter((i) => i.category === "food" || i.type === "food");
-
-            if (foodItems.length > 0) {
-                const kitchenDTO = { ...orderDTO, items: foodItems };
-                await publishEvent("order_created", businessId, ["kitchen"], { order: kitchenDTO });
-            }
-
-            await publishEvent("order_created", businessId, ["waiter", "table", "anon"], { order: orderDTO });
+            await publishOrderRealtime("order_created", order);
         }
 
         if (order.journeyId) {

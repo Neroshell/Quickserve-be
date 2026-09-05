@@ -67,6 +67,9 @@ docker-data/
 
 
 test/*
+!test/orderFulfillmentService.test.js
+!test/orderFulfillment.integration.test.js
+!test/customerTimingWaiterCall.test.js
 test/managerPermissions.test.js
 !test/coOwnerAccess.test.js
 !test/billingHardening.test.js

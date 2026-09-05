@@ -36,6 +36,7 @@ import {
 } from "../services/inventoryReservationRepairService.js";
 import { invalidateMenuItems } from "../services/cacheInvalidationService.js";
 import { enqueueInventoryReservationReconciliation } from "../queues/index.js";
+import { createOrderLineFulfillmentSnapshot } from "../services/orderFulfillmentService.js";
 // Restaurant-flow defect safeguards for online checkout:
 // validate and normalize the cart, reject disabled business/order/payment modes,
 // and derive Stripe currency from the business instead of the client request.
@@ -229,6 +230,7 @@ export async function createCheckoutSession(req, res) {
             });
 
             enrichedItems.push({
+                ...createOrderLineFulfillmentSnapshot(menuItem),
                 menuItemId: menuItem._id,
                 itemName: menuItem.name,
                 quantity: qty,
