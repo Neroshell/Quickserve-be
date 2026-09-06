@@ -73,6 +73,8 @@ test/*
 !test/inventoryPhase5B.test.js
 !test/inventoryPhase5B.integration.test.js
 !test/inventoryPhase6B.test.js
+!test/inventoryLifecycle.test.js
+!test/inventoryCoexistence.test.js
 test/managerPermissions.test.js
 !test/coOwnerAccess.test.js
 !test/billingHardening.test.js

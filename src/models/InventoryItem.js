@@ -15,6 +15,12 @@ function isSafeNonNegativeInteger(value) {
     return Number.isSafeInteger(value) && value >= 0 && value <= MAX_INVENTORY_QUANTITY
 }
 
+const InventoryDeletionActorSchema = new mongoose.Schema({
+    staffId: { type: String, required: true, trim: true, maxlength: 200 },
+    role: { type: String, required: true, trim: true, maxlength: 80 },
+    name: { type: String, required: true, trim: true, maxlength: 160 },
+}, { _id: false })
+
 const InventoryItemSchema = new mongoose.Schema({
     inventoryItemId: {
         type: String,
@@ -32,6 +38,27 @@ const InventoryItemSchema = new mongoose.Schema({
         required: true,
         trim: true,
         maxlength: 120,
+    },
+    // Private duplicate-detection metadata. These fields never replace
+    // inventoryItemId as canonical identity. Existing records remain
+    // unbackfilled so historical duplicates can stay separate.
+    normalizedName: {
+        type: String,
+        default: undefined,
+        maxlength: 120,
+        select: false,
+    },
+    normalizedCategory: {
+        type: String,
+        default: undefined,
+        maxlength: 80,
+        select: false,
+    },
+    duplicateIdentityKey: {
+        type: String,
+        default: undefined,
+        maxlength: 80,
+        select: false,
     },
     category: {
         type: String,
@@ -98,6 +125,14 @@ const InventoryItemSchema = new mongoose.Schema({
         type: Boolean,
         default: true,
     },
+    deletedAt: {
+        type: Date,
+        default: null,
+    },
+    deletedBy: {
+        type: InventoryDeletionActorSchema,
+        default: null,
+    },
 }, {
     timestamps: true,
     optimisticConcurrency: true,
@@ -107,8 +142,18 @@ InventoryItemSchema.index(
     { businessId: 1, inventoryItemId: 1 },
     { unique: true },
 )
-InventoryItemSchema.index({ businessId: 1, isActive: 1, name: 1, _id: 1 })
-InventoryItemSchema.index({ businessId: 1, category: 1, isActive: 1, name: 1, _id: 1 })
+InventoryItemSchema.index(
+    { businessId: 1, duplicateIdentityKey: 1 },
+    {
+        unique: true,
+        partialFilterExpression: {
+            duplicateIdentityKey: { $type: "string" },
+            deletedAt: null,
+        },
+    },
+)
+InventoryItemSchema.index({ businessId: 1, deletedAt: 1, isActive: 1, name: 1, _id: 1 })
+InventoryItemSchema.index({ businessId: 1, deletedAt: 1, category: 1, isActive: 1, name: 1, _id: 1 })
 InventoryItemSchema.index({ businessId: 1, updatedAt: -1, _id: -1 })
 
 InventoryItemSchema.pre("validate", function () {

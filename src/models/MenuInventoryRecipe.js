@@ -83,6 +83,26 @@ const MenuInventoryRecipeSchema = new mongoose.Schema({
             message: `Menu inventory mapping requires 1-${MAX_INGREDIENT_RECIPE_COMPONENTS} components`,
         },
     },
+    // A Simple Stock mapping keeps its sellable InventoryItem in `components`.
+    // Optional ingredients live beside it so the existing unique menu mapping,
+    // Simple Stock history, and production indexes remain backward compatible.
+    ingredientComponents: {
+        type: [MenuInventoryComponentSchema],
+        default: [],
+        validate: {
+            validator(value) {
+                return Array.isArray(value) && value.length <= MAX_INGREDIENT_RECIPE_COMPONENTS
+            },
+            message: `Ingredient tracking allows at most ${MAX_INGREDIENT_RECIPE_COMPONENTS} components`,
+        },
+    },
+    ingredientTrackingStatus: {
+        type: String,
+        enum: [...MENU_INVENTORY_MAPPING_STATUS_VALUES, null],
+        default: null,
+    },
+    ingredientTrackingDisabledAt: { type: Date, default: null },
+    ingredientTrackingRemovedAt: { type: Date, default: null },
     migration: { type: MigrationMetadataSchema, default: null },
     creationRequestFingerprint: {
         type: String,
@@ -115,6 +135,26 @@ MenuInventoryRecipeSchema.index({
     "components.inventoryItemId": 1,
     status: 1,
 })
+MenuInventoryRecipeSchema.index({
+    businessId: 1,
+    "ingredientComponents.inventoryItemId": 1,
+    ingredientTrackingStatus: 1,
+})
+
+function validateUniqueIngredientComponents(document, path, components) {
+    const seenInventoryItemIds = new Set()
+    for (const component of components || []) {
+        if (seenInventoryItemIds.has(component.inventoryItemId)) {
+            document.invalidate(
+                path,
+                "Ingredient recipes cannot contain the same inventory item more than once",
+            )
+            return false
+        }
+        seenInventoryItemIds.add(component.inventoryItemId)
+    }
+    return true
+}
 
 MenuInventoryRecipeSchema.pre("validate", function () {
     if (!Array.isArray(this.components) || this.components.length === 0) return
@@ -132,20 +172,38 @@ MenuInventoryRecipeSchema.pre("validate", function () {
                 "Simple Stock requires one canonical inventory unit per menu sale",
             )
         }
+        const ingredientComponents = Array.isArray(this.ingredientComponents)
+            ? this.ingredientComponents
+            : []
+        if (ingredientComponents.length === 0 && this.ingredientTrackingStatus !== null) {
+            this.invalidate(
+                "ingredientTrackingStatus",
+                "Ingredient tracking status requires ingredient components",
+            )
+        }
+        if (
+            ingredientComponents.length > 0 &&
+            ![
+                MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
+                MENU_INVENTORY_MAPPING_STATUSES.DISABLED,
+            ].includes(this.ingredientTrackingStatus)
+        ) {
+            this.invalidate(
+                "ingredientTrackingStatus",
+                "Ingredient components require an active or disabled tracking status",
+            )
+        }
+        validateUniqueIngredientComponents(this, "ingredientComponents", ingredientComponents)
         return
     }
 
-    const seenInventoryItemIds = new Set()
-    for (const component of this.components) {
-        if (seenInventoryItemIds.has(component.inventoryItemId)) {
-            this.invalidate(
-                "components",
-                "Ingredient recipes cannot contain the same inventory item more than once",
-            )
-            return
-        }
-        seenInventoryItemIds.add(component.inventoryItemId)
+    if ((this.ingredientComponents || []).length > 0 || this.ingredientTrackingStatus !== null) {
+        this.invalidate(
+            "ingredientComponents",
+            "Recipe mappings store ingredients in components",
+        )
     }
+    validateUniqueIngredientComponents(this, "components", this.components)
 })
 
 export default mongoose.models.MenuInventoryRecipe || mongoose.model(

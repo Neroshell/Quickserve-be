@@ -240,7 +240,9 @@ test("inventory overview returns derived counts and recent immutable movements",
         InventoryMovementModel,
     })
 
-    assert.deepEqual(aggregatePipeline[0], { $match: { businessId: "biz_alpha", isActive: true } })
+    assert.deepEqual(aggregatePipeline[0], {
+        $match: { businessId: "biz_alpha", isActive: true, deletedAt: null },
+    })
     assert.deepEqual(movementCapture.filter, { businessId: "biz_alpha" })
     assert.equal(movementCapture.limit, 10)
     assert.deepEqual(overview.summary, {

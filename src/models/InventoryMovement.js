@@ -163,7 +163,10 @@ InventoryMovementSchema.pre("validate", function () {
             `${this.type} requires an On Hand delta of ${expectedOnHandDelta}`,
         )
     }
-    if (this.quantityDeltaReserved !== expectedReservedDelta) {
+    const validUnreservedConsumption = this.type === "CONSUME" &&
+        this.sourceType === "inventory_sidecar" &&
+        this.quantityDeltaReserved === 0
+    if (this.quantityDeltaReserved !== expectedReservedDelta && !validUnreservedConsumption) {
         this.invalidate(
             "quantityDeltaReserved",
             `${this.type} requires a Reserved delta of ${expectedReservedDelta}`,

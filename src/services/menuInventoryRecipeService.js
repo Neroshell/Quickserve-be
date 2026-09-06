@@ -13,7 +13,11 @@ import MenuInventoryRecipe, {
 import MenuItem from "../models/menuItem.js"
 import { withCanonicalInventoryTransaction } from "./canonicalInventoryService.js"
 import { invalidateMenuMutation } from "./cacheInvalidationService.js"
-import { resolveManualMenuAvailability } from "./menuInventoryAvailabilityService.js"
+import {
+    ingredientComponentsForMapping,
+    ingredientTrackingStatusForMapping,
+    resolveManualMenuAvailability,
+} from "./menuInventoryAvailabilityService.js"
 import { normalizeInventoryQuantity } from "./inventoryUomService.js"
 
 const STANDARD_LIFECYCLE_TRANSITIONS = Object.freeze({
@@ -85,6 +89,15 @@ export function toMenuInventoryRecipeDTO(value) {
             unit: component.unit,
             canonicalQuantity: component.canonicalQuantity,
         })),
+        ingredientComponents: (mapping.ingredientComponents || []).map((component) => ({
+            inventoryItemId: component.inventoryItemId,
+            quantity: component.quantity,
+            unit: component.unit,
+            canonicalQuantity: component.canonicalQuantity,
+        })),
+        ingredientTrackingStatus: mapping.ingredientTrackingStatus ?? null,
+        ingredientTrackingDisabledAt: mapping.ingredientTrackingDisabledAt ?? null,
+        ingredientTrackingRemovedAt: mapping.ingredientTrackingRemovedAt ?? null,
         migration: mapping.migration ? plain(mapping.migration) : null,
         disabledReason: mapping.disabledReason ?? null,
         disabledAt: mapping.disabledAt ?? null,
@@ -364,8 +377,19 @@ export function toIngredientRecipeDTO({ mapping: mappingValue, menuItem: menuIte
     const menuItem = plain(menuItemValue)
     const byId = inventoryMap(inventoryItems)
     const base = toMenuInventoryRecipeDTO(mapping)
+    const ingredients = ingredientComponentsForMapping(mapping)
+    const ingredientStatus = ingredientTrackingStatusForMapping(mapping)
+    const simpleComponent = mapping.mode === MENU_INVENTORY_MODES.SIMPLE
+        ? mapping.components?.[0]
+        : null
+    const simpleInventoryItem = simpleComponent
+        ? byId.get(simpleComponent.inventoryItemId) || null
+        : null
+    const simpleStockActive = mapping.mode === MENU_INVENTORY_MODES.SIMPLE &&
+        mapping.status === MENU_INVENTORY_MAPPING_STATUSES.ACTIVE
     return {
         ...base,
+        status: ingredientStatus,
         menuItem: menuItem ? {
             id: String(menuItem._id),
             name: menuItem.name,
@@ -374,14 +398,27 @@ export function toIngredientRecipeDTO({ mapping: mappingValue, menuItem: menuIte
             price: menuItem.price,
             manualIsAvailable: resolveManualMenuAvailability(menuItem),
         } : null,
-        components: base.components.map((component) => componentDTO(
+        components: ingredients.map((component) => componentDTO(
             component,
             byId.get(component.inventoryItemId),
         )),
         costing: calculateIngredientRecipeCost({
-            components: base.components,
+            components: ingredients,
             inventoryItems,
         }),
+        simpleStock: simpleComponent ? {
+            active: simpleStockActive,
+            status: mapping.status,
+            inventoryItemId: simpleComponent.inventoryItemId,
+            inventoryItemName: simpleInventoryItem?.name ?? null,
+            onHandQuantity: simpleInventoryItem?.onHandQuantity ?? null,
+            reservedQuantity: simpleInventoryItem?.reservedQuantity ?? null,
+            availableQuantity: simpleInventoryItem
+                ? simpleInventoryItem.onHandQuantity - simpleInventoryItem.reservedQuantity
+                : null,
+            unit: simpleInventoryItem?.trackingUnit ?? simpleComponent.unit,
+        } : null,
+        ingredientBehavior: simpleStockActive ? "sidecar" : "authoritative",
     }
 }
 
@@ -453,7 +490,6 @@ async function upsertIngredientRecipeWithinTransaction({
     menuItemId,
     components,
     enabled,
-    replaceSimpleStock,
     replaceLegacyStock,
     session,
 }, {
@@ -477,13 +513,6 @@ async function upsertIngredientRecipeWithinTransaction({
     if (existing?.status === MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED) {
         throw mappingError("Archived inventory mappings cannot be replaced", "MAPPING_ARCHIVED", 409)
     }
-    if (existing?.mode === MENU_INVENTORY_MODES.SIMPLE && !replaceSimpleStock) {
-        throw mappingError(
-            "Replacing Simple Stock requires replaceSimpleStock=true",
-            "SIMPLE_STOCK_REPLACEMENT_CONFIRMATION_REQUIRED",
-            409,
-        )
-    }
     if (!existing && validated.menuItem.trackStock === true && !replaceLegacyStock) {
         throw mappingError(
             "Replacing legacy stock requires replaceLegacyStock=true",
@@ -491,29 +520,17 @@ async function upsertIngredientRecipeWithinTransaction({
             409,
         )
     }
-    if (existing?.mode === MENU_INVENTORY_MODES.SIMPLE) {
-        const oldInventoryItemIds = existing.components.map((component) => component.inventoryItemId)
-        const reservedSource = await InventoryItemModel.findOne({
-            businessId,
-            inventoryItemId: { $in: oldInventoryItemIds },
-            reservedQuantity: { $gt: 0 },
-        }, null, { session })
-        if (reservedSource) {
-            throw mappingError(
-                "Simple Stock cannot be replaced while inventory is reserved",
-                "SIMPLE_STOCK_HAS_RESERVATIONS",
-                409,
-            )
-        }
-    }
-
     const desiredStatus = enabled
         ? MENU_INVENTORY_MAPPING_STATUSES.ACTIVE
         : MENU_INVENTORY_MAPPING_STATUSES.DISABLED
-    const currentComponents = existing?.components?.map((component) => plain(component)) || []
+    const currentComponents = existing
+        ? ingredientComponentsForMapping(existing).map((component) => plain(component))
+        : []
+    const currentIngredientStatus = existing
+        ? ingredientTrackingStatusForMapping(existing)
+        : null
     const mappingChanged = !existing ||
-        existing.mode !== MENU_INVENTORY_MODES.RECIPE ||
-        existing.status !== desiredStatus ||
+        currentIngredientStatus !== desiredStatus ||
         !componentsEqual(currentComponents, validated.components)
 
     let mapping = existing
@@ -529,8 +546,14 @@ async function upsertIngredientRecipeWithinTransaction({
             disabledReason: enabled ? null : "owner_disabled",
             disabledAt: enabled ? null : new Date(),
         }], { session })
+    } else if (mappingChanged && mapping.mode === MENU_INVENTORY_MODES.SIMPLE) {
+        mapping.ingredientComponents = validated.components
+        mapping.ingredientTrackingStatus = desiredStatus
+        mapping.ingredientTrackingDisabledAt = enabled ? null : new Date()
+        mapping.ingredientTrackingRemovedAt = null
+        mapping.version += 1
+        await mapping.save({ session })
     } else if (mappingChanged) {
-        mapping.mode = MENU_INVENTORY_MODES.RECIPE
         mapping.status = desiredStatus
         mapping.components = validated.components
         mapping.version += 1
@@ -542,26 +565,39 @@ async function upsertIngredientRecipeWithinTransaction({
     }
 
     const menuItem = validated.menuItem
-    const manualIsAvailable = resolveManualMenuAvailability(menuItem)
-    const menuProjectionChanged = menuItem.trackStock !== false ||
-        menuItem.stockQuantity !== null ||
-        menuItem.lowStockThreshold !== null ||
-        menuItem.manualIsAvailable !== manualIsAvailable ||
-        menuItem.isAvailable !== manualIsAvailable
-    if (menuProjectionChanged) {
-        menuItem.trackStock = false
-        menuItem.stockQuantity = null
-        menuItem.lowStockThreshold = null
-        menuItem.manualIsAvailable = manualIsAvailable
-        menuItem.isAvailable = manualIsAvailable
-        await menuItem.save({ session })
+    let menuProjectionChanged = false
+    if (mapping.mode === MENU_INVENTORY_MODES.RECIPE) {
+        const manualIsAvailable = resolveManualMenuAvailability(menuItem)
+        menuProjectionChanged = menuItem.trackStock !== false ||
+            menuItem.stockQuantity !== null ||
+            menuItem.lowStockThreshold !== null ||
+            menuItem.manualIsAvailable !== manualIsAvailable ||
+            menuItem.isAvailable !== manualIsAvailable
+        if (menuProjectionChanged) {
+            menuItem.trackStock = false
+            menuItem.stockQuantity = null
+            menuItem.lowStockThreshold = null
+            menuItem.manualIsAvailable = manualIsAvailable
+            menuItem.isAvailable = manualIsAvailable
+            await menuItem.save({ session })
+        }
     }
+
+    const simpleInventoryItem = mapping.mode === MENU_INVENTORY_MODES.SIMPLE
+        ? await InventoryItemModel.findOne({
+            businessId,
+            inventoryItemId: mapping.components?.[0]?.inventoryItemId,
+        }, null, { session })
+        : null
+    const dtoInventoryItems = simpleInventoryItem
+        ? [...validated.inventoryItems, simpleInventoryItem]
+        : validated.inventoryItems
 
     return {
         recipe: toIngredientRecipeDTO({
             mapping,
             menuItem,
-            inventoryItems: validated.inventoryItems,
+            inventoryItems: dtoInventoryItems,
         }),
         replayed: !mappingChanged && !menuProjectionChanged,
     }
@@ -586,7 +622,7 @@ export async function upsertIngredientRecipe({
     const tenantId = requiredText(businessId, "businessId", 200)
     const normalizedMenuItemId = normalizeMenuItemId(menuItemId)
     const enabled = normalizeBoolean(enabledValue, "enabled", true)
-    const replaceSimpleStock = normalizeBoolean(
+    normalizeBoolean(
         replaceSimpleStockValue,
         "replaceSimpleStock",
         false,
@@ -601,7 +637,6 @@ export async function upsertIngredientRecipe({
         menuItemId: normalizedMenuItemId,
         components,
         enabled,
-        replaceSimpleStock,
         replaceLegacyStock,
     }
     const dependencies = {
@@ -626,9 +661,10 @@ async function hydrateIngredientRecipes(mappings, {
 }) {
     if (mappings.length === 0) return []
     const menuItemIds = mappings.map((mapping) => mapping.menuItemId)
-    const inventoryItemIds = [...new Set(mappings.flatMap(
-        (mapping) => mapping.components.map((component) => component.inventoryItemId),
-    ))]
+    const inventoryItemIds = [...new Set(mappings.flatMap((mapping) => [
+        ...ingredientComponentsForMapping(mapping),
+        ...(mapping.mode === MENU_INVENTORY_MODES.SIMPLE ? mapping.components || [] : []),
+    ].map((component) => component.inventoryItemId)))]
     const [menuItems, inventoryItems] = await Promise.all([
         MenuItemModel.find({
             businessId,
@@ -645,7 +681,10 @@ async function hydrateIngredientRecipes(mappings, {
     return mappings.map((mapping) => toIngredientRecipeDTO({
         mapping,
         menuItem: menuById.get(String(mapping.menuItemId)) || null,
-        inventoryItems: mapping.components.map(
+        inventoryItems: [
+            ...ingredientComponentsForMapping(mapping),
+            ...(mapping.mode === MENU_INVENTORY_MODES.SIMPLE ? mapping.components || [] : []),
+        ].map(
             (component) => inventoryById.get(component.inventoryItemId),
         ).filter(Boolean),
     }))
@@ -686,14 +725,30 @@ export async function readIngredientRecipesPage({
     if (cursor && !mongoose.isValidObjectId(cursor)) {
         throw mappingError("cursor is invalid", "INVALID_RECIPE_QUERY")
     }
-    const filter = {
-        businessId: tenantId,
+    const recipeStatus = normalizedStatus || { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED }
+    const sidecarStatus = normalizedStatus || {
+        $in: [
+            MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
+            MENU_INVENTORY_MAPPING_STATUSES.DISABLED,
+        ],
+    }
+    const recipeVariant = {
         mode: MENU_INVENTORY_MODES.RECIPE,
-        status: normalizedStatus || { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED },
+        status: recipeStatus,
+        ...(normalizedInventoryItemId
+            ? { "components.inventoryItemId": normalizedInventoryItemId }
+            : {}),
     }
-    if (normalizedInventoryItemId) {
-        filter["components.inventoryItemId"] = normalizedInventoryItemId
+    const sidecarVariant = {
+        mode: MENU_INVENTORY_MODES.SIMPLE,
+        status: { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED },
+        ingredientTrackingStatus: sidecarStatus,
+        "ingredientComponents.0": { $exists: true },
+        ...(normalizedInventoryItemId
+            ? { "ingredientComponents.inventoryItemId": normalizedInventoryItemId }
+            : {}),
     }
+    const filter = { businessId: tenantId, $or: [recipeVariant, sidecarVariant] }
     if (cursor) filter._id = { $gt: new mongoose.Types.ObjectId(cursor) }
     const rows = await MenuInventoryRecipeModel.find(filter)
         .sort({ _id: 1 })
@@ -726,8 +781,20 @@ export async function readIngredientRecipe({ businessId, menuItemId }, {
     const mapping = await MenuInventoryRecipeModel.findOne({
         businessId: tenantId,
         menuItemId: normalizedMenuItemId,
-        mode: MENU_INVENTORY_MODES.RECIPE,
         status: { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED },
+        $or: [
+            { mode: MENU_INVENTORY_MODES.RECIPE },
+            {
+                mode: MENU_INVENTORY_MODES.SIMPLE,
+                ingredientTrackingStatus: {
+                    $in: [
+                        MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
+                        MENU_INVENTORY_MAPPING_STATUSES.DISABLED,
+                    ],
+                },
+                "ingredientComponents.0": { $exists: true },
+            },
+        ],
     }).lean()
     if (!mapping) {
         throw mappingError("Ingredient recipe not found", "INGREDIENT_RECIPE_NOT_FOUND", 404)
@@ -741,6 +808,48 @@ export async function readIngredientRecipe({ businessId, menuItemId }, {
         throw mappingError("Recipe menu item is unavailable", "RECIPE_LINKAGE_BROKEN", 409)
     }
     return recipe
+}
+
+export async function removeIngredientRecipe({ businessId, menuItemId, session = null }, {
+    MenuInventoryRecipeModel = MenuInventoryRecipe,
+    transactionRunner = withCanonicalInventoryTransaction,
+    invalidateMenu = invalidateMenuMutation,
+    now = () => new Date(),
+} = {}) {
+    const tenantId = requiredText(businessId, "businessId", 200)
+    const normalizedMenuItemId = normalizeMenuItemId(menuItemId)
+    const execute = async (currentSession) => {
+        const mapping = await MenuInventoryRecipeModel.findOne({
+            businessId: tenantId,
+            menuItemId: normalizedMenuItemId,
+            status: { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED },
+        }, null, { session: currentSession })
+        if (!mapping || ingredientComponentsForMapping(mapping).length === 0) {
+            throw mappingError("Ingredient recipe not found", "INGREDIENT_RECIPE_NOT_FOUND", 404)
+        }
+        if (mapping.mode !== MENU_INVENTORY_MODES.SIMPLE) {
+            throw mappingError(
+                "Recipe-only tracking should be disabled rather than removed",
+                "RECIPE_ONLY_REMOVE_REQUIRES_DISABLE",
+                409,
+            )
+        }
+        mapping.ingredientComponents = []
+        mapping.ingredientTrackingStatus = null
+        mapping.ingredientTrackingDisabledAt = null
+        mapping.ingredientTrackingRemovedAt = now()
+        mapping.version += 1
+        await mapping.save({ session: currentSession })
+        return {
+            removed: true,
+            menuItemId: String(mapping.menuItemId),
+            simpleStockPreserved: true,
+            mapping: toMenuInventoryRecipeDTO(mapping),
+        }
+    }
+    const result = session ? await execute(session) : await transactionRunner(execute)
+    if (!session) await invalidateMenu(tenantId)
+    return result
 }
 
 export async function transitionMenuInventoryRecipe({

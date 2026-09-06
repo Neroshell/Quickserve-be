@@ -19,6 +19,16 @@ export const INVENTORY_LINE_ALLOCATION_STATUS_VALUES = Object.freeze(
     Object.values(INVENTORY_LINE_ALLOCATION_STATUSES),
 )
 
+export const INVENTORY_SIDECAR_ALLOCATION_STATUSES = Object.freeze({
+    PENDING: "pending",
+    CONSUMED: "consumed",
+    SHORTAGE: "shortage",
+})
+
+export const INVENTORY_SIDECAR_ALLOCATION_STATUS_VALUES = Object.freeze(
+    Object.values(INVENTORY_SIDECAR_ALLOCATION_STATUSES),
+)
+
 export const INVENTORY_RESERVATION_SOURCE_TYPES = Object.freeze({
     OFFLINE_ORDER: "offline_order",
     WAITSTAFF_ORDER: "waitstaff_order",

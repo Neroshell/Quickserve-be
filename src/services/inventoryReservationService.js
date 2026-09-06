@@ -8,6 +8,7 @@ import {
     INVENTORY_RESERVATION_RELEASE_EVIDENCE,
     INVENTORY_RESERVATION_SOURCE_TYPES,
     INVENTORY_RESERVATION_STATUSES,
+    INVENTORY_SIDECAR_ALLOCATION_STATUSES,
 } from "../constants/inventoryReservation.js"
 import {
     FULFILLMENT_ACTIONS,
@@ -35,9 +36,14 @@ import { withCanonicalInventoryTransaction } from "./canonicalInventoryService.j
 import { assertSimpleStockRuntimeEnabled } from "./inventoryRuntimePolicy.js"
 import {
     applyCanonicalSimpleStockProjection,
+    ingredientComponentsForMapping,
+    isIngredientTrackingActive,
     resolveManualMenuAvailability,
 } from "./menuInventoryAvailabilityService.js"
-import { normalizeInventoryQuantity } from "./inventoryUomService.js"
+import {
+    getInventoryUnitDefinition,
+    normalizeInventoryQuantity,
+} from "./inventoryUomService.js"
 import { buildOrderInventoryDeductionLine } from "./orderInventorySemanticsService.js"
 
 const SYSTEM_INVENTORY_ACTOR = Object.freeze({
@@ -139,6 +145,25 @@ function allocationIdentity({ businessId, reservationId, orderLineId, inventoryI
         inventoryItemId,
     })
     return `ial_${digest.slice(0, 24)}`
+}
+
+function sidecarAllocationIdentity({ businessId, reservationId, orderLineId, inventoryItemId }) {
+    const digest = buildInventoryRequestFingerprint({
+        businessId,
+        reservationId,
+        orderLineId,
+        inventoryItemId,
+        kind: "ingredient_sidecar",
+    })
+    return `isa_${digest.slice(0, 24)}`
+}
+
+function canonicalTrackingUnitForComponent(component, inventoryItem) {
+    if (inventoryItem?.trackingUnit) return inventoryItem.trackingUnit
+    const definition = getInventoryUnitDefinition(component.unit)
+    if (definition.dimension === "weight") return "g"
+    if (definition.dimension === "volume") return "ml"
+    return component.unit
 }
 
 function menuItemRequestKey(item) {
@@ -254,19 +279,33 @@ export async function resolveInventoryRequirements({
         ? await MenuInventoryRecipeModel.find({
             businessId: tenantId,
             menuItemId: { $in: menuItemIds },
-            status: MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
+            $or: [
+                { status: MENU_INVENTORY_MAPPING_STATUSES.ACTIVE },
+                {
+                    mode: MENU_INVENTORY_MODES.SIMPLE,
+                    status: { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED },
+                    ingredientTrackingStatus: MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
+                    "ingredientComponents.0": { $exists: true },
+                },
+            ],
         }, null, optionsForSession(session))
         : []
     const mappingByMenuItem = new Map(mappings.map((mapping) => [
         String(mapping.menuItemId),
         mapping,
     ]))
-    if (mappings.some((mapping) => mapping.mode === MENU_INVENTORY_MODES.SIMPLE)) {
+    if (mappings.some((mapping) => (
+        mapping.mode === MENU_INVENTORY_MODES.SIMPLE &&
+        mapping.status === MENU_INVENTORY_MAPPING_STATUSES.ACTIVE
+    ))) {
         assertSimpleStockRuntimeEnabled({ env })
     }
 
     const inventoryItemIds = [...new Set(mappings.flatMap((mapping) =>
-        (mapping.components || []).map((component) => component.inventoryItemId),
+        [
+            ...(mapping.components || []),
+            ...(mapping.ingredientComponents || []),
+        ].map((component) => component.inventoryItemId),
     ).filter(Boolean))].sort()
     const inventoryItems = inventoryItemIds.length > 0
         ? await InventoryItemModel.find({
@@ -277,6 +316,7 @@ export async function resolveInventoryRequirements({
     const inventoryById = new Map(inventoryItems.map((item) => [item.inventoryItemId, item]))
     const requirementByInventoryId = new Map()
     const lineAllocationRequirements = []
+    const sidecarAllocationRequirements = []
     const legacyRequirements = []
     const menuRequirements = []
     const untrackedMenuItemIds = []
@@ -318,14 +358,46 @@ export async function resolveInventoryRequirements({
             continue
         }
 
-        const components = Array.isArray(mapping.components) ? mapping.components : []
-        const validMode = mapping.mode === MENU_INVENTORY_MODES.SIMPLE ||
-            mapping.mode === MENU_INVENTORY_MODES.RECIPE
-        const validShape = validMode && components.length > 0 &&
-            (mapping.mode !== MENU_INVENTORY_MODES.SIMPLE || components.length === 1)
+        const simpleStockActive = mapping.mode === MENU_INVENTORY_MODES.SIMPLE &&
+            mapping.status === MENU_INVENTORY_MAPPING_STATUSES.ACTIVE
+        const ingredientTrackingActive = isIngredientTrackingActive(mapping)
+        const legacyAuthority = mapping.mode === MENU_INVENTORY_MODES.SIMPLE &&
+            !simpleStockActive && menuItem.trackStock === true
+        const components = simpleStockActive
+            ? mapping.components || []
+            : ingredientTrackingActive && !legacyAuthority
+                ? ingredientComponentsForMapping(mapping)
+                : []
+        const effectiveMappingMode = simpleStockActive
+            ? MENU_INVENTORY_MODES.SIMPLE
+            : ingredientTrackingActive && !legacyAuthority
+                ? MENU_INVENTORY_MODES.RECIPE
+                : null
+        const sidecarComponents = ingredientTrackingActive &&
+            (simpleStockActive || legacyAuthority)
+            ? ingredientComponentsForMapping(mapping)
+            : []
+        const validMode = effectiveMappingMode === MENU_INVENTORY_MODES.SIMPLE ||
+            effectiveMappingMode === MENU_INVENTORY_MODES.RECIPE || legacyAuthority
+        const validShape = validMode && (legacyAuthority || (
+            components.length > 0 &&
+            (effectiveMappingMode !== MENU_INVENTORY_MODES.SIMPLE || components.length === 1)
+        ))
         if (!validShape) {
             addFailure(failures, entry, "INVALID_ACTIVE_INVENTORY_MAPPING")
             continue
+        }
+
+        if (legacyAuthority) {
+            if (!Number.isSafeInteger(menuItem.stockQuantity) || menuItem.stockQuantity < 0) {
+                addFailure(failures, entry, "INVALID_LEGACY_STOCK")
+                continue
+            }
+            if (menuItem.stockQuantity < entry.quantity) {
+                addFailure(failures, entry, "INSUFFICIENT_LEGACY_STOCK", menuItem.stockQuantity)
+                continue
+            }
+            legacyRequirements.push({ menuItem, quantity: entry.quantity })
         }
 
         let mappingValid = true
@@ -403,8 +475,8 @@ export async function resolveInventoryRequirements({
         menuRequirements.push({
             menuItemId: menuItem._id,
             orderQuantity: entry.quantity,
-            authority: "canonical",
-            mappingMode: mapping.mode,
+            authority: legacyAuthority ? "legacy_menu_item" : "canonical",
+            mappingMode: legacyAuthority ? null : effectiveMappingMode,
             mappingVersion: mapping.version,
         })
         for (const component of normalizedComponents) {
@@ -448,6 +520,34 @@ export async function resolveInventoryRequirements({
             }
             if (!mappingValid) break
         }
+
+        if (!mappingValid) continue
+        for (const component of sidecarComponents) {
+            const inventoryItem = inventoryById.get(component.inventoryItemId) || null
+            const canonicalQuantityPerMenuUnit = component.canonicalQuantity
+            if (!positiveQuantity(canonicalQuantityPerMenuUnit)) continue
+            let unit
+            try {
+                unit = canonicalTrackingUnitForComponent(component, inventoryItem)
+            } catch {
+                continue
+            }
+            for (const line of allocationLines) {
+                if (line.fulfillmentBehavior !== FULFILLMENT_BEHAVIORS.PREPARED) continue
+                const canonicalQuantity = canonicalQuantityPerMenuUnit * line.quantity
+                if (!positiveQuantity(canonicalQuantity)) continue
+                sidecarAllocationRequirements.push({
+                    orderLineId: line.orderLineId,
+                    menuItemId: menuItem._id,
+                    mappingVersion: mapping.version,
+                    fulfillmentStation: line.fulfillmentStation,
+                    fulfillmentBehavior: line.fulfillmentBehavior,
+                    inventoryItemId: component.inventoryItemId,
+                    canonicalQuantity,
+                    unit,
+                })
+            }
+        }
     }
 
     const requirements = [...requirementByInventoryId.values()]
@@ -474,6 +574,7 @@ export async function resolveInventoryRequirements({
         businessId: tenantId,
         requirements,
         lineAllocationRequirements,
+        sidecarAllocationRequirements,
         legacyRequirements,
         menuRequirements,
         untrackedMenuItemIds,
@@ -596,6 +697,7 @@ export async function reserveInventoryForSource({
 }, {
     InventoryReservationModel = InventoryReservation,
     InventoryMovementModel = InventoryMovement,
+    projectSimple = projectSimpleMappings,
     ...resolverDependencies
 } = {}) {
     if (!session) {
@@ -712,8 +814,22 @@ export async function reserveInventoryForSource({
         releaseMovementId: null,
         releasedAt: null,
     }))
+    const sidecarAllocations = (resolved.sidecarAllocationRequirements || []).map((allocation) => ({
+        allocationId: sidecarAllocationIdentity({
+            businessId: tenantId,
+            reservationId,
+            orderLineId: allocation.orderLineId,
+            inventoryItemId: allocation.inventoryItemId,
+        }),
+        ...allocation,
+        status: INVENTORY_SIDECAR_ALLOCATION_STATUSES.PENDING,
+        consumedCanonicalQuantity: 0,
+        shortageCanonicalQuantity: 0,
+        consumeMovementId: null,
+        accountedAt: null,
+    }))
 
-    await projectSimpleMappings({ resolved, session })
+    await projectSimple({ resolved, session })
     const now = new Date()
     const [reservation] = await InventoryReservationModel.create([{
         reservationId,
@@ -725,6 +841,7 @@ export async function reserveInventoryForSource({
         status: finalStatus,
         components: canonicalComponents,
         lineAllocations,
+        sidecarAllocations,
         legacyComponents,
         menuRequirements: resolved.menuRequirements,
         expiresAt,
@@ -842,6 +959,83 @@ async function createConsumptionMovement({
     return movement
 }
 
+async function createSidecarConsumptionMovement({
+    businessId,
+    reservation,
+    order,
+    inventoryItem,
+    allocations,
+    canonicalQuantity,
+    station,
+    action,
+    actor,
+    session,
+    InventoryMovementModel,
+}) {
+    const allocationIds = allocations.map((allocation) => allocation.allocationId).sort()
+    const orderLineIds = [...new Set(
+        allocations.map((allocation) => allocation.orderLineId),
+    )].sort()
+    const batchKey = buildInventoryRequestFingerprint({
+        station,
+        action,
+        allocationIds,
+        kind: "ingredient_sidecar",
+    }).slice(0, 24)
+    const { movementId, idempotencyKey } = movementIdentity({
+        businessId,
+        reservationId: reservation.reservationId,
+        inventoryItemId: inventoryItem.inventoryItemId,
+        action: `sidecar-consume:${batchKey}`,
+    })
+    const onHandBefore = inventoryItem.onHandQuantity
+    const reservedBefore = inventoryItem.reservedQuantity
+    const onHandAfter = onHandBefore - canonicalQuantity
+    const requestFingerprint = buildInventoryRequestFingerprint({
+        businessId,
+        reservationId: reservation.reservationId,
+        orderId: order.orderId,
+        inventoryItemId: inventoryItem.inventoryItemId,
+        type: INVENTORY_MOVEMENT_TYPES.CONSUME,
+        consumptionAuthority: "ingredient_sidecar",
+        canonicalQuantity,
+        allocationIds,
+        orderLineIds,
+        station,
+        action,
+    })
+
+    inventoryItem.onHandQuantity = onHandAfter
+    await inventoryItem.save({ session })
+    const [movement] = await InventoryMovementModel.create([{
+        movementId,
+        businessId,
+        inventoryItemId: inventoryItem.inventoryItemId,
+        type: INVENTORY_MOVEMENT_TYPES.CONSUME,
+        quantityDeltaOnHand: -canonicalQuantity,
+        quantityDeltaReserved: 0,
+        unit: inventoryItem.trackingUnit,
+        canonicalQuantity,
+        onHandBefore,
+        onHandAfter,
+        reservedBefore,
+        reservedAfter: reservedBefore,
+        sourceType: "inventory_sidecar",
+        sourceId: reservation.reservationId,
+        reasonCode: `fulfillment_sidecar_${station}_${action}`,
+        performedBy: actor,
+        idempotencyKey,
+        requestFingerprint,
+        inventoryReservationId: reservation.reservationId,
+        orderId: order.orderId,
+        orderLineIds,
+        allocationIds,
+        fulfillmentStation: station,
+        fulfillmentAction: action,
+    }], { session })
+    return movement
+}
+
 /**
  * Consumes the reservation-time allocation snapshot inside the caller's
  * fulfilment transaction. Recipes and MenuItem mappings are never reloaded.
@@ -891,7 +1085,10 @@ export async function consumeReservedInventoryForFulfillment({
     const lineAllocations = Array.isArray(reservation.lineAllocations)
         ? reservation.lineAllocations
         : []
-    if (lineAllocations.length === 0) {
+    const sidecarAllocations = Array.isArray(reservation.sidecarAllocations)
+        ? reservation.sidecarAllocations
+        : []
+    if (lineAllocations.length === 0 && sidecarAllocations.length === 0) {
         if ((reservation.components || []).length > 0) {
             logger?.warn?.("[inventory-consumption] reservation has no line allocation snapshot; consumption skipped", {
                 businessId: tenantId,
@@ -933,6 +1130,9 @@ export async function consumeReservedInventoryForFulfillment({
         const owned = lineAllocations.filter(
             (allocation) => String(allocation.orderLineId) === String(line.orderLineId),
         )
+        const ownedSidecars = sidecarAllocations.filter(
+            (allocation) => String(allocation.orderLineId) === String(line.orderLineId),
+        )
         if (
             canonicalMenuItemIds.has(String(line.menuItemId)) &&
             owned.length === 0
@@ -955,7 +1155,19 @@ export async function consumeReservedInventoryForFulfillment({
                 409,
             )
         }
-        const validTrigger = (
+        if (ownedSidecars.some((allocation) => (
+            String(allocation.menuItemId) !== String(line.menuItemId) ||
+            allocation.fulfillmentStation !== line.fulfillmentStation ||
+            allocation.fulfillmentBehavior !== line.fulfillmentBehavior ||
+            allocation.fulfillmentStation !== station
+        ))) {
+            throw reservationError(
+                "Ingredient sidecar allocation does not match the frozen fulfilment line",
+                "INVENTORY_SIDECAR_ALLOCATION_MISMATCH",
+                409,
+            )
+        }
+        const validReservedTrigger = (
             line.fulfillmentBehavior === FULFILLMENT_BEHAVIORS.PREPARED &&
             action === FULFILLMENT_ACTIONS.START
         ) || (
@@ -963,10 +1175,19 @@ export async function consumeReservedInventoryForFulfillment({
             station === FULFILLMENT_STATIONS.BAR &&
             action === FULFILLMENT_ACTIONS.READY
         )
-        if (owned.length > 0 && !validTrigger) {
+        if (owned.length > 0 && !validReservedTrigger) {
             throw reservationError(
                 "Inventory consumption was requested for an invalid fulfilment transition",
                 "INVALID_INVENTORY_CONSUMPTION_TRIGGER",
+                409,
+            )
+        }
+        const validSidecarTrigger = line.fulfillmentBehavior ===
+            FULFILLMENT_BEHAVIORS.PREPARED && action === FULFILLMENT_ACTIONS.START
+        if (ownedSidecars.length > 0 && !validSidecarTrigger) {
+            throw reservationError(
+                "Ingredient sidecar consumption was requested for an invalid fulfilment transition",
+                "INVALID_INVENTORY_SIDECAR_CONSUMPTION_TRIGGER",
                 409,
             )
         }
@@ -984,7 +1205,10 @@ export async function consumeReservedInventoryForFulfillment({
     const allocationsToConsume = lineAllocations.filter((allocation) =>
         selectedIdSet.has(String(allocation.orderLineId)) &&
         allocation.status === INVENTORY_LINE_ALLOCATION_STATUSES.RESERVED)
-    if (allocationsToConsume.length === 0) {
+    const sidecarsToAccount = sidecarAllocations.filter((allocation) =>
+        selectedIdSet.has(String(allocation.orderLineId)) &&
+        allocation.status === INVENTORY_SIDECAR_ALLOCATION_STATUSES.PENDING)
+    if (allocationsToConsume.length === 0 && sidecarsToAccount.length === 0) {
         return { reservation, changed: false, replayed: true, movements: [] }
     }
 
@@ -994,7 +1218,16 @@ export async function consumeReservedInventoryForFulfillment({
         existing.push(allocation)
         allocationsByInventoryId.set(allocation.inventoryItemId, existing)
     }
-    const inventoryItemIds = [...allocationsByInventoryId.keys()].sort()
+    const sidecarsByInventoryId = new Map()
+    for (const allocation of sidecarsToAccount) {
+        const existing = sidecarsByInventoryId.get(allocation.inventoryItemId) || []
+        existing.push(allocation)
+        sidecarsByInventoryId.set(allocation.inventoryItemId, existing)
+    }
+    const inventoryItemIds = [...new Set([
+        ...allocationsByInventoryId.keys(),
+        ...sidecarsByInventoryId.keys(),
+    ])].sort()
     const inventoryItems = await InventoryItemModel.find({
         businessId: tenantId,
         inventoryItemId: { $in: inventoryItemIds },
@@ -1003,7 +1236,7 @@ export async function consumeReservedInventoryForFulfillment({
         inventoryItems.map((inventoryItem) => [inventoryItem.inventoryItemId, inventoryItem]),
     )
 
-    for (const inventoryItemId of inventoryItemIds) {
+    for (const inventoryItemId of allocationsByInventoryId.keys()) {
         const inventoryItem = inventoryById.get(inventoryItemId)
         const allocations = allocationsByInventoryId.get(inventoryItemId)
         const canonicalQuantity = allocations.reduce(
@@ -1028,7 +1261,7 @@ export async function consumeReservedInventoryForFulfillment({
 
     const performedBy = normalizeActor(actor)
     const movements = []
-    for (const inventoryItemId of inventoryItemIds) {
+    for (const inventoryItemId of [...allocationsByInventoryId.keys()].sort()) {
         const allocations = allocationsByInventoryId.get(inventoryItemId)
         const movement = await createConsumptionMovement({
             businessId: tenantId,
@@ -1049,15 +1282,96 @@ export async function consumeReservedInventoryForFulfillment({
             allocation.consumedAt = now
         }
     }
+    const shortages = []
+    for (const inventoryItemId of [...sidecarsByInventoryId.keys()].sort()) {
+        const allocations = [...sidecarsByInventoryId.get(inventoryItemId)]
+            .sort((left, right) => left.allocationId.localeCompare(right.allocationId))
+        const inventoryItem = inventoryById.get(inventoryItemId) || null
+        const canConsume = inventoryItem && inventoryItem.isActive !== false &&
+            validInventoryBalance(inventoryItem) &&
+            allocations.every((allocation) => allocation.unit === inventoryItem.trackingUnit)
+        let remainingAvailable = canConsume
+            ? inventoryItem.onHandQuantity - inventoryItem.reservedQuantity
+            : 0
+        const plan = allocations.map((allocation) => {
+            const consumedCanonicalQuantity = Math.min(
+                allocation.canonicalQuantity,
+                remainingAvailable,
+            )
+            remainingAvailable -= consumedCanonicalQuantity
+            return {
+                allocation,
+                consumedCanonicalQuantity,
+                shortageCanonicalQuantity:
+                    allocation.canonicalQuantity - consumedCanonicalQuantity,
+            }
+        })
+        const consumedCanonicalQuantity = plan.reduce(
+            (total, entry) => total + entry.consumedCanonicalQuantity,
+            0,
+        )
+        const consumedAllocations = plan
+            .filter((entry) => entry.consumedCanonicalQuantity > 0)
+            .map((entry) => entry.allocation)
+        const movement = consumedCanonicalQuantity > 0
+            ? await createSidecarConsumptionMovement({
+                businessId: tenantId,
+                reservation,
+                order,
+                inventoryItem,
+                allocations: consumedAllocations,
+                canonicalQuantity: consumedCanonicalQuantity,
+                station,
+                action,
+                actor: performedBy,
+                session,
+                InventoryMovementModel,
+            })
+            : null
+        if (movement) movements.push(movement)
+        for (const entry of plan) {
+            entry.allocation.consumedCanonicalQuantity = entry.consumedCanonicalQuantity
+            entry.allocation.shortageCanonicalQuantity = entry.shortageCanonicalQuantity
+            entry.allocation.consumeMovementId = entry.consumedCanonicalQuantity > 0
+                ? movement.movementId
+                : null
+            entry.allocation.accountedAt = now
+            entry.allocation.status = entry.shortageCanonicalQuantity > 0
+                ? INVENTORY_SIDECAR_ALLOCATION_STATUSES.SHORTAGE
+                : INVENTORY_SIDECAR_ALLOCATION_STATUSES.CONSUMED
+            if (entry.shortageCanonicalQuantity > 0) {
+                shortages.push({
+                    allocationId: entry.allocation.allocationId,
+                    orderLineId: entry.allocation.orderLineId,
+                    inventoryItemId,
+                    requiredCanonicalQuantity: entry.allocation.canonicalQuantity,
+                    consumedCanonicalQuantity: entry.consumedCanonicalQuantity,
+                    shortageCanonicalQuantity: entry.shortageCanonicalQuantity,
+                    reason: canConsume ? "insufficient_unreserved_balance" : "inventory_unavailable",
+                })
+            }
+        }
+    }
     await reservation.save({ session })
+
+    if (shortages.length > 0) {
+        logger?.warn?.("[inventory-sidecar] ingredient shortage recorded without blocking fulfilment", {
+            businessId: tenantId,
+            orderId: order.orderId,
+            reservationId: reservation.reservationId,
+            shortages,
+        })
+    }
 
     await projectSimple({
         resolved: {
             businessId: tenantId,
-            requirements: inventoryItemIds.map((inventoryItemId) => ({
+            requirements: inventoryItemIds
+                .filter((inventoryItemId) => inventoryById.has(inventoryItemId))
+                .map((inventoryItemId) => ({
                 inventoryItemId,
                 inventoryItem: inventoryById.get(inventoryItemId),
-            })),
+                })),
             menuRequirements: reservation.menuRequirements || [],
         },
         session,
@@ -1071,6 +1385,10 @@ export async function consumeReservedInventoryForFulfillment({
         consumedAllocationIds: allocationsToConsume.map(
             (allocation) => allocation.allocationId,
         ),
+        accountedSidecarAllocationIds: sidecarsToAccount.map(
+            (allocation) => allocation.allocationId,
+        ),
+        shortages,
     }
 }
 

@@ -7,6 +7,10 @@ import {
     updateInventoryItem,
 } from "../services/canonicalInventoryService.js"
 import {
+    InventoryItemLifecycleError,
+    removeInventoryItemFromWorkspace,
+} from "../services/inventoryItemLifecycleService.js"
+import {
     OwnerInventoryReadError,
     readInventoryItem,
     readInventoryItemsPage,
@@ -17,6 +21,7 @@ import { migrateLegacyMenuItemToSimpleStock } from "../services/simpleStockMigra
 import {
     readIngredientRecipe,
     readIngredientRecipesPage,
+    removeIngredientRecipe,
     upsertIngredientRecipe,
 } from "../services/menuInventoryRecipeService.js"
 import {
@@ -25,7 +30,9 @@ import {
     executeInventoryMovementWithSimpleStockProjection,
     executeInventoryMetadataUpdateWithSimpleStockProjection,
     readSimpleStockDrift,
+    readSimpleStockMenuRemovalPreview,
     reconcileSimpleStockProjection,
+    removeSimpleStockMenuAndInventory,
     rollbackSimpleStockToLegacy,
     setSimpleStockEnabled,
     updateSimpleStockThreshold,
@@ -65,12 +72,21 @@ function getIdempotencyKey(req) {
 function handleInventoryError(res, error, operation) {
     if (
         error instanceof InventoryDomainError ||
+        error instanceof InventoryItemLifecycleError ||
         error instanceof OwnerInventoryReadError ||
         Number.isInteger(error?.statusCode)
     ) {
         return res.status(error.statusCode || 400).json({
             error: error.message,
             code: error.code || "INVENTORY_ERROR",
+            ...(error.details?.candidate ? {
+                conflictType: error.details.conflictType,
+                candidate: error.details.candidate,
+                canContinue: error.details.canContinue,
+            } : {}),
+            ...(Number.isInteger(error.details?.sharedActiveRelationshipCount) ? {
+                sharedActiveRelationshipCount: error.details.sharedActiveRelationshipCount,
+            } : {}),
         })
     }
     if (error?.name === "ValidationError") {
@@ -153,7 +169,12 @@ export async function createOwnerInventoryItem(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
-        const item = await createInventoryItem({ businessId, input: req.body })
+        const { allowCategoryVariant = false, ...input } = req.body || {}
+        const item = await createInventoryItem({
+            businessId,
+            input,
+            allowCategoryVariant,
+        })
         return res.status(201).json({ item })
     } catch (error) {
         return handleInventoryError(res, error, "create-item")
@@ -164,15 +185,31 @@ export async function updateOwnerInventoryItem(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
+        const { allowCategoryVariant = false, ...input } = req.body || {}
         const item = await executeInventoryMetadataUpdateWithSimpleStockProjection({
             businessId,
             inventoryItemId: req.params.inventoryItemId,
-            input: req.body,
+            input,
+            allowCategoryVariant,
             command: updateInventoryItem,
         })
         return res.json({ item })
     } catch (error) {
         return handleInventoryError(res, error, "update-item")
+    }
+}
+
+export async function deleteOwnerInventoryItem(req, res) {
+    const businessId = requireTenant(req, res)
+    if (!businessId) return
+    try {
+        return res.json(await removeInventoryItemFromWorkspace({
+            businessId,
+            inventoryItemId: req.params.inventoryItemId,
+            actor: getInventoryActor(req),
+        }))
+    } catch (error) {
+        return handleInventoryError(res, error, "delete-item")
     }
 }
 
@@ -273,6 +310,19 @@ export async function putOwnerInventoryRecipe(req, res) {
     }
 }
 
+export async function deleteOwnerInventoryRecipe(req, res) {
+    const businessId = requireTenant(req, res)
+    if (!businessId) return
+    try {
+        return res.json(await removeIngredientRecipe({
+            businessId,
+            menuItemId: req.params.menuItemId,
+        }))
+    } catch (error) {
+        return handleInventoryError(res, error, "delete-recipe")
+    }
+}
+
 export async function createOwnerSimpleStockMenuItem(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
@@ -286,6 +336,33 @@ export async function createOwnerSimpleStockMenuItem(req, res) {
         return res.status(result.replayed ? 200 : 201).json(result)
     } catch (error) {
         return handleInventoryError(res, error, "create-simple-stock-menu-item")
+    }
+}
+
+export async function getOwnerSimpleStockMenuRemovalPreview(req, res) {
+    const businessId = requireTenant(req, res)
+    if (!businessId) return
+    try {
+        return res.json(await readSimpleStockMenuRemovalPreview({
+            businessId,
+            menuItemId: req.params.menuItemId,
+        }))
+    } catch (error) {
+        return handleInventoryError(res, error, "simple-stock-menu-removal-preview")
+    }
+}
+
+export async function deleteOwnerSimpleStockMenuAndInventory(req, res) {
+    const businessId = requireTenant(req, res)
+    if (!businessId) return
+    try {
+        return res.json(await removeSimpleStockMenuAndInventory({
+            businessId,
+            menuItemId: req.params.menuItemId,
+            actor: getInventoryActor(req),
+        }))
+    } catch (error) {
+        return handleInventoryError(res, error, "delete-simple-stock-menu-and-inventory")
     }
 }
 
@@ -344,6 +421,9 @@ export async function migrateOwnerMenuItemToSimpleStock(req, res) {
             businessId,
             menuItemId: req.params.menuItemId,
             actor: getInventoryActor(req),
+            inventoryItemId: req.body?.inventoryItemId ?? null,
+            reactivateInventoryItem: req.body?.reactivateInventoryItem ?? false,
+            allowCategoryVariant: req.body?.allowCategoryVariant ?? false,
         })
         return res.status(result.replayed ? 200 : 201).json(result)
     } catch (error) {

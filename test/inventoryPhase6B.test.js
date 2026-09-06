@@ -87,9 +87,14 @@ test("linked recipe reads are tenant and inventory-item scoped", async () => {
     })
 
     assert.equal(mappingCapture.filter.businessId, "biz_alpha")
-    assert.equal(mappingCapture.filter.mode, "recipe")
-    assert.equal(mappingCapture.filter["components.inventoryItemId"], "inv_tomato")
-    assert.deepEqual(mappingCapture.filter.status, { $ne: "archived" })
+    assert.equal(mappingCapture.filter.$or[0].mode, "recipe")
+    assert.equal(mappingCapture.filter.$or[0]["components.inventoryItemId"], "inv_tomato")
+    assert.deepEqual(mappingCapture.filter.$or[0].status, { $ne: "archived" })
+    assert.equal(mappingCapture.filter.$or[1].mode, "simple")
+    assert.equal(
+        mappingCapture.filter.$or[1]["ingredientComponents.inventoryItemId"],
+        "inv_tomato",
+    )
     assert.deepEqual(mappingCapture.sort, { _id: 1 })
     assert.equal(mappingCapture.limit, 11)
     assert.equal(menuCapture.filter.businessId, "biz_alpha")

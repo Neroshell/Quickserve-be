@@ -8,7 +8,11 @@ import {
     adjustOwnerSimpleStockMenuItem,
     createOwnerSimpleStockMenuItem,
     createOwnerInventoryItem,
+    deleteOwnerInventoryRecipe,
+    deleteOwnerInventoryItem,
+    deleteOwnerSimpleStockMenuAndInventory,
     getOwnerSimpleStockDrift,
+    getOwnerSimpleStockMenuRemovalPreview,
     getInventoryItem,
     getInventoryOverview,
     getOwnerInventoryRecipe,
@@ -228,6 +232,11 @@ router.patch(
     requirePermission(PERMISSIONS.INVENTORY_MANAGE),
     updateOwnerInventoryItem,
 )
+router.delete(
+    "/inventory/items/:inventoryItemId",
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    deleteOwnerInventoryItem,
+)
 router.post(
     "/inventory/items/:inventoryItemId/receive",
     requirePermission(PERMISSIONS.INVENTORY_RECEIVE),
@@ -266,12 +275,30 @@ router.put(
     requirePermission(PERMISSIONS.INVENTORY_RECIPE_MANAGE),
     putOwnerInventoryRecipe,
 )
+router.delete(
+    "/inventory/recipes/:menuItemId",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_RECIPE_MANAGE),
+    deleteOwnerInventoryRecipe,
+)
 router.post(
     "/inventory/simple-stock/menu-items",
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_ADJUST),
     createOwnerSimpleStockMenuItem,
+)
+router.get(
+    "/inventory/simple-stock/menu-items/:menuItemId/removal-preview",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    getOwnerSimpleStockMenuRemovalPreview,
+)
+router.delete(
+    "/inventory/simple-stock/menu-items/:menuItemId",
+    requirePermission(PERMISSIONS.MENU_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    deleteOwnerSimpleStockMenuAndInventory,
 )
 router.post(
     "/inventory/simple-stock/menu-items/:menuItemId/adjust",

@@ -56,16 +56,17 @@ const ADJUSTMENT_REASON_SET = new Set(INVENTORY_ADJUSTMENT_REASONS)
 const MAX_TRANSACTION_ATTEMPTS = 3
 
 export class InventoryDomainError extends Error {
-    constructor(message, { code = "INVENTORY_ERROR", statusCode = 400 } = {}) {
+    constructor(message, { code = "INVENTORY_ERROR", statusCode = 400, details = null } = {}) {
         super(message)
         this.name = "InventoryDomainError"
         this.code = code
         this.statusCode = statusCode
+        this.details = details
     }
 }
 
-function domainError(message, code, statusCode = 400) {
-    return new InventoryDomainError(message, { code, statusCode })
+function domainError(message, code, statusCode = 400, details = null) {
+    return new InventoryDomainError(message, { code, statusCode, details })
 }
 
 function toPlain(value) {
@@ -92,6 +93,8 @@ export function toInventoryItemDTO(value) {
         unitCostMinor: item.unitCostMinor ?? null,
         costCurrency: item.costCurrency ?? null,
         isActive: item.isActive !== false,
+        isDeleted: Boolean(item.deletedAt),
+        deletedAt: item.deletedAt ?? null,
         createdAt: item.createdAt ?? null,
         updatedAt: item.updatedAt ?? null,
     }
@@ -160,6 +163,163 @@ function normalizeOptionalText(value, field, maxLength) {
         )
     }
     return normalized
+}
+
+export function normalizeInventoryItemName(value) {
+    return normalizeRequiredText(value, "name", 120).toLocaleLowerCase("en-US")
+}
+
+export function normalizeInventoryItemCategory(value) {
+    return (normalizeOptionalText(value, "category", 80) || "").toLocaleLowerCase("en-US")
+}
+
+function buildDuplicateIdentityKey({ normalizedName, normalizedCategory, trackingUnit }) {
+    return `v1:${crypto.createHash("sha256").update(JSON.stringify([
+        normalizedName,
+        trackingUnit,
+        normalizedCategory,
+    ])).digest("hex")}`
+}
+
+function escapeRegularExpression(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function legacyNormalizedNamePattern(normalizedName) {
+    return new RegExp(
+        `^\\s*${normalizedName.split(" ").map(escapeRegularExpression).join("\\s+")}\\s*$`,
+        "iu",
+    )
+}
+
+export function toInventoryDuplicateCandidate(value) {
+    const item = toPlain(value)
+    if (!item) return null
+    return {
+        inventoryItemId: item.inventoryItemId,
+        name: item.name,
+        category: item.category ?? null,
+        trackingUnit: item.trackingUnit,
+        isActive: item.isActive !== false,
+        availableQuantity: item.onHandQuantity - item.reservedQuantity,
+    }
+}
+
+export function createInventoryDuplicateError(item, conflictType = "strong") {
+    const candidate = toInventoryDuplicateCandidate(item)
+    const strong = conflictType === "strong"
+    return domainError(
+        strong
+            ? `An inventory item named ${candidate.name} already exists with this tracking unit and category.`
+            : `Another ${candidate.name} item with this tracking unit exists under a different category.`,
+        strong ? "INVENTORY_ITEM_DUPLICATE" : "INVENTORY_ITEM_CATEGORY_VARIANT",
+        409,
+        {
+            conflictType: strong ? "strong" : "category_variant",
+            candidate,
+            canContinue: !strong,
+        },
+    )
+}
+
+export async function findInventoryItemDuplicateSignal({
+    businessId,
+    name,
+    category,
+    trackingUnit,
+    excludeInventoryItemId = null,
+    session = null,
+}, { InventoryItemModel = InventoryItem } = {}) {
+    const tenantId = normalizeRequiredText(businessId, "businessId", 200)
+    const normalizedName = normalizeInventoryItemName(name)
+    const normalizedCategory = normalizeInventoryItemCategory(category)
+    const unit = getInventoryTrackingUnitDefinition(trackingUnit).code
+    if (typeof InventoryItemModel.find !== "function") {
+        return { strong: null, categoryVariant: null }
+    }
+
+    const filter = {
+        businessId: tenantId,
+        trackingUnit: unit,
+        deletedAt: null,
+        $or: [
+            { normalizedName },
+            { normalizedName: { $exists: false }, name: legacyNormalizedNamePattern(normalizedName) },
+            { normalizedName: null, name: legacyNormalizedNamePattern(normalizedName) },
+        ],
+    }
+    if (excludeInventoryItemId) filter.inventoryItemId = { $ne: excludeInventoryItemId }
+    const candidates = await InventoryItemModel.find(
+        filter,
+        null,
+        session ? { session } : undefined,
+    )
+    const ordered = [...(candidates || [])].sort(
+        (left, right) => Number(left.isActive === false) - Number(right.isActive === false),
+    )
+    const strong = ordered.find(
+        (candidate) => normalizeInventoryItemCategory(candidate.category) === normalizedCategory,
+    ) || null
+    const categoryVariant = ordered.find(
+        (candidate) => normalizeInventoryItemCategory(candidate.category) !== normalizedCategory,
+    ) || null
+    return { strong, categoryVariant }
+}
+
+async function enforceInventoryDuplicatePolicy({
+    businessId,
+    name,
+    category,
+    trackingUnit,
+    excludeInventoryItemId = null,
+    allowCategoryVariant = false,
+    session = null,
+}, dependencies = {}) {
+    if (typeof allowCategoryVariant !== "boolean") {
+        throw domainError(
+            "allowCategoryVariant must be boolean",
+            "INVALID_INVENTORY_INPUT",
+        )
+    }
+    const signal = await findInventoryItemDuplicateSignal({
+        businessId,
+        name,
+        category,
+        trackingUnit,
+        excludeInventoryItemId,
+        session,
+    }, dependencies)
+    if (signal.strong) throw createInventoryDuplicateError(signal.strong, "strong")
+    if (signal.categoryVariant && !allowCategoryVariant) {
+        throw createInventoryDuplicateError(signal.categoryVariant, "category_variant")
+    }
+    return signal
+}
+
+function isStrongIdentityDuplicateKey(error) {
+    return error?.code === 11000 && Boolean(
+        error?.keyPattern?.duplicateIdentityKey ||
+        Object.prototype.hasOwnProperty.call(error?.keyValue || {}, "duplicateIdentityKey"),
+    )
+}
+
+function unresolvedInventoryDuplicateError(identity) {
+    const error = domainError(
+        "An inventory item with this name, tracking unit, and category already exists.",
+        "INVENTORY_ITEM_DUPLICATE",
+        409,
+    )
+    error.duplicateIdentity = identity
+    return error
+}
+
+export async function enrichInventoryDuplicateError(error, identity, dependencies = {}) {
+    if (error?.code !== "INVENTORY_ITEM_DUPLICATE" && !isStrongIdentityDuplicateKey(error)) {
+        return error
+    }
+    if (error?.details?.candidate) return error
+    const signal = await findInventoryItemDuplicateSignal(identity, dependencies)
+    return signal.strong ? createInventoryDuplicateError(signal.strong, "strong") : error
 }
 
 function normalizeNonNegativeSafeInteger(value, field, { nullable = false } = {}) {
@@ -242,15 +402,26 @@ function rejectUnknownFields(input, allowedFields) {
 function normalizeItemCreateInput(input) {
     rejectUnknownFields(input, ITEM_CREATE_FIELDS)
     const trackingDefinition = getInventoryTrackingUnitDefinition(input.trackingUnit)
+    const name = normalizeRequiredText(input.name, "name", 120)
+    const category = normalizeOptionalText(input.category, "category", 80)
+    const normalizedName = normalizeInventoryItemName(name)
+    const normalizedCategory = normalizeInventoryItemCategory(category)
     const cost = normalizeCostPair(input, { current: { unitCostMinor: null, costCurrency: null } })
     if (input.isActive !== undefined && typeof input.isActive !== "boolean") {
         throw domainError("isActive must be a boolean", "INVALID_INVENTORY_INPUT")
     }
 
     return {
-        name: normalizeRequiredText(input.name, "name", 120),
-        category: normalizeOptionalText(input.category, "category", 80),
+        name,
+        normalizedName,
+        category,
+        normalizedCategory,
         trackingUnit: trackingDefinition.code,
+        duplicateIdentityKey: buildDuplicateIdentityKey({
+            normalizedName,
+            normalizedCategory,
+            trackingUnit: trackingDefinition.code,
+        }),
         baseUnitDimension: trackingDefinition.dimension,
         lowStockThreshold: input.lowStockThreshold === undefined
             ? 0
@@ -265,12 +436,26 @@ function isDuplicateKeyError(error) {
     return error?.code === 11000
 }
 
-export async function createInventoryItem({ businessId, input, session = null }, {
+export async function createInventoryItem({
+    businessId,
+    input,
+    allowCategoryVariant = false,
+    session = null,
+}, {
     InventoryItemModel = InventoryItem,
     generateId = generateInventoryItemId,
 } = {}) {
     const tenantId = normalizeRequiredText(businessId, "businessId", 200)
     const normalized = normalizeItemCreateInput(input)
+
+    await enforceInventoryDuplicatePolicy({
+        businessId: tenantId,
+        name: normalized.name,
+        category: normalized.category,
+        trackingUnit: normalized.trackingUnit,
+        allowCategoryVariant,
+        session,
+    }, { InventoryItemModel })
 
     const maximumAttempts = session ? 1 : 3
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
@@ -287,6 +472,16 @@ export async function createInventoryItem({ businessId, input, session = null },
                 : await InventoryItemModel.create(itemInput)
             return toInventoryItemDTO(item)
         } catch (error) {
+            if (isStrongIdentityDuplicateKey(error)) {
+                const identity = {
+                    businessId: tenantId,
+                    name: normalized.name,
+                    category: normalized.category,
+                    trackingUnit: normalized.trackingUnit,
+                }
+                if (session) throw unresolvedInventoryDuplicateError(identity)
+                throw await enrichInventoryDuplicateError(error, identity, { InventoryItemModel })
+            }
             if (isDuplicateKeyError(error) && attempt < maximumAttempts - 1) continue
             throw error
         }
@@ -299,6 +494,7 @@ export async function updateInventoryItem({
     businessId,
     inventoryItemId,
     input,
+    allowCategoryVariant = false,
     session = null,
 }, {
     InventoryItemModel = InventoryItem,
@@ -318,11 +514,69 @@ export async function updateInventoryItem({
     if (!item) {
         throw domainError("Inventory item not found", "INVENTORY_ITEM_NOT_FOUND", 404)
     }
-
-    if (input.name !== undefined) item.name = normalizeRequiredText(input.name, "name", 120)
-    if (input.category !== undefined) {
-        item.category = normalizeOptionalText(input.category, "category", 80)
+    if (item.deletedAt) {
+        throw domainError(
+            "Deleted inventory items cannot be changed",
+            "INVENTORY_ITEM_DELETED",
+            409,
+        )
     }
+
+    const requestedName = input.name === undefined
+        ? item.name
+        : normalizeRequiredText(input.name, "name", 120)
+    const requestedCategory = input.category === undefined
+        ? item.category ?? null
+        : normalizeOptionalText(input.category, "category", 80)
+    let requestedTrackingUnit = item.trackingUnit
+
+    if (input.trackingUnit !== undefined) {
+        const definition = getInventoryTrackingUnitDefinition(input.trackingUnit)
+        if (definition.code !== item.trackingUnit) {
+            const hasMovement = await InventoryMovementModel.exists(
+                { businessId: tenantId, inventoryItemId: itemId },
+                session ? { session } : undefined,
+            )
+            if (item.onHandQuantity !== 0 || item.reservedQuantity !== 0 || hasMovement) {
+                throw domainError(
+                    "trackingUnit cannot change after balances or movements exist",
+                    "INVENTORY_TRACKING_UNIT_LOCKED",
+                    409,
+                )
+            }
+            requestedTrackingUnit = definition.code
+        }
+    }
+
+    const currentNormalizedName = normalizeInventoryItemName(item.name)
+    const currentNormalizedCategory = normalizeInventoryItemCategory(item.category)
+    const requestedNormalizedName = normalizeInventoryItemName(requestedName)
+    const requestedNormalizedCategory = normalizeInventoryItemCategory(requestedCategory)
+    const identitySignalChanged = requestedNormalizedName !== currentNormalizedName ||
+        requestedNormalizedCategory !== currentNormalizedCategory ||
+        requestedTrackingUnit !== item.trackingUnit
+
+    if (identitySignalChanged) {
+        await enforceInventoryDuplicatePolicy({
+            businessId: tenantId,
+            name: requestedName,
+            category: requestedCategory,
+            trackingUnit: requestedTrackingUnit,
+            excludeInventoryItemId: itemId,
+            allowCategoryVariant,
+            session,
+        }, { InventoryItemModel })
+        item.normalizedName = requestedNormalizedName
+        item.normalizedCategory = requestedNormalizedCategory
+        item.duplicateIdentityKey = buildDuplicateIdentityKey({
+            normalizedName: requestedNormalizedName,
+            normalizedCategory: requestedNormalizedCategory,
+            trackingUnit: requestedTrackingUnit,
+        })
+    }
+
+    if (input.name !== undefined) item.name = requestedName
+    if (input.category !== undefined) item.category = requestedCategory
     if (input.lowStockThreshold !== undefined) {
         item.lowStockThreshold = normalizeNonNegativeSafeInteger(
             input.lowStockThreshold,
@@ -342,26 +596,26 @@ export async function updateInventoryItem({
         item.costCurrency = cost.costCurrency
     }
 
-    if (input.trackingUnit !== undefined) {
-        const definition = getInventoryTrackingUnitDefinition(input.trackingUnit)
-        if (definition.code !== item.trackingUnit) {
-            const hasMovement = await InventoryMovementModel.exists(
-                { businessId: tenantId, inventoryItemId: itemId },
-                session ? { session } : undefined,
-            )
-            if (item.onHandQuantity !== 0 || item.reservedQuantity !== 0 || hasMovement) {
-                throw domainError(
-                    "trackingUnit cannot change after balances or movements exist",
-                    "INVENTORY_TRACKING_UNIT_LOCKED",
-                    409,
-                )
-            }
-            item.trackingUnit = definition.code
-            item.baseUnitDimension = definition.dimension
-        }
+    if (requestedTrackingUnit !== item.trackingUnit) {
+        const definition = getInventoryTrackingUnitDefinition(requestedTrackingUnit)
+        item.trackingUnit = definition.code
+        item.baseUnitDimension = definition.dimension
     }
 
-    await item.save(session ? { session } : undefined)
+    try {
+        await item.save(session ? { session } : undefined)
+    } catch (error) {
+        if (!isStrongIdentityDuplicateKey(error)) throw error
+        const identity = {
+            businessId: tenantId,
+            name: requestedName,
+            category: requestedCategory,
+            trackingUnit: requestedTrackingUnit,
+            excludeInventoryItemId: itemId,
+        }
+        if (session) throw unresolvedInventoryDuplicateError(identity)
+        throw await enrichInventoryDuplicateError(error, identity, { InventoryItemModel })
+    }
     return toInventoryItemDTO(item)
 }
 
@@ -551,6 +805,13 @@ async function executeMovement({
         )
         if (!item) {
             throw domainError("Inventory item not found", "INVENTORY_ITEM_NOT_FOUND", 404)
+        }
+        if (item.deletedAt) {
+            throw domainError(
+                "Inventory item has been removed",
+                "INVENTORY_ITEM_DELETED",
+                409,
+            )
         }
         if (item.isActive === false) {
             throw domainError("Inventory item is inactive", "INVENTORY_ITEM_INACTIVE", 409)

@@ -26,9 +26,38 @@ export function resolveManualMenuAvailability(menuItemValue) {
         : menuItem.isAvailable !== false
 }
 
+export function ingredientComponentsForMapping(mappingValue) {
+    const mapping = plain(mappingValue)
+    if (!mapping) return []
+    return mapping.mode === MENU_INVENTORY_MODES.SIMPLE
+        ? Array.isArray(mapping.ingredientComponents) ? mapping.ingredientComponents : []
+        : Array.isArray(mapping.components) ? mapping.components : []
+}
+
+export function ingredientTrackingStatusForMapping(mappingValue) {
+    const mapping = plain(mappingValue)
+    if (!mapping) return null
+    return mapping.mode === MENU_INVENTORY_MODES.SIMPLE
+        ? mapping.ingredientTrackingStatus ?? null
+        : mapping.status ?? null
+}
+
+export function isIngredientTrackingActive(mappingValue) {
+    return ingredientTrackingStatusForMapping(mappingValue) ===
+        MENU_INVENTORY_MAPPING_STATUSES.ACTIVE &&
+        ingredientComponentsForMapping(mappingValue).length > 0
+}
+
 export function resolveMenuInventoryTrackingState({ menuItem: menuItemValue, mapping: mappingValue }) {
     const menuItem = plain(menuItemValue) || {}
     const mapping = plain(mappingValue)
+    if (mapping?.mode === MENU_INVENTORY_MODES.SIMPLE &&
+        mapping.status === MENU_INVENTORY_MAPPING_STATUSES.ACTIVE) {
+        return MENU_INVENTORY_TRACKING_STATES.CANONICAL_SIMPLE
+    }
+    if (isIngredientTrackingActive(mapping)) {
+        return MENU_INVENTORY_TRACKING_STATES.CANONICAL_RECIPE
+    }
     if (mapping?.status === MENU_INVENTORY_MAPPING_STATUSES.ACTIVE) {
         return mapping.mode === MENU_INVENTORY_MODES.RECIPE
             ? MENU_INVENTORY_TRACKING_STATES.CANONICAL_RECIPE
@@ -92,7 +121,7 @@ export function resolveEffectiveMenuAvailability({
             inventoryAvailabilityState = inventoryAvailable ? "available" : "unavailable"
         }
     } else if (trackingState === MENU_INVENTORY_TRACKING_STATES.CANONICAL_RECIPE) {
-        const components = Array.isArray(mapping?.components) ? mapping.components : []
+        const components = ingredientComponentsForMapping(mapping)
         if (components.length === 0) {
             inventoryAvailable = false
             availableMenuQuantity = 0
@@ -189,8 +218,13 @@ export function toMenuItemWithInventoryDTO({
         : inventoryItemValue
             ? [plain(inventoryItemValue)]
             : []
-    const inventoryItem = mapping?.mode === MENU_INVENTORY_MODES.SIMPLE
-        ? plain(inventoryItemValue) || suppliedInventoryItems[0] || null
+    const simpleInventoryItemId = mapping?.mode === MENU_INVENTORY_MODES.SIMPLE
+        ? mapping?.components?.[0]?.inventoryItemId
+        : null
+    const inventoryItem = simpleInventoryItemId
+        ? plain(inventoryItemValue) || suppliedInventoryItems.find(
+            (item) => item?.inventoryItemId === simpleInventoryItemId,
+        ) || null
         : null
     const availability = resolveEffectiveMenuAvailability({
         menuItem,
@@ -201,6 +235,9 @@ export function toMenuItemWithInventoryDTO({
         MENU_INVENTORY_TRACKING_STATES.CANONICAL_SIMPLE
     const canonicalRecipeActive = availability.trackingState ===
         MENU_INVENTORY_TRACKING_STATES.CANONICAL_RECIPE
+    const ingredientComponents = ingredientComponentsForMapping(mapping)
+    const ingredientTrackingStatus = ingredientTrackingStatusForMapping(mapping)
+    const ingredientTrackingConfigured = ingredientComponents.length > 0
     const availableQuantity = canonicalSimpleActive && inventoryItem
         ? inventoryItem.onHandQuantity - inventoryItem.reservedQuantity
         : canonicalRecipeActive
@@ -233,9 +270,19 @@ export function toMenuItemWithInventoryDTO({
             availableQuantity: canonicalSimpleActive ? availableQuantity : null,
             lowStockThreshold: canonicalSimpleActive ? threshold : null,
             isLowStock: canonicalSimpleActive ? availableQuantity <= threshold : null,
-            recipeComponentCount: mapping?.mode === MENU_INVENTORY_MODES.RECIPE
-                ? mapping.components?.length ?? 0
+            recipeComponentCount: ingredientTrackingConfigured
+                ? ingredientComponents.length
                 : null,
+            ingredientTracking: {
+                configured: ingredientTrackingConfigured,
+                status: ingredientTrackingStatus,
+                componentCount: ingredientComponents.length,
+                behavior: ingredientTrackingConfigured && canonicalSimpleActive
+                    ? "sidecar"
+                    : ingredientTrackingConfigured
+                        ? "authoritative"
+                        : null,
+            },
             ingredientAvailabilityEnforced: canonicalRecipeActive,
             effectiveIsAvailable: availability.effectiveIsAvailable,
             disabledReason: mapping?.disabledReason ?? null,

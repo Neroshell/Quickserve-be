@@ -14,8 +14,14 @@ import MenuItem from "../models/menuItem.js"
 import Order from "../models/order.js"
 import {
     adjustInventory,
+    createInventoryDuplicateError,
+    createInventoryItem,
+    enrichInventoryDuplicateError,
+    normalizeInventoryItemCategory,
+    normalizeInventoryItemName,
     withCanonicalInventoryTransaction,
 } from "./canonicalInventoryService.js"
+import { removeInventoryItemFromWorkspace } from "./inventoryItemLifecycleService.js"
 import { invalidateMenuMutation } from "./cacheInvalidationService.js"
 import {
     applyCanonicalSimpleStockProjection,
@@ -129,7 +135,10 @@ export async function enrichMenuItemsWithInventory({ businessId, menuItems }) {
     }).lean()
     const mappingByMenu = new Map(mappings.map((mapping) => [String(mapping.menuItemId), mapping]))
     const inventoryIds = [...new Set(mappings.flatMap(
-        (mapping) => (mapping.components || []).map((component) => component.inventoryItemId),
+        (mapping) => [
+            ...(mapping.components || []),
+            ...(mapping.ingredientComponents || []),
+        ].map((component) => component.inventoryItemId),
     ).filter(Boolean))]
     const inventoryItems = inventoryIds.length > 0
         ? await InventoryItem.find({
@@ -145,12 +154,15 @@ export async function enrichMenuItemsWithInventory({ businessId, menuItems }) {
             : value
         const mapping = mappingByMenu.get(String(plain._id)) || null
         const mappedInventoryItems = mapping
-            ? (mapping.components || []).map(
+            ? [
+                ...(mapping.components || []),
+                ...(mapping.ingredientComponents || []),
+            ].map(
                 (component) => inventoryById.get(component.inventoryItemId),
             ).filter(Boolean)
             : []
         const inventoryItem = mapping?.mode === MENU_INVENTORY_MODES.SIMPLE
-            ? mappedInventoryItems[0] || null
+            ? inventoryById.get(mapping.components?.[0]?.inventoryItemId) || null
             : null
         return toMenuItemWithInventoryDTO({
             menuItem: plain,
@@ -166,7 +178,16 @@ export async function createSimpleStockMenuItem({
     input,
     actor,
     idempotencyKey,
-}) {
+}, {
+    InventoryItemModel = InventoryItem,
+    MenuItemModel = MenuItem,
+    MenuInventoryRecipeModel = MenuInventoryRecipe,
+    adjustInventoryCommand = adjustInventory,
+    createInventoryItemCommand = createInventoryItem,
+    startSession,
+    invalidateMenu = invalidateMenuMutation,
+    enrichMenuItems = enrichMenuItemsWithInventory,
+} = {}) {
     const tenantId = requiredText(businessId, "businessId")
     const key = requiredText(idempotencyKey, "Idempotency-Key")
     const performedBy = normalizeActor(actor)
@@ -179,6 +200,29 @@ export async function createSimpleStockMenuItem({
     }
     const openingQuantity = nonNegativeInteger(input?.openingQuantity ?? 0, "openingQuantity")
     const lowStockThreshold = nonNegativeInteger(input?.lowStockThreshold ?? 0, "lowStockThreshold")
+    const reuseInventoryItemId = input?.inventoryItemId === undefined || input?.inventoryItemId === null
+        ? null
+        : requiredText(input.inventoryItemId, "inventoryItemId", 100)
+    if (
+        input?.reactivateInventoryItem !== undefined &&
+        typeof input.reactivateInventoryItem !== "boolean"
+    ) {
+        throw new SimpleStockMenuError(
+            "reactivateInventoryItem must be boolean",
+            "INVALID_SIMPLE_STOCK_INPUT",
+        )
+    }
+    if (
+        input?.allowCategoryVariant !== undefined &&
+        typeof input.allowCategoryVariant !== "boolean"
+    ) {
+        throw new SimpleStockMenuError(
+            "allowCategoryVariant must be boolean",
+            "INVALID_SIMPLE_STOCK_INPUT",
+        )
+    }
+    const reactivateInventoryItem = input?.reactivateInventoryItem === true
+    const allowCategoryVariant = input?.allowCategoryVariant === true
     const price = Number(input?.price)
     if (!Number.isFinite(price) || price < 0) {
         throw new SimpleStockMenuError("price must be a non-negative number", "INVALID_SIMPLE_STOCK_INPUT")
@@ -188,6 +232,8 @@ export async function createSimpleStockMenuItem({
         throw new SimpleStockMenuError("Description must be 100 words or less", "INVALID_SIMPLE_STOCK_INPUT")
     }
     const identities = simpleCreationIdentities(tenantId, key)
+    const itemName = requiredText(input?.name, "name", 30)
+    const itemCategory = requiredText(input?.category, "category", 80)
     const fulfillment = normalizeMenuFulfillmentConfiguration({
         type: input?.type,
         fulfillmentStation: input?.fulfillmentStation,
@@ -196,10 +242,10 @@ export async function createSimpleStockMenuItem({
     })
     const requestFingerprint = crypto.createHash("sha256").update(JSON.stringify({
         businessId: tenantId,
-        name: input?.name,
+        name: itemName,
         price,
         prepTimeMinutes: fulfillment.prepTimeMinutes,
-        category: input?.category,
+        category: itemCategory,
         type: input?.type,
         fulfillmentStation: fulfillment.fulfillmentStation,
         fulfillmentBehavior: fulfillment.fulfillmentBehavior,
@@ -209,101 +255,160 @@ export async function createSimpleStockMenuItem({
         openingQuantity,
         lowStockThreshold,
         unit,
+        inventoryItemId: reuseInventoryItemId,
+        reactivateInventoryItem,
+        allowCategoryVariant,
     })).digest("hex")
 
-    const result = await withCanonicalInventoryTransaction(async (session) => {
-        const replay = await MenuItem.findOne({ _id: identities.menuObjectId, businessId: tenantId }, null, { session })
-        if (replay) {
-            const records = await loadMappedRecords({
-                businessId: tenantId,
-                menuItemId: replay._id,
-                session,
-            })
-            if (
-                records.mapping.menuInventoryRecipeId !== identities.mappingId ||
-                records.inventoryItem.inventoryItemId !== identities.inventoryItemId ||
-                records.mapping.creationRequestFingerprint !== requestFingerprint
-            ) {
-                throw new SimpleStockMenuError(
-                    "Idempotency-Key conflicts with another menu item",
-                    "SIMPLE_STOCK_IDEMPOTENCY_CONFLICT",
-                    409,
-                )
+    let result
+    try {
+        result = await withCanonicalInventoryTransaction(async (session) => {
+            const replay = await MenuItemModel.findOne(
+                { _id: identities.menuObjectId, businessId: tenantId },
+                null,
+                { session },
+            )
+            if (replay) {
+                const records = await loadMappedRecords({
+                    businessId: tenantId,
+                    menuItemId: replay._id,
+                    session,
+                })
+                const expectedInventoryItemId = reuseInventoryItemId || identities.inventoryItemId
+                if (
+                    records.mapping.menuInventoryRecipeId !== identities.mappingId ||
+                    records.inventoryItem.inventoryItemId !== expectedInventoryItemId ||
+                    records.mapping.creationRequestFingerprint !== requestFingerprint
+                ) {
+                    throw new SimpleStockMenuError(
+                        "Idempotency-Key conflicts with another menu item",
+                        "SIMPLE_STOCK_IDEMPOTENCY_CONFLICT",
+                        409,
+                    )
+                }
+                return { replayed: true, menuItem: replay }
             }
-            return { replayed: true, menuItem: replay }
-        }
 
-        const manualIsAvailable = input?.isAvailable !== false
-        const [menuItem] = await MenuItem.create([{
-            _id: identities.menuObjectId,
-            businessId: tenantId,
-            name: requiredText(input?.name, "name", 30),
-            price,
-            prepTimeMinutes: fulfillment.prepTimeMinutes,
-            category: requiredText(input?.category, "category", 80),
-            type: fulfillment.type,
-            fulfillmentStation: fulfillment.fulfillmentStation,
-            fulfillmentBehavior: fulfillment.fulfillmentBehavior,
-            description,
-            imageUrl: input?.imageUrl || "",
-            manualIsAvailable,
-            isAvailable: manualIsAvailable && openingQuantity > 0,
-            trackStock: true,
-            stockQuantity: openingQuantity,
-            lowStockThreshold,
-        }], { session })
-        const [inventoryItem] = await InventoryItem.create([{
-            inventoryItemId: identities.inventoryItemId,
-            businessId: tenantId,
-            name: menuItem.name,
-            category: menuItem.category,
-            trackingUnit: unit,
-            baseUnitDimension: "count",
-            onHandQuantity: 0,
-            reservedQuantity: 0,
-            lowStockThreshold,
-            isActive: true,
-        }], { session })
-        if (openingQuantity > 0) {
-            await adjustInventory({
+            let inventoryItem
+            let createdInventoryItem = false
+            if (reuseInventoryItemId) {
+                inventoryItem = await InventoryItemModel.findOne({
+                    businessId: tenantId,
+                    inventoryItemId: reuseInventoryItemId,
+                    deletedAt: null,
+                }, null, { session })
+                if (!inventoryItem) {
+                    throw new SimpleStockMenuError(
+                        "Selected inventory item was not found",
+                        "SIMPLE_STOCK_REUSE_ITEM_NOT_FOUND",
+                        404,
+                    )
+                }
+                if (
+                    normalizeInventoryItemName(inventoryItem.name) !== normalizeInventoryItemName(itemName) ||
+                    normalizeInventoryItemCategory(inventoryItem.category) !== normalizeInventoryItemCategory(itemCategory) ||
+                    inventoryItem.trackingUnit !== unit
+                ) {
+                    throw new SimpleStockMenuError(
+                        "Selected inventory item does not match the menu item name, category, and stock unit",
+                        "SIMPLE_STOCK_REUSE_MISMATCH",
+                        409,
+                    )
+                }
+                if (inventoryItem.isActive === false) {
+                    if (!reactivateInventoryItem) {
+                        throw createInventoryDuplicateError(inventoryItem, "strong")
+                    }
+                    inventoryItem.isActive = true
+                    await inventoryItem.save({ session })
+                }
+            } else {
+                await createInventoryItemCommand({
+                    businessId: tenantId,
+                    input: {
+                        name: itemName,
+                        category: itemCategory,
+                        trackingUnit: unit,
+                        lowStockThreshold,
+                    },
+                    allowCategoryVariant,
+                    session,
+                }, { InventoryItemModel, generateId: () => identities.inventoryItemId })
+                inventoryItem = await InventoryItemModel.findOne({
+                    businessId: tenantId,
+                    inventoryItemId: identities.inventoryItemId,
+                }, null, { session })
+                createdInventoryItem = true
+            }
+
+            const manualIsAvailable = input?.isAvailable !== false
+            const availableQuantity = inventoryItem.onHandQuantity - inventoryItem.reservedQuantity
+            const [menuItem] = await MenuItemModel.create([{
+                _id: identities.menuObjectId,
                 businessId: tenantId,
-                inventoryItemId: inventoryItem.inventoryItemId,
-                input: {
-                    quantity: openingQuantity,
+                name: itemName,
+                price,
+                prepTimeMinutes: fulfillment.prepTimeMinutes,
+                category: itemCategory,
+                type: fulfillment.type,
+                fulfillmentStation: fulfillment.fulfillmentStation,
+                fulfillmentBehavior: fulfillment.fulfillmentBehavior,
+                description,
+                imageUrl: input?.imageUrl || "",
+                manualIsAvailable,
+                isAvailable: manualIsAvailable && inventoryItem.isActive !== false && availableQuantity > 0,
+                trackStock: true,
+                stockQuantity: availableQuantity,
+                lowStockThreshold: inventoryItem.lowStockThreshold,
+            }], { session })
+            if (createdInventoryItem && openingQuantity > 0) {
+                await adjustInventoryCommand({
+                    businessId: tenantId,
+                    inventoryItemId: inventoryItem.inventoryItemId,
+                    input: {
+                        quantity: openingQuantity,
+                        unit,
+                        direction: "increase",
+                        reason: "opening_balance_correction",
+                        reference: `menu-item:${menuItem._id}`,
+                        note: "New Simple Stock item opening balance",
+                    },
+                    actor: performedBy,
+                    idempotencyKey: `simple-stock-create:${key}:opening`,
+                    session,
+                }, { generateMovementId: () => identities.openingMovementId })
+                inventoryItem.onHandQuantity = openingQuantity
+            }
+            await MenuInventoryRecipeModel.create([{
+                menuInventoryRecipeId: identities.mappingId,
+                businessId: tenantId,
+                menuItemId: menuItem._id,
+                mode: MENU_INVENTORY_MODES.SIMPLE,
+                status: MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
+                version: 1,
+                creationRequestFingerprint: requestFingerprint,
+                components: [{
+                    inventoryItemId: inventoryItem.inventoryItemId,
+                    quantity: 1,
                     unit,
-                    direction: "increase",
-                    reason: "opening_balance_correction",
-                    reference: `menu-item:${menuItem._id}`,
-                    note: "New Simple Stock item opening balance",
-                },
-                actor: performedBy,
-                idempotencyKey: `simple-stock-create:${key}:opening`,
-                session,
-            }, { generateMovementId: () => identities.openingMovementId })
-            inventoryItem.onHandQuantity = openingQuantity
-        }
-        await MenuInventoryRecipe.create([{
-            menuInventoryRecipeId: identities.mappingId,
+                    canonicalQuantity: 1,
+                }],
+            }], { session })
+            applyCanonicalSimpleStockProjection({ menuItem, inventoryItem })
+            await menuItem.save({ session })
+            return { replayed: false, menuItem }
+        }, startSession ? { startSession } : undefined)
+    } catch (error) {
+        throw await enrichInventoryDuplicateError(error, {
             businessId: tenantId,
-            menuItemId: menuItem._id,
-            mode: MENU_INVENTORY_MODES.SIMPLE,
-            status: MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
-            version: 1,
-            creationRequestFingerprint: requestFingerprint,
-            components: [{
-                inventoryItemId: inventoryItem.inventoryItemId,
-                quantity: 1,
-                unit,
-                canonicalQuantity: 1,
-            }],
-        }], { session })
-        applyCanonicalSimpleStockProjection({ menuItem, inventoryItem })
-        await menuItem.save({ session })
-        return { replayed: false, menuItem }
-    })
+            name: itemName,
+            category: itemCategory,
+            trackingUnit: unit,
+        }, { InventoryItemModel })
+    }
 
-    if (!result.replayed) await invalidateMenuMutation(tenantId)
-    const [dto] = await enrichMenuItemsWithInventory({ businessId: tenantId, menuItems: [result.menuItem] })
+    if (!result.replayed) await invalidateMenu(tenantId)
+    const [dto] = await enrichMenuItems({ businessId: tenantId, menuItems: [result.menuItem] })
     return { replayed: result.replayed, item: dto }
 }
 
@@ -412,6 +517,7 @@ export async function executeInventoryMetadataUpdateWithSimpleStockProjection({
     businessId,
     inventoryItemId,
     input,
+    allowCategoryVariant = false,
     command,
 }) {
     const tenantId = requiredText(businessId, "businessId")
@@ -419,20 +525,38 @@ export async function executeInventoryMetadataUpdateWithSimpleStockProjection({
     if (typeof command !== "function") {
         throw new SimpleStockMenuError("Inventory update command is required", "INVALID_INVENTORY_COMMAND")
     }
-    const result = await withCanonicalInventoryTransaction(async (session) => {
-        const item = await command({
+    let result
+    try {
+        result = await withCanonicalInventoryTransaction(async (session) => {
+            const item = await command({
+                businessId: tenantId,
+                inventoryItemId: itemId,
+                input,
+                allowCategoryVariant,
+                session,
+            })
+            const projectedMenuItems = await projectActiveMappingsForInventoryItem({
+                businessId: tenantId,
+                inventoryItemId: itemId,
+                session,
+            })
+            return { item, projectedMenuItems }
+        })
+    } catch (error) {
+        if (error?.code !== "INVENTORY_ITEM_DUPLICATE" && error?.code !== 11000) throw error
+        const current = await InventoryItem.findOne({
             businessId: tenantId,
             inventoryItemId: itemId,
-            input,
-            session,
         })
-        const projectedMenuItems = await projectActiveMappingsForInventoryItem({
+        if (!current) throw error
+        throw await enrichInventoryDuplicateError(error, {
             businessId: tenantId,
-            inventoryItemId: itemId,
-            session,
+            name: input?.name ?? current.name,
+            category: input?.category ?? current.category,
+            trackingUnit: input?.trackingUnit ?? current.trackingUnit,
+            excludeInventoryItemId: itemId,
         })
-        return { item, projectedMenuItems }
-    })
+    }
     if (result.projectedMenuItems > 0) await invalidateMenuMutation(tenantId)
     return result.item
 }
@@ -511,6 +635,7 @@ export async function setSimpleStockEnabled({ businessId, menuItemId, enabled, a
             records.mapping.status = MENU_INVENTORY_MAPPING_STATUSES.DISABLED
             records.mapping.disabledReason = "owner_disabled"
             records.mapping.disabledAt = new Date()
+            records.mapping.version += 1
             records.menuItem.trackStock = false
             records.menuItem.isAvailable = resolveManualMenuAvailability(records.menuItem)
         } else {
@@ -721,15 +846,21 @@ export async function rollbackSimpleStockToLegacy({ businessId, menuItemId }) {
     return item
 }
 
-export async function archiveMappedMenuItem({ businessId, menuItemId }) {
+export async function archiveMappedMenuItem({ businessId, menuItemId }, {
+    startSession,
+    now = () => new Date(),
+    MenuInventoryRecipeModel = MenuInventoryRecipe,
+    MenuItemModel = MenuItem,
+    invalidateMenu = invalidateMenuMutation,
+} = {}) {
     const tenantId = requiredText(businessId, "businessId")
     await withCanonicalInventoryTransaction(async (session) => {
         const [mapping, menuItem] = await Promise.all([
-            MenuInventoryRecipe.findOne({
+            MenuInventoryRecipeModel.findOne({
                 businessId: tenantId,
                 menuItemId,
             }, null, { session }),
-            MenuItem.findOne({
+            MenuItemModel.findOne({
                 _id: menuItemId,
                 businessId: tenantId,
                 archivedAt: null,
@@ -742,7 +873,7 @@ export async function archiveMappedMenuItem({ businessId, menuItemId }) {
                 404,
             )
         }
-        const archivedAt = new Date()
+        const archivedAt = now()
         mapping.status = MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED
         mapping.disabledReason = "archived"
         mapping.disabledAt = archivedAt
@@ -752,11 +883,181 @@ export async function archiveMappedMenuItem({ businessId, menuItemId }) {
         menuItem.isAvailable = false
         await mapping.save({ session })
         await menuItem.save({ session })
-    })
-    await invalidateMenuMutation(tenantId)
+    }, startSession ? { startSession } : undefined)
+    await invalidateMenu(tenantId)
     return { archived: true, menuItemId: String(menuItemId) }
 }
 
 export async function hasAnyMenuInventoryMapping({ businessId, menuItemId }) {
     return Boolean(await MenuInventoryRecipe.exists({ businessId, menuItemId }))
+}
+
+export async function readSimpleStockMenuRemovalPreview({
+    businessId,
+    menuItemId,
+    session = null,
+}, {
+    MenuItemModel = MenuItem,
+    MenuInventoryRecipeModel = MenuInventoryRecipe,
+    InventoryItemModel = InventoryItem,
+} = {}) {
+    const tenantId = requiredText(businessId, "businessId")
+    const itemId = requiredText(menuItemId, "menuItemId")
+    const menuItem = await MenuItemModel.findOne({
+        _id: itemId,
+        businessId: tenantId,
+        archivedAt: null,
+    }, null, session ? { session } : undefined)
+    if (!menuItem) {
+        throw new SimpleStockMenuError("Menu item not found", "MENU_ITEM_NOT_FOUND", 404)
+    }
+    const mapping = await MenuInventoryRecipeModel.findOne({
+        businessId: tenantId,
+        menuItemId: itemId,
+        mode: MENU_INVENTORY_MODES.SIMPLE,
+        status: { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED },
+    }, null, session ? { session } : undefined)
+    if (!mapping || mapping.components?.length !== 1) {
+        throw new SimpleStockMenuError(
+            "Menu item does not have a removable Simple Stock relationship",
+            "SIMPLE_STOCK_MENU_RELATIONSHIP_NOT_FOUND",
+            404,
+        )
+    }
+
+    const inventoryItemId = mapping.components[0].inventoryItemId
+    const inventoryItem = await InventoryItemModel.findOne({
+        businessId: tenantId,
+        inventoryItemId,
+        deletedAt: null,
+    }, null, session ? { session } : undefined)
+    if (!inventoryItem) {
+        throw new SimpleStockMenuError(
+            "Linked inventory item was not found",
+            "SIMPLE_STOCK_LINKAGE_BROKEN",
+            409,
+        )
+    }
+
+    const otherActiveMappings = await MenuInventoryRecipeModel.find({
+        businessId: tenantId,
+        menuItemId: { $ne: menuItem._id },
+        $or: [
+            {
+                status: MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
+                "components.inventoryItemId": inventoryItemId,
+            },
+            {
+                ingredientTrackingStatus: MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
+                "ingredientComponents.inventoryItemId": inventoryItemId,
+            },
+        ],
+    }, null, session ? { session } : undefined)
+    const otherMenuItemIds = otherActiveMappings.map((candidate) => candidate.menuItemId)
+    const sharedActiveRelationshipCount = otherMenuItemIds.length > 0
+        ? await MenuItemModel.countDocuments({
+            businessId: tenantId,
+            _id: { $in: otherMenuItemIds },
+            archivedAt: null,
+        }, session ? { session } : undefined)
+        : 0
+
+    return {
+        menuItemId: String(menuItem._id),
+        menuItemName: menuItem.name,
+        inventoryItem: {
+            inventoryItemId: inventoryItem.inventoryItemId,
+            name: inventoryItem.name,
+            trackingUnit: inventoryItem.trackingUnit,
+            availableQuantity: inventoryItem.onHandQuantity - inventoryItem.reservedQuantity,
+        },
+        canRemoveInventory: sharedActiveRelationshipCount === 0,
+        sharedActiveRelationshipCount,
+    }
+}
+
+export async function removeSimpleStockMenuAndInventory({
+    businessId,
+    menuItemId,
+    actor,
+}, {
+    startSession,
+    now = () => new Date(),
+    MenuItemModel = MenuItem,
+    MenuInventoryRecipeModel = MenuInventoryRecipe,
+    InventoryItemModel = InventoryItem,
+    removeInventoryItem = removeInventoryItemFromWorkspace,
+    invalidateMenu = invalidateMenuMutation,
+} = {}) {
+    const tenantId = requiredText(businessId, "businessId")
+    const itemId = requiredText(menuItemId, "menuItemId")
+    const performedBy = normalizeActor(actor)
+    const result = await withCanonicalInventoryTransaction(async (session) => {
+        const preview = await readSimpleStockMenuRemovalPreview({
+            businessId: tenantId,
+            menuItemId: itemId,
+            session,
+        }, {
+            MenuItemModel,
+            MenuInventoryRecipeModel,
+            InventoryItemModel,
+        })
+        if (!preview.canRemoveInventory) {
+            const error = new SimpleStockMenuError(
+                "The linked inventory item is still used by another active menu relationship.",
+                "SIMPLE_STOCK_INVENTORY_SHARED",
+                409,
+            )
+            error.details = {
+                sharedActiveRelationshipCount: preview.sharedActiveRelationshipCount,
+            }
+            throw error
+        }
+
+        const mapping = await MenuInventoryRecipeModel.findOne({
+            businessId: tenantId,
+            menuItemId: itemId,
+            mode: MENU_INVENTORY_MODES.SIMPLE,
+            status: { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED },
+        }, null, { session })
+        const menuItem = await MenuItemModel.findOne({
+            _id: itemId,
+            businessId: tenantId,
+            archivedAt: null,
+        }, null, { session })
+        if (!mapping || !menuItem) {
+            throw new SimpleStockMenuError(
+                "Mapped menu item not found",
+                "MENU_INVENTORY_MAPPING_NOT_FOUND",
+                404,
+            )
+        }
+
+        const archivedAt = now()
+        mapping.status = MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED
+        mapping.disabledReason = "archived"
+        mapping.disabledAt = archivedAt
+        mapping.archivedAt = archivedAt
+        menuItem.archivedAt = archivedAt
+        menuItem.manualIsAvailable = false
+        menuItem.isAvailable = false
+        await mapping.save({ session })
+        await menuItem.save({ session })
+
+        const inventoryRemoval = await removeInventoryItem({
+            businessId: tenantId,
+            inventoryItemId: preview.inventoryItem.inventoryItemId,
+            actor: performedBy,
+            session,
+        }, { now })
+        return { preview, inventoryRemoval }
+    }, startSession ? { startSession } : undefined)
+
+    await invalidateMenu(tenantId)
+    return {
+        removed: true,
+        menuItemId: itemId,
+        inventoryItemId: result.preview.inventoryItem.inventoryItemId,
+        inventoryPreservation: result.inventoryRemoval.preservation,
+    }
 }

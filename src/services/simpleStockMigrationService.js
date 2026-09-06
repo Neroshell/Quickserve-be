@@ -11,7 +11,15 @@ import MenuInventoryRecipe from "../models/MenuInventoryRecipe.js"
 import InventoryItem from "../models/InventoryItem.js"
 import MenuItem from "../models/menuItem.js"
 import Order from "../models/order.js"
-import { adjustInventory, withCanonicalInventoryTransaction } from "./canonicalInventoryService.js"
+import {
+    adjustInventory,
+    createInventoryDuplicateError,
+    createInventoryItem,
+    enrichInventoryDuplicateError,
+    normalizeInventoryItemCategory,
+    normalizeInventoryItemName,
+    withCanonicalInventoryTransaction,
+} from "./canonicalInventoryService.js"
 import { invalidateMenuItems } from "./cacheInvalidationService.js"
 
 export const SIMPLE_STOCK_MIGRATION_CLASSIFICATIONS = Object.freeze({
@@ -311,12 +319,12 @@ async function hasOpenLegacyCancellationRisk({ businessId, menuItem, session }) 
     }).session(session))
 }
 
-function isExactMigrationReplay(mapping, identities) {
+function isExactMigrationReplay(mapping, identities, expectedInventoryItemId) {
     return mapping?.menuInventoryRecipeId === identities.menuInventoryRecipeId &&
         mapping?.migration?.source === LEGACY_MENU_STOCK_MIGRATION_SOURCE &&
         mapping?.migration?.version === LEGACY_MENU_STOCK_MIGRATION_VERSION &&
         mapping?.components?.length === 1 &&
-        mapping.components[0].inventoryItemId === identities.inventoryItemId
+        mapping.components[0].inventoryItemId === expectedInventoryItemId
 }
 
 /**
@@ -328,19 +336,33 @@ export async function migrateLegacyMenuItemToSimpleStock({
     businessId,
     menuItemId,
     actor,
+    inventoryItemId = null,
+    reactivateInventoryItem = false,
+    allowCategoryVariant = false,
 }, {
     startSession,
     now = () => new Date(),
 } = {}) {
     const tenantId = requiredIdentity(businessId, "businessId")
     const itemId = requiredIdentity(menuItemId, "menuItemId")
+    const reuseInventoryItemId = inventoryItemId === null || inventoryItemId === undefined
+        ? null
+        : requiredIdentity(inventoryItemId, "inventoryItemId")
+    if (typeof reactivateInventoryItem !== "boolean" || typeof allowCategoryVariant !== "boolean") {
+        throw new SimpleStockMigrationError(
+            "reactivateInventoryItem and allowCategoryVariant must be boolean",
+            "INVALID_SIMPLE_STOCK_MIGRATION_INPUT",
+        )
+    }
     const performedBy = normalizeMigrationActor(actor)
     const identities = buildDeterministicSimpleStockMigrationIdentities({
         businessId: tenantId,
         menuItemId: itemId,
     })
 
-    const result = await withCanonicalInventoryTransaction(async (session) => {
+    let result
+    try {
+        result = await withCanonicalInventoryTransaction(async (session) => {
         const menuItem = await MenuItem.findOne({ _id: itemId, businessId: tenantId }, null, { session })
         if (!menuItem) {
             const error = new SimpleStockMigrationError("Menu item not found", "MENU_ITEM_NOT_FOUND")
@@ -353,11 +375,15 @@ export async function migrateLegacyMenuItemToSimpleStock({
             menuItemId: menuItem._id,
         }, null, { session })
         if (existingMapping) {
-            if (isExactMigrationReplay(existingMapping, identities)) {
+            if (isExactMigrationReplay(
+                existingMapping,
+                identities,
+                reuseInventoryItemId || identities.inventoryItemId,
+            )) {
                 return {
                     replayed: true,
                     menuItemId: itemId,
-                    inventoryItemId: identities.inventoryItemId,
+                    inventoryItemId: existingMapping.components[0].inventoryItemId,
                     menuInventoryRecipeId: identities.menuInventoryRecipeId,
                 }
             }
@@ -388,20 +414,61 @@ export async function migrateLegacyMenuItemToSimpleStock({
         }
 
         const candidate = classification.candidate
-        const [inventoryItem] = await InventoryItem.create([{
-            inventoryItemId: identities.inventoryItemId,
-            businessId: tenantId,
-            name: menuItem.name,
-            category: menuItem.category || null,
-            trackingUnit: candidate.trackingUnit,
-            baseUnitDimension: "count",
-            onHandQuantity: 0,
-            reservedQuantity: 0,
-            lowStockThreshold: candidate.lowStockThreshold,
-            isActive: true,
-        }], { session })
+        let inventoryItem
+        let createdInventoryItem = false
+        if (reuseInventoryItemId) {
+            inventoryItem = await InventoryItem.findOne({
+                businessId: tenantId,
+                inventoryItemId: reuseInventoryItemId,
+                deletedAt: null,
+            }, null, { session })
+            if (!inventoryItem) {
+                const error = new SimpleStockMigrationError(
+                    "Selected inventory item was not found",
+                    "SIMPLE_STOCK_REUSE_ITEM_NOT_FOUND",
+                )
+                error.statusCode = 404
+                throw error
+            }
+            if (
+                normalizeInventoryItemName(inventoryItem.name) !== normalizeInventoryItemName(menuItem.name) ||
+                normalizeInventoryItemCategory(inventoryItem.category) !== normalizeInventoryItemCategory(menuItem.category) ||
+                inventoryItem.trackingUnit !== candidate.trackingUnit
+            ) {
+                const error = new SimpleStockMigrationError(
+                    "Selected inventory item does not match the menu item name, category, and stock unit",
+                    "SIMPLE_STOCK_REUSE_MISMATCH",
+                )
+                error.statusCode = 409
+                throw error
+            }
+            if (inventoryItem.isActive === false) {
+                if (!reactivateInventoryItem) {
+                    throw createInventoryDuplicateError(inventoryItem, "strong")
+                }
+                inventoryItem.isActive = true
+                await inventoryItem.save({ session })
+            }
+        } else {
+            await createInventoryItem({
+                businessId: tenantId,
+                input: {
+                    name: menuItem.name,
+                    category: menuItem.category || null,
+                    trackingUnit: candidate.trackingUnit,
+                    lowStockThreshold: candidate.lowStockThreshold,
+                },
+                allowCategoryVariant,
+                session,
+            }, { generateId: () => identities.inventoryItemId })
+            inventoryItem = await InventoryItem.findOne({
+                businessId: tenantId,
+                inventoryItemId: identities.inventoryItemId,
+            }, null, { session })
+            createdInventoryItem = true
+        }
 
-        if (candidate.openingQuantity > 0) {
+        if (createdInventoryItem && candidate.openingQuantity > 0) {
             await adjustInventory({
                 businessId: tenantId,
                 inventoryItemId: inventoryItem.inventoryItemId,
@@ -419,6 +486,7 @@ export async function migrateLegacyMenuItemToSimpleStock({
             }, {
                 generateMovementId: () => identities.openingMovementId,
             })
+            inventoryItem.onHandQuantity = candidate.openingQuantity
         }
 
         const migratedAt = now()
@@ -430,7 +498,7 @@ export async function migrateLegacyMenuItemToSimpleStock({
             status: MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
             version: 1,
             components: [{
-                inventoryItemId: identities.inventoryItemId,
+                inventoryItemId: inventoryItem.inventoryItemId,
                 quantity: 1,
                 unit: candidate.trackingUnit,
                 canonicalQuantity: 1,
@@ -444,19 +512,25 @@ export async function migrateLegacyMenuItemToSimpleStock({
 
         menuItem.manualIsAvailable = candidate.manualIsAvailable
         menuItem.trackStock = true
-        menuItem.stockQuantity = candidate.openingQuantity
-        menuItem.lowStockThreshold = candidate.lowStockThreshold
-        menuItem.isAvailable = candidate.manualIsAvailable && candidate.openingQuantity > 0
+        menuItem.stockQuantity = inventoryItem.onHandQuantity - inventoryItem.reservedQuantity
+        menuItem.lowStockThreshold = inventoryItem.lowStockThreshold
+        menuItem.isAvailable = candidate.manualIsAvailable &&
+            inventoryItem.isActive !== false &&
+            menuItem.stockQuantity > 0
         await menuItem.save({ session })
 
         return {
             replayed: false,
             menuItemId: itemId,
-            inventoryItemId: identities.inventoryItemId,
+            inventoryItemId: inventoryItem.inventoryItemId,
             menuInventoryRecipeId: identities.menuInventoryRecipeId,
             classification,
         }
-    }, startSession ? { startSession } : undefined)
+        }, startSession ? { startSession } : undefined)
+    } catch (error) {
+        if (!error?.duplicateIdentity) throw error
+        throw await enrichInventoryDuplicateError(error, error.duplicateIdentity)
+    }
 
     if (!result.replayed) await invalidateMenuItems(tenantId)
     return result

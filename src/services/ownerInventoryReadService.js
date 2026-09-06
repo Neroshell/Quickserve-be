@@ -122,7 +122,7 @@ export async function readInventoryOverview({ businessId }, {
 } = {}) {
     const [summaryRows, recentMovements] = await Promise.all([
         InventoryItemModel.aggregate([
-            { $match: { businessId, isActive: true } },
+            { $match: { businessId, isActive: true, deletedAt: null } },
             {
                 $project: {
                     availableQuantity: { $subtract: ["$onHandQuantity", "$reservedQuantity"] },
@@ -194,7 +194,7 @@ export async function readInventoryItemsPage({
         ? decodeCursor(cursor, "inventory_items", filterKey)
         : null
 
-    const filter = { businessId }
+    const filter = { businessId, deletedAt: null }
     if (normalizedActive !== "all") filter.isActive = normalizedActive
     const conditions = []
     if (normalizedCategory) {

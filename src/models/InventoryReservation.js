@@ -10,6 +10,8 @@ import {
     INVENTORY_RESERVATION_SOURCE_TYPE_VALUES,
     INVENTORY_RESERVATION_STATUSES,
     INVENTORY_RESERVATION_STATUS_VALUES,
+    INVENTORY_SIDECAR_ALLOCATION_STATUSES,
+    INVENTORY_SIDECAR_ALLOCATION_STATUS_VALUES,
 } from "../constants/inventoryReservation.js"
 import { MENU_INVENTORY_MODE_VALUES } from "../constants/menuInventory.js"
 import {
@@ -70,6 +72,50 @@ InventoryReservationLineAllocationSchema.pre("validate", function () {
     }
 })
 
+const InventoryReservationSidecarAllocationSchema = new mongoose.Schema({
+    allocationId: { type: String, required: true, trim: true, maxlength: 100 },
+    orderLineId: { type: String, required: true, trim: true, maxlength: 100 },
+    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: "MenuItem", required: true },
+    mappingVersion: { type: Number, required: true, min: 1, validate: Number.isInteger },
+    fulfillmentStation: { type: String, required: true, enum: FULFILLMENT_STATION_VALUES },
+    fulfillmentBehavior: { type: String, required: true, enum: FULFILLMENT_BEHAVIOR_VALUES },
+    inventoryItemId: { type: String, required: true, trim: true, maxlength: 100 },
+    canonicalQuantity: { type: Number, required: true, validate: isPositiveSafeInteger },
+    unit: { type: String, required: true, enum: INVENTORY_TRACKING_UNITS },
+    status: {
+        type: String,
+        required: true,
+        enum: INVENTORY_SIDECAR_ALLOCATION_STATUS_VALUES,
+        default: INVENTORY_SIDECAR_ALLOCATION_STATUSES.PENDING,
+    },
+    consumedCanonicalQuantity: { type: Number, default: 0, min: 0 },
+    shortageCanonicalQuantity: { type: Number, default: 0, min: 0 },
+    consumeMovementId: { type: String, default: null, trim: true, maxlength: 100 },
+    accountedAt: { type: Date, default: null },
+}, { _id: false })
+
+InventoryReservationSidecarAllocationSchema.pre("validate", function () {
+    const consumed = this.consumedCanonicalQuantity
+    const shortage = this.shortageCanonicalQuantity
+    const reconciles = Number.isSafeInteger(consumed) && Number.isSafeInteger(shortage) &&
+        consumed >= 0 && shortage >= 0 && consumed + shortage === this.canonicalQuantity
+    if (this.status === INVENTORY_SIDECAR_ALLOCATION_STATUSES.PENDING) {
+        if (consumed !== 0 || shortage !== 0 || this.consumeMovementId || this.accountedAt) {
+            this.invalidate("status", "Pending sidecar allocations cannot contain accounting metadata")
+        }
+    } else if (this.status === INVENTORY_SIDECAR_ALLOCATION_STATUSES.CONSUMED) {
+        if (!reconciles || shortage !== 0 || consumed !== this.canonicalQuantity ||
+            !this.consumeMovementId || !this.accountedAt) {
+            this.invalidate("status", "Consumed sidecar allocations require exact consumption metadata")
+        }
+    } else if (this.status === INVENTORY_SIDECAR_ALLOCATION_STATUSES.SHORTAGE) {
+        if (!reconciles || shortage <= 0 || !this.accountedAt ||
+            (consumed > 0) !== Boolean(this.consumeMovementId)) {
+            this.invalidate("status", "Shortage sidecar allocations must reconcile consumed and missing quantities")
+        }
+    }
+})
+
 const LegacyReservationComponentSchema = new mongoose.Schema({
     menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: "MenuItem", required: true },
     quantity: { type: Number, required: true, validate: isPositiveSafeInteger },
@@ -105,6 +151,7 @@ const InventoryReservationSchema = new mongoose.Schema({
     },
     components: { type: [InventoryReservationComponentSchema], default: [] },
     lineAllocations: { type: [InventoryReservationLineAllocationSchema], default: [] },
+    sidecarAllocations: { type: [InventoryReservationSidecarAllocationSchema], default: [] },
     legacyComponents: { type: [LegacyReservationComponentSchema], default: [] },
     menuRequirements: { type: [MenuRequirementSnapshotSchema], default: [] },
     expiresAt: { type: Date, default: null },
@@ -132,6 +179,9 @@ InventoryReservationSchema.index({ businessId: 1, reservationId: 1 }, { unique: 
 InventoryReservationSchema.index({ businessId: 1, idempotencyKey: 1 }, { unique: true })
 InventoryReservationSchema.index({ businessId: 1, orderId: 1 })
 InventoryReservationSchema.index({ businessId: 1, pendingCheckoutId: 1 })
+InventoryReservationSchema.index({ businessId: 1, "components.inventoryItemId": 1 })
+InventoryReservationSchema.index({ businessId: 1, "lineAllocations.inventoryItemId": 1 })
+InventoryReservationSchema.index({ businessId: 1, "sidecarAllocations.inventoryItemId": 1 })
 InventoryReservationSchema.index({ stripeSessionId: 1 }, {
     unique: true,
     partialFilterExpression: { stripeSessionId: { $type: "string" } },
@@ -212,6 +262,24 @@ InventoryReservationSchema.pre("validate", function () {
                 "Inventory line allocations must exactly reconcile to aggregate components",
             )
         }
+    }
+
+    const sidecarAllocations = Array.isArray(this.sidecarAllocations)
+        ? this.sidecarAllocations
+        : []
+    const sidecarIds = new Set()
+    const sidecarKeys = new Set()
+    for (const allocation of sidecarAllocations) {
+        const allocationKey = `${allocation.orderLineId}:${allocation.inventoryItemId}`
+        if (sidecarIds.has(allocation.allocationId) || sidecarKeys.has(allocationKey)) {
+            this.invalidate(
+                "sidecarAllocations",
+                "Ingredient sidecar allocations must be unique by ID and order-line inventory ownership",
+            )
+            break
+        }
+        sidecarIds.add(allocation.allocationId)
+        sidecarKeys.add(allocationKey)
     }
 
     if (this.sourceType === "stripe_checkout") {
