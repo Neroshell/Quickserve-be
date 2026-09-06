@@ -70,6 +70,9 @@ test/*
 !test/orderFulfillmentService.test.js
 !test/orderFulfillment.integration.test.js
 !test/customerTimingWaiterCall.test.js
+!test/inventoryPhase5B.test.js
+!test/inventoryPhase5B.integration.test.js
+!test/inventoryPhase6B.test.js
 test/managerPermissions.test.js
 !test/coOwnerAccess.test.js
 !test/billingHardening.test.js
@@ -87,7 +90,7 @@ test/inventoryPhase3.integration.test.js
 test/inventoryPhase4.test.js
 test/inventoryPhase4.integration.test.js
 est/inventoryTransaction.integration.test.js
-test/ownerInventoryReadService.test.js
+!test/ownerInventoryReadService.test.js
 test/hotelRoomTypes.test.js
 test/responseCache.test.js
 test/stage1ResponseCaching.test.js

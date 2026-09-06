@@ -9,6 +9,16 @@ export const INVENTORY_RESERVATION_STATUS_VALUES = Object.freeze(
     Object.values(INVENTORY_RESERVATION_STATUSES),
 )
 
+export const INVENTORY_LINE_ALLOCATION_STATUSES = Object.freeze({
+    RESERVED: "reserved",
+    CONSUMED: "consumed",
+    RELEASED: "released",
+})
+
+export const INVENTORY_LINE_ALLOCATION_STATUS_VALUES = Object.freeze(
+    Object.values(INVENTORY_LINE_ALLOCATION_STATUSES),
+)
+
 export const INVENTORY_RESERVATION_SOURCE_TYPES = Object.freeze({
     OFFLINE_ORDER: "offline_order",
     WAITSTAFF_ORDER: "waitstaff_order",
@@ -43,4 +53,3 @@ export const INVENTORY_RESERVATION_RELEASE_EVIDENCE = Object.freeze({
 export const STRIPE_INVENTORY_HOLD_LIFETIME_MS = 30 * 60 * 1000
 export const INVENTORY_PROVIDER_CREATION_REPAIR_DELAY_MS = 2 * 60 * 1000
 export const INVENTORY_REPAIR_SCAN_LIMIT = 50
-

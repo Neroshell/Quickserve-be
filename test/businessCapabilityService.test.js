@@ -16,7 +16,7 @@ test("legacy businesses resolve identity defaults without a stored modules array
     assert.deepEqual(resolveBusinessModules({ businessType: "hotel" }), ["lodging"])
 })
 
-test("restaurant capabilities preserve the existing owner navigation", () => {
+test("restaurant capabilities expose the canonical owner navigation", () => {
     const capabilities = resolveBusinessCapabilities({
         businessType: "restaurant",
         modules: ["foodService"],
@@ -32,7 +32,7 @@ test("restaurant capabilities preserve the existing owner navigation", () => {
         capabilities.navigation.groups.map(({ id, items }) => ({ id, items })),
         [
             { id: "operations", items: ["orders", "transactions", "reservations"] },
-            { id: "management", items: ["menu", "servicePoints", "staff"] },
+            { id: "management", items: ["menu", "inventory", "servicePoints", "staff"] },
             { id: "insights", items: ["analytics", "feedback", "guests", "aiBusinessAnalyst"] },
             { id: "account", items: ["billing", "branding", "settings"] },
         ]
@@ -65,7 +65,7 @@ test("food service extends a hotel without replacing the hotel shell", () => {
                 id: "hotelOperations",
                 items: ["reservations", "transactions", "servicePoints"],
             },
-            { id: "foodService", items: ["orders", "menu"] },
+            { id: "foodService", items: ["orders", "menu", "inventory"] },
         ]
     )
 })

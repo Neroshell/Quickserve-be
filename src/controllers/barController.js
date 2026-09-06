@@ -7,6 +7,7 @@ import {
 import { publishOrderRealtime, toStationOrderDTO } from "../services/orderRealtimeService.js"
 import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/businessDate.js"
 import { toOrderDTO } from "../utils/orderDTO.js"
+import { invalidateMenuItems } from "../services/cacheInvalidationService.js"
 
 export async function barOrders(req, res) {
   try {
@@ -66,6 +67,7 @@ export async function updateBarFulfillment(req, res) {
       orderLineIds: req.body?.orderLineIds,
       actor: req.session.user,
     })
+    if (result.inventoryChanged) await invalidateMenuItems(businessId)
     if (result.changed) {
       await publishOrderRealtime("order_updated", result.order, {
         action: `bar_${req.body.action}`,

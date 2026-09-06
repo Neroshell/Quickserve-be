@@ -5,6 +5,10 @@ import {
     INVENTORY_UNIT_VALUES,
     MAX_INVENTORY_QUANTITY,
 } from "../constants/inventory.js"
+import {
+    FULFILLMENT_ACTION_VALUES,
+    FULFILLMENT_STATION_VALUES,
+} from "../constants/orderFulfillment.js"
 
 export function generateInventoryMovementId() {
     return `imv_${crypto.randomBytes(8).toString("hex")}`
@@ -64,6 +68,20 @@ const InventoryMovementSchema = new mongoose.Schema({
         type: String,
         required: true,
         match: /^[a-f0-9]{64}$/,
+    },
+    inventoryReservationId: { type: String, default: null, trim: true, maxlength: 100 },
+    orderId: { type: String, default: null, trim: true, maxlength: 200 },
+    orderLineIds: [{ type: String, trim: true, maxlength: 100 }],
+    allocationIds: [{ type: String, trim: true, maxlength: 100 }],
+    fulfillmentStation: {
+        type: String,
+        enum: [...FULFILLMENT_STATION_VALUES, null],
+        default: null,
+    },
+    fulfillmentAction: {
+        type: String,
+        enum: [...FULFILLMENT_ACTION_VALUES, null],
+        default: null,
     },
     unitCostMinor: {
         type: Number,
@@ -165,6 +183,24 @@ InventoryMovementSchema.pre("validate", function () {
             "reservedAfter",
             "InventoryMovement cannot record Reserved above On Hand",
         )
+    }
+
+    if (this.type === "CONSUME") {
+        if (
+            !this.inventoryReservationId ||
+            !this.orderId ||
+            !this.fulfillmentStation ||
+            !this.fulfillmentAction ||
+            !Array.isArray(this.orderLineIds) ||
+            this.orderLineIds.length === 0 ||
+            !Array.isArray(this.allocationIds) ||
+            this.allocationIds.length === 0
+        ) {
+            this.invalidate(
+                "inventoryReservationId",
+                "CONSUME movements require reservation, order, allocation, line, station, and action metadata",
+            )
+        }
     }
 })
 

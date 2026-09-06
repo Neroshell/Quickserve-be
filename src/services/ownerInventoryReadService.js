@@ -10,6 +10,11 @@ import {
 
 export const OWNER_INVENTORY_DEFAULT_LIMIT = 25
 export const OWNER_INVENTORY_MAX_LIMIT = 100
+export const OWNER_INVENTORY_STOCK_STATUSES = Object.freeze({
+    ALL: "all",
+    LOW_STOCK: "low_stock",
+    OUT_OF_STOCK: "out_of_stock",
+})
 
 const MOVEMENT_TYPE_SET = new Set(INVENTORY_MOVEMENT_TYPE_VALUES)
 
@@ -98,6 +103,19 @@ function normalizeActiveFilter(value) {
     throw new OwnerInventoryReadError("active must be true, false, or all")
 }
 
+function normalizeStockStatusFilter(value) {
+    if (value === undefined || value === null || value === "" || value === "all") {
+        return OWNER_INVENTORY_STOCK_STATUSES.ALL
+    }
+    if (
+        value === OWNER_INVENTORY_STOCK_STATUSES.LOW_STOCK ||
+        value === OWNER_INVENTORY_STOCK_STATUSES.OUT_OF_STOCK
+    ) {
+        return value
+    }
+    throw new OwnerInventoryReadError("stockStatus must be all, low_stock, or out_of_stock")
+}
+
 export async function readInventoryOverview({ businessId }, {
     InventoryItemModel = InventoryItem,
     InventoryMovementModel = InventoryMovement,
@@ -157,17 +175,20 @@ export async function readInventoryItemsPage({
     active,
     category,
     search,
+    stockStatus,
     cursor,
     limit,
 }, { InventoryItemModel = InventoryItem } = {}) {
     const normalizedActive = normalizeActiveFilter(active)
     const normalizedCategory = normalizeOptionalFilterText(category, "category", 80)
     const normalizedSearch = normalizeOptionalFilterText(search, "search", 120)
+    const normalizedStockStatus = normalizeStockStatusFilter(stockStatus)
     const pageLimit = normalizeLimit(limit)
     const filterKey = queryFingerprint({
         active: normalizedActive,
         category: normalizedCategory.toLowerCase(),
         search: normalizedSearch.toLowerCase(),
+        stockStatus: normalizedStockStatus,
     })
     const decodedCursor = cursor
         ? decodeCursor(cursor, "inventory_items", filterKey)
@@ -187,6 +208,24 @@ export async function readInventoryItemsPage({
                 { name: { $regex: new RegExp(escapeRegex(normalizedSearch), "i") } },
                 { category: { $regex: new RegExp(escapeRegex(normalizedSearch), "i") } },
             ],
+        })
+    }
+    const availableQuantityExpression = {
+        $subtract: ["$onHandQuantity", "$reservedQuantity"],
+    }
+    if (normalizedStockStatus === OWNER_INVENTORY_STOCK_STATUSES.LOW_STOCK) {
+        conditions.push({
+            $expr: {
+                $and: [
+                    { $gt: [availableQuantityExpression, 0] },
+                    { $lte: [availableQuantityExpression, "$lowStockThreshold"] },
+                ],
+            },
+        })
+    }
+    if (normalizedStockStatus === OWNER_INVENTORY_STOCK_STATUSES.OUT_OF_STOCK) {
+        conditions.push({
+            $expr: { $lte: [availableQuantityExpression, 0] },
         })
     }
     if (decodedCursor) {

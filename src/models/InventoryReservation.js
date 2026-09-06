@@ -3,6 +3,8 @@ import mongoose from "mongoose"
 
 import { INVENTORY_TRACKING_UNITS, MAX_INVENTORY_QUANTITY } from "../constants/inventory.js"
 import {
+    INVENTORY_LINE_ALLOCATION_STATUSES,
+    INVENTORY_LINE_ALLOCATION_STATUS_VALUES,
     INVENTORY_RESERVATION_PROVIDER_STATE_VALUES,
     INVENTORY_RESERVATION_PROVIDER_STATES,
     INVENTORY_RESERVATION_SOURCE_TYPE_VALUES,
@@ -10,6 +12,10 @@ import {
     INVENTORY_RESERVATION_STATUS_VALUES,
 } from "../constants/inventoryReservation.js"
 import { MENU_INVENTORY_MODE_VALUES } from "../constants/menuInventory.js"
+import {
+    FULFILLMENT_BEHAVIOR_VALUES,
+    FULFILLMENT_STATION_VALUES,
+} from "../constants/orderFulfillment.js"
 
 export function generateInventoryReservationId() {
     return `irv_${crypto.randomBytes(12).toString("hex")}`
@@ -26,6 +32,43 @@ const InventoryReservationComponentSchema = new mongoose.Schema({
     reserveMovementId: { type: String, required: true, trim: true, maxlength: 100 },
     releaseMovementId: { type: String, default: null, trim: true, maxlength: 100 },
 }, { _id: false })
+
+const InventoryReservationLineAllocationSchema = new mongoose.Schema({
+    allocationId: { type: String, required: true, trim: true, maxlength: 100 },
+    orderLineId: { type: String, required: true, trim: true, maxlength: 100 },
+    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: "MenuItem", required: true },
+    fulfillmentStation: { type: String, required: true, enum: FULFILLMENT_STATION_VALUES },
+    fulfillmentBehavior: { type: String, required: true, enum: FULFILLMENT_BEHAVIOR_VALUES },
+    inventoryItemId: { type: String, required: true, trim: true, maxlength: 100 },
+    canonicalQuantity: { type: Number, required: true, validate: isPositiveSafeInteger },
+    unit: { type: String, required: true, enum: INVENTORY_TRACKING_UNITS },
+    status: {
+        type: String,
+        required: true,
+        enum: INVENTORY_LINE_ALLOCATION_STATUS_VALUES,
+        default: INVENTORY_LINE_ALLOCATION_STATUSES.RESERVED,
+    },
+    consumeMovementId: { type: String, default: null, trim: true, maxlength: 100 },
+    consumedAt: { type: Date, default: null },
+    releaseMovementId: { type: String, default: null, trim: true, maxlength: 100 },
+    releasedAt: { type: Date, default: null },
+}, { _id: false })
+
+InventoryReservationLineAllocationSchema.pre("validate", function () {
+    if (this.status === INVENTORY_LINE_ALLOCATION_STATUSES.RESERVED) {
+        if (this.consumeMovementId || this.consumedAt || this.releaseMovementId || this.releasedAt) {
+            this.invalidate("status", "Reserved allocations cannot contain terminal lifecycle metadata")
+        }
+    } else if (this.status === INVENTORY_LINE_ALLOCATION_STATUSES.CONSUMED) {
+        if (!this.consumeMovementId || !this.consumedAt || this.releaseMovementId || this.releasedAt) {
+            this.invalidate("status", "Consumed allocations require only consumption lifecycle metadata")
+        }
+    } else if (this.status === INVENTORY_LINE_ALLOCATION_STATUSES.RELEASED) {
+        if (!this.releaseMovementId || !this.releasedAt || this.consumeMovementId || this.consumedAt) {
+            this.invalidate("status", "Released allocations require only release lifecycle metadata")
+        }
+    }
+})
 
 const LegacyReservationComponentSchema = new mongoose.Schema({
     menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: "MenuItem", required: true },
@@ -61,6 +104,7 @@ const InventoryReservationSchema = new mongoose.Schema({
         enum: INVENTORY_RESERVATION_STATUS_VALUES,
     },
     components: { type: [InventoryReservationComponentSchema], default: [] },
+    lineAllocations: { type: [InventoryReservationLineAllocationSchema], default: [] },
     legacyComponents: { type: [LegacyReservationComponentSchema], default: [] },
     menuRequirements: { type: [MenuRequirementSnapshotSchema], default: [] },
     expiresAt: { type: Date, default: null },
@@ -123,6 +167,53 @@ InventoryReservationSchema.pre("validate", function () {
         legacyIds.add(key)
     }
 
+    const allocations = Array.isArray(this.lineAllocations) ? this.lineAllocations : []
+    if (allocations.length > 0) {
+        const allocationIds = new Set()
+        const allocationKeys = new Set()
+        const allocationTotals = new Map()
+        for (const allocation of allocations) {
+            const allocationKey = `${allocation.orderLineId}:${allocation.inventoryItemId}`
+            if (allocationIds.has(allocation.allocationId) || allocationKeys.has(allocationKey)) {
+                this.invalidate(
+                    "lineAllocations",
+                    "Inventory line allocations must be unique by ID and order-line inventory ownership",
+                )
+                break
+            }
+            allocationIds.add(allocation.allocationId)
+            allocationKeys.add(allocationKey)
+            const current = allocationTotals.get(allocation.inventoryItemId) || {
+                canonicalQuantity: 0,
+                unit: allocation.unit,
+            }
+            current.canonicalQuantity += allocation.canonicalQuantity
+            if (current.unit !== allocation.unit || !isPositiveSafeInteger(current.canonicalQuantity)) {
+                this.invalidate("lineAllocations", "Inventory line allocation totals are invalid")
+                break
+            }
+            allocationTotals.set(allocation.inventoryItemId, current)
+        }
+
+        if (
+            allocationTotals.size !== canonicalIds.size ||
+            [...canonicalIds].some((inventoryItemId) => {
+                const component = (this.components || []).find(
+                    (entry) => entry.inventoryItemId === inventoryItemId,
+                )
+                const allocated = allocationTotals.get(inventoryItemId)
+                return !component || !allocated ||
+                    component.canonicalQuantity !== allocated.canonicalQuantity ||
+                    component.unit !== allocated.unit
+            })
+        ) {
+            this.invalidate(
+                "lineAllocations",
+                "Inventory line allocations must exactly reconcile to aggregate components",
+            )
+        }
+    }
+
     if (this.sourceType === "stripe_checkout") {
         if (!this.expiresAt || !this.pendingCheckoutId) {
             this.invalidate(
@@ -140,4 +231,3 @@ export default mongoose.models.InventoryReservation || mongoose.model(
     InventoryReservationSchema,
     "inventoryreservations",
 )
-

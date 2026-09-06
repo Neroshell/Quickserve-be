@@ -10,6 +10,7 @@ import {
   ORDER_FULFILLMENT_SCHEMA_VERSION,
 } from "../constants/orderFulfillment.js"
 import Order from "../models/order.js"
+import { consumeReservedInventoryForFulfillment } from "./inventoryReservationService.js"
 import { resolveOrderStartAssistanceDelayMinutes } from "../utils/customerOrderTiming.js"
 import { generateOrderLineId } from "../utils/orderLineId.js"
 
@@ -708,6 +709,8 @@ export async function transitionOrderFulfillment({
 
   const OrderModel = dependencies.OrderModel || Order
   const runTransaction = dependencies.runTransaction || ((work) => withFulfillmentTransaction(work, dependencies))
+  const consumeInventory = dependencies.consumeReservedInventoryForFulfillment ||
+    consumeReservedInventoryForFulfillment
   const nowFactory = dependencies.now || (() => new Date())
   const performedBy = actorSnapshot(actor)
   if (!STATION_ROLES[station].has(performedBy.role)) {
@@ -747,6 +750,16 @@ export async function transitionOrderFulfillment({
       )
     ))
     let fulfillmentChanged = false
+    const inventoryTriggerLines = action === FULFILLMENT_ACTIONS.START
+      ? lines.filter((line) => (
+        line.fulfillmentBehavior === FULFILLMENT_BEHAVIORS.PREPARED &&
+        line.fulfillmentStatus === FULFILLMENT_STATUSES.PENDING
+      ))
+      : lines.filter((line) => (
+        line.fulfillmentBehavior === FULFILLMENT_BEHAVIORS.DIRECT &&
+        line.fulfillmentStatus === FULFILLMENT_STATUSES.PENDING
+      ))
+    let inventoryChanged = false
 
     if (action === FULFILLMENT_ACTIONS.START) {
       if (lines.some((line) => line.fulfillmentBehavior === FULFILLMENT_BEHAVIORS.DIRECT)) {
@@ -755,6 +768,19 @@ export async function transitionOrderFulfillment({
           "DIRECT_ITEM_CANNOT_START",
           409,
         )
+      }
+      if (inventoryTriggerLines.length > 0) {
+        const inventoryResult = await consumeInventory({
+          businessId,
+          order,
+          orderLineIds: inventoryTriggerLines.map((line) => line.orderLineId),
+          station,
+          action,
+          actor: performedBy,
+          session,
+          now,
+        }, dependencies.inventoryDependencies)
+        inventoryChanged = inventoryResult.changed === true
       }
       for (const line of lines) {
         if (line.fulfillmentStatus !== FULFILLMENT_STATUSES.PENDING) continue
@@ -774,6 +800,19 @@ export async function transitionOrderFulfillment({
           "PREPARED_ITEM_NOT_STARTED",
           409,
         )
+      }
+      if (inventoryTriggerLines.length > 0) {
+        const inventoryResult = await consumeInventory({
+          businessId,
+          order,
+          orderLineIds: inventoryTriggerLines.map((line) => line.orderLineId),
+          station,
+          action,
+          actor: performedBy,
+          session,
+          now,
+        }, dependencies.inventoryDependencies)
+        inventoryChanged = inventoryResult.changed === true
       }
       for (const line of lines) {
         if (line.fulfillmentStatus === FULFILLMENT_STATUSES.READY) continue
@@ -825,6 +864,7 @@ export async function transitionOrderFulfillment({
       order,
       changed,
       fulfillmentChanged,
+      inventoryChanged,
       customerNotification: buildCustomerFulfillmentNotification(order, eventType),
     }
   })

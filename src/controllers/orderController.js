@@ -442,11 +442,16 @@ export async function createOrder(req, res) {
           status: INVENTORY_RESERVATION_STATUSES.COMMITTED,
           idempotencyKey: `inventory:${creationIdempotencyKey}`,
           requestFingerprint: creationRequestFingerprint,
-          actor: isWaiter ? {
-            staffId: req.session?.user?.staffId || req.session?.user?.id,
-            role: req.session?.user?.role || "staff",
-            name: req.session?.user?.name || "Staff",
-          } : null,
+          actor: (() => {
+            if (!isWaiter) return null
+            const staffId = req.session?.user?.staffId || req.session?.user?.id
+            if (!staffId) return null  // fall back to SYSTEM_INVENTORY_ACTOR in the service
+            return {
+              staffId,
+              role: req.session?.user?.role || "staff",
+              name: req.session?.user?.name || "Staff",
+            }
+          })(),
           session,
         })
         return Order.findOne({ businessId, orderId }, null, { session })

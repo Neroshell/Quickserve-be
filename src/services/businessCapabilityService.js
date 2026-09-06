@@ -15,7 +15,7 @@ const REQUIRED_MODULES_BY_BUSINESS_TYPE = DEFAULT_MODULES_BY_BUSINESS_TYPE
 
 const RESTAURANT_NAVIGATION = Object.freeze([
     Object.freeze({ id: "operations", label: "Operations", items: Object.freeze(["orders", "transactions", "reservations"]) }),
-    Object.freeze({ id: "management", label: "Management", items: Object.freeze(["menu", "servicePoints", "staff"]) }),
+    Object.freeze({ id: "management", label: "Management", items: Object.freeze(["menu", "inventory", "servicePoints", "staff"]) }),
     Object.freeze({ id: "insights", label: "Insights", items: Object.freeze(["analytics", "feedback", "guests", "aiBusinessAnalyst"]) }),
     Object.freeze({ id: "account", label: "Account", items: Object.freeze(["billing", "branding", "settings"]) }),
 ])
@@ -100,7 +100,7 @@ export function setBusinessModuleEnabled(business, moduleId, enabled) {
 
 function buildNavigation(shell, modules) {
     if (shell === "restaurant") {
-        // Preserve the production restaurant owner navigation exactly as it exists today.
+        // The restaurant shell has one canonical owner navigation definition.
         return RESTAURANT_NAVIGATION.map((group) => ({ ...group, items: [...group.items] }))
     }
 
@@ -109,7 +109,7 @@ function buildNavigation(shell, modules) {
         groups.push({
             id: "foodService",
             label: "Food Service",
-            items: ["orders", "menu"],
+            items: ["orders", "menu", "inventory"],
         })
     }
     groups.push(...HOTEL_NAVIGATION_COMMON.map((group) => ({ ...group, items: [...group.items] })))

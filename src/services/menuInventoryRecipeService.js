@@ -663,6 +663,7 @@ function normalizeRecipeListLimit(value) {
 export async function readIngredientRecipesPage({
     businessId,
     status,
+    inventoryItemId,
     cursor,
     limit,
 }, {
@@ -672,6 +673,9 @@ export async function readIngredientRecipesPage({
 } = {}) {
     const tenantId = requiredText(businessId, "businessId", 200)
     const pageLimit = normalizeRecipeListLimit(limit)
+    const normalizedInventoryItemId = inventoryItemId === undefined || inventoryItemId === null || inventoryItemId === ""
+        ? null
+        : requiredText(inventoryItemId, "inventoryItemId", 100)
     const normalizedStatus = status && status !== "all" ? status : null
     if (normalizedStatus && ![
         MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
@@ -686,6 +690,9 @@ export async function readIngredientRecipesPage({
         businessId: tenantId,
         mode: MENU_INVENTORY_MODES.RECIPE,
         status: normalizedStatus || { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED },
+    }
+    if (normalizedInventoryItemId) {
+        filter["components.inventoryItemId"] = normalizedInventoryItemId
     }
     if (cursor) filter._id = { $gt: new mongoose.Types.ObjectId(cursor) }
     const rows = await MenuInventoryRecipeModel.find(filter)

@@ -127,6 +127,7 @@ export async function listInventoryItems(req, res) {
             active: req.query.active,
             category: req.query.category,
             search: req.query.search,
+            stockStatus: req.query.stockStatus,
             cursor: req.query.cursor,
             limit: req.query.limit,
         }))
@@ -230,6 +231,7 @@ export async function listOwnerInventoryRecipes(req, res) {
         return res.json(await readIngredientRecipesPage({
             businessId,
             status: req.query.status,
+            inventoryItemId: req.query.inventoryItemId,
             cursor: req.query.cursor,
             limit: req.query.limit,
         }))
