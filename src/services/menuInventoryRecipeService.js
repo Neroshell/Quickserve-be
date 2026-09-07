@@ -725,13 +725,21 @@ export async function readIngredientRecipesPage({
     if (cursor && !mongoose.isValidObjectId(cursor)) {
         throw mappingError("cursor is invalid", "INVALID_RECIPE_QUERY")
     }
-    const recipeStatus = normalizedStatus || { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED }
-    const sidecarStatus = normalizedStatus || {
-        $in: [
-            MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
-            MENU_INVENTORY_MAPPING_STATUSES.DISABLED,
-        ],
-    }
+    // An inventory item filter powers the drawer's "currently using" surface.
+    // Without an explicit status, that relationship must describe active
+    // ingredient usage rather than historical/disabled configuration.
+    const currentUsageOnly = normalizedInventoryItemId !== null && normalizedStatus === null
+    const recipeStatus = normalizedStatus || (currentUsageOnly
+        ? MENU_INVENTORY_MAPPING_STATUSES.ACTIVE
+        : { $ne: MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED })
+    const sidecarStatus = normalizedStatus || (currentUsageOnly
+        ? MENU_INVENTORY_MAPPING_STATUSES.ACTIVE
+        : {
+            $in: [
+                MENU_INVENTORY_MAPPING_STATUSES.ACTIVE,
+                MENU_INVENTORY_MAPPING_STATUSES.DISABLED,
+            ],
+        })
     const recipeVariant = {
         mode: MENU_INVENTORY_MODES.RECIPE,
         status: recipeStatus,
