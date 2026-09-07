@@ -4,6 +4,8 @@ import {
     OwnerAnalyticsServiceError,
     createOwnerAnalyticsService,
 } from "../src/services/analytics/ownerAnalyticsService.js"
+import { normalizeBusinessHealth } from "../src/services/ai/businessHealthNormalizer.js"
+import { generateWeeklySnapshot } from "../src/services/analytics/weeklyAnalystSnapshotService.js"
 
 const fixedGeneratedAt = new Date(
     "2026-07-28T12:00:00.000Z"
@@ -166,8 +168,10 @@ for (const businessType of [
                 to: undefined,
                 timezone: "Europe/Berlin",
                 now: fixedGeneratedAt,
+                business,
             },
         })
+        assert.match(calls[0].projection, /operatingHours/)
         assert.equal(
             calls.filter(
                 (call) => call.type === "food"
@@ -297,4 +301,114 @@ test("missing business produces a typed service error", async () => {
             error instanceof OwnerAnalyticsServiceError &&
             error.statusCode === 404
     )
+})
+
+test("business health never reports Healthy without positive supporting evidence", () => {
+    const normalized = normalizeBusinessHealth(
+        {
+            businessHealth: [
+                { area: "Sales", status: "Healthy", explanation: "Generated copy" },
+                { area: "Customer feedback", status: "Healthy", explanation: "Generated copy" },
+                { area: "Kitchen speed", status: "Healthy", explanation: "Generated copy" },
+                { area: "Repeat customers", status: "Healthy", explanation: "Generated copy" },
+            ],
+        },
+        {
+            insufficientData: false,
+            insights: [
+                { category: "revenue", type: "positive", priority: "high", impact: "high" },
+                { category: "operations", type: "warning", priority: "high", impact: "high" },
+            ],
+        },
+        {
+            sales: { transactionCount: 12 },
+            operations: { completedOrders: 12 },
+            feedback: { reviewCount: 0 },
+            customers: {
+                distinctVisitors: 12,
+                returningCustomersChangePercent: -20,
+            },
+        },
+    )
+
+    assert.deepEqual(
+        normalized.businessHealth.map((entry) => entry.status),
+        ["Healthy", "Insufficient data", "Strained", "Watch"],
+    )
+})
+
+test("overall insufficient evidence overrides generated health labels", () => {
+    const normalized = normalizeBusinessHealth(
+        { businessHealth: [{ area: "Sales", status: "Healthy", explanation: "Generated copy" }] },
+        { insufficientData: true, insights: [] },
+        { sales: { transactionCount: 0 } },
+    )
+
+    assert.equal(normalized.businessHealth[0].status, "Insufficient data")
+})
+
+test("weekly analyst snapshot binds feedback evidence to the requested period", async () => {
+    const feedbackPipelines = []
+    let requestedFoodRange = null
+    const snapshot = await generateWeeklySnapshot({
+        businessId: "biz_feedback",
+        periodStart: "2026-08-10",
+        periodEnd: "2026-08-16",
+        businessModel: {
+            findOne: () => ({
+                lean: async () => ({
+                    businessId: "biz_feedback",
+                    businessType: "restaurant",
+                    modules: [],
+                    timezone: "Europe/Malta",
+                    currency: "EUR",
+                    operatingHours: {},
+                }),
+            }),
+        },
+        guestVisitModel: {
+            distinct: async () => [],
+            aggregate: async () => [{}],
+        },
+        guestProfileModel: {
+            countDocuments: async () => 0,
+        },
+        feedbackModel: {
+            aggregate: async (pipeline) => {
+                feedbackPipelines.push(pipeline)
+                return []
+            },
+        },
+        sharedAnalytics: async ({ foodOperationalRange }) => {
+            requestedFoodRange = foodOperationalRange
+            return {
+                shared: {
+                    paidRevenue: {
+                        grossCents: 0,
+                        refundedCents: 0,
+                        netRetainedCents: 0,
+                        netToBusinessCents: 0,
+                        transactionCount: 0,
+                        averageTransactionValueCents: 0,
+                    },
+                    revenueByDay: [],
+                },
+            }
+        },
+    })
+
+    assert.deepEqual(snapshot.feedback, {
+        reviewCount: 0,
+        averageRating: null,
+        csatPercent: null,
+        negativeThemes: [],
+    })
+    assert.equal(feedbackPipelines.length, 2)
+    assert.deepEqual(feedbackPipelines[0][0].$match, {
+        businessId: "biz_feedback",
+        createdAt: {
+            $gte: requestedFoodRange.startUtc,
+            $lt: requestedFoodRange.endUtcExclusive,
+        },
+    })
 })

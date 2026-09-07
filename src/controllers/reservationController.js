@@ -172,7 +172,6 @@ export async function getReservations(req, res) {
       start,
       endExclusive,
       search,
-      clientToday,
       sortBy,
       sortDirection,
     } = req.query;
@@ -372,7 +371,7 @@ export async function getReservations(req, res) {
 
     if (view === "list") {
       // A. Calculate Global Stats and Total Count
-      const todayStr = clientToday || new Date().toISOString().split("T")[0];
+      const { businessDay: todayStr } = resolveBusinessDay(business);
       const tomorrowDate = new Date(todayStr);
       tomorrowDate.setDate(tomorrowDate.getDate() + 1);
       const tomorrowStr = tomorrowDate.toISOString().split("T")[0];

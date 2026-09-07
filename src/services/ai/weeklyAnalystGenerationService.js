@@ -3,6 +3,7 @@ import { buildV5EvidencePack } from "./aiPayloadBuilderV5.js"
 import { generateStructuredReport, CloudflareProviderError } from "./cloudflareProvider.js"
 import { buildInsufficientDataReport, buildStableWeekReport } from "./aiReportValidator.js"
 import WeeklyAnalystReport from "../../models/WeeklyAnalystReport.js"
+import { normalizeBusinessHealth } from "./businessHealthNormalizer.js"
 
 export class GenerationError extends Error {
     constructor(message, { code = "generation_failed", retryable = false } = {}) {
@@ -120,7 +121,11 @@ export async function generateAnalystReportForPeriod({
             throw err
         }
 
-        const assembledReport = aiResult.content
+        const assembledReport = normalizeBusinessHealth(
+            aiResult.content,
+            insights,
+            snapshot,
+        )
 
         return await markCompleted(businessId, periodKey, {
             generatedReport: assembledReport,

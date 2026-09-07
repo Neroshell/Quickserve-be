@@ -79,7 +79,7 @@ function resolveWeeklyPeriod(now, timezone, periodKey, explicitStart, explicitEn
 async function loadBusiness(model, id) {
     const q = model.findOne(
         { businessId: id },
-        "businessId businessType modules timezone currency hotelSettings",
+        "businessId businessType modules timezone currency operatingHours hotelSettings",
     )
     return typeof q?.lean === "function" ? q.lean() : q
 }
@@ -161,9 +161,9 @@ async function buildCustomerSnapshot({
 }
 
 
-async function buildFeedbackSnapshot({ businessId, periodFrom, periodTo, feedbackModel = Feedback }) {
-    const pStart = new Date(`${periodFrom}T00:00:00.000Z`)
-    const pEnd = new Date(`${DateTime.fromISO(periodTo, { zone: "UTC" }).plus({ days: 1 }).toISODate()}T00:00:00.000Z`)
+async function buildFeedbackSnapshot({ businessId, analyticsRange, feedbackModel = Feedback }) {
+    const pStart = analyticsRange.startUtc
+    const pEnd = analyticsRange.endUtcExclusive
 
     const [agg, negTags] = await Promise.all([
         feedbackModel.aggregate([
@@ -222,6 +222,7 @@ export async function generateWeeklySnapshot({
     businessModel = Business,
     guestProfileModel = GuestProfile,
     guestVisitModel = GuestVisit,
+    feedbackModel = Feedback,
     sharedAnalytics = getSharedAnalytics,
     foodServiceAnalytics = getFoodServiceAnalytics,
     lodgingAnalytics = getLodgingAnalytics,
@@ -268,6 +269,7 @@ export async function generateWeeklySnapshot({
         hasLodge && sLodge ? lodgingAnalytics({ businessId, analyticsRange: lR, financials: sLodge, generatedAt: now, hotelSettings: biz.hotelSettings || {} }) : null,
         hasLodge && sLodge ? lodgingAnalytics({ businessId, analyticsRange: cmpRange(lR), financials: lodgingPrevFin(sLodge), generatedAt: now, hotelSettings: biz.hotelSettings || {} }) : null,
         buildCustomerSnapshot({ businessId, periodFrom: s, periodTo: e, comparisonFrom: fR.comparison.from, comparisonTo: fR.comparison.to, visitorEmails: vis, comparisonVisitorEmails: cmpVis, guestVisitModel, guestProfileModel }),
+        buildFeedbackSnapshot({ businessId, analyticsRange: fR, feedbackModel }),
     ])
 
     // ---------- shape ----------

@@ -12,6 +12,7 @@ import { resolveAnalyticsTimezone } from "../services/analytics/analyticsRangeSe
 import { generateWeeklySnapshot } from "../services/analytics/weeklyAnalystSnapshotService.js"
 import { generateWeeklyInsights } from "../services/analytics/weeklyInsightService.js"
 import Business from "../models/Business.js"
+import { normalizeBusinessHealth } from "../services/ai/businessHealthNormalizer.js"
 
 const VALID_PERIOD_KEY = /^[0-9]{4}-W[0-9]{2}$/
 
@@ -30,7 +31,11 @@ function toReportDto(doc) {
         snapshotVersion: doc.snapshotVersion,
         insightEngineVersion: doc.insightEngineVersion,
         deterministicInsights: doc.deterministicInsights,
-        generatedReport: doc.generatedReport || null,
+        generatedReport: normalizeBusinessHealth(
+            doc.generatedReport || null,
+            doc.deterministicInsights,
+            doc.analyticsSnapshot,
+        ),
         generatedAt: doc.generatedAt,
         reportVersion: doc.reportVersion || null,
     }

@@ -140,6 +140,27 @@ test("configured operating hours use resolveBusinessDay-compatible boundaries", 
     assert.equal(iso(range.endUtcExclusive), "2026-07-28T20:00:00.000Z")
 })
 
+test("Malta closing-time rollover keeps late Sunday orders in the same business day", () => {
+    const business = {
+        timezone: "Europe/Malta",
+        operatingHours: {
+            Sunday: { openTime: "09:00", closeTime: "23:06" },
+            Monday: { openTime: "00:01", closeTime: "22:00" },
+        },
+    }
+    const range = resolveAnalyticsRange({
+        preset: "today",
+        now: new Date("2026-09-07T10:00:00.000Z"),
+        timezone: business.timezone,
+        business,
+    })
+
+    assert.equal(range.from, "2026-09-07")
+    assert.equal(iso(range.startUtc), "2026-09-06T21:06:00.000Z")
+    assert.equal(iso(range.endUtcExclusive), "2026-09-07T20:00:00.000Z")
+    assert.ok(new Date("2026-09-06T20:39:00.000Z") < range.startUtc)
+})
+
 test("thisMonth compares the equivalent elapsed portion of the previous month", () => {
     const range = resolveAnalyticsRange({
         preset: "thisMonth",

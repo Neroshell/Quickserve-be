@@ -37,7 +37,7 @@ function getBusinessCurrency(business) {
 async function loadBusiness(businessModel, businessId) {
     const query = businessModel.findOne(
         { businessId },
-        "businessId businessType modules timezone currency hotelSettings"
+        "businessId businessType modules timezone currency operatingHours hotelSettings"
     )
     return typeof query?.lean === "function"
         ? query.lean()

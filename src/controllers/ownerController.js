@@ -347,7 +347,7 @@ export async function getDashboardData(req, res) {
         }
 
         if (staffOnlineCount === 0) {
-            actionItems.push({ type: "staff", severity: "info", message: "No staff members are currently active.", href: "/owner/staff" })
+            actionItems.push({ type: "staff", severity: "info", message: "No staff are currently online.", href: "/owner/staff" })
         }
 
         // ─── Recent Activity (latest orders + feedback) ──────────────────────────
@@ -424,6 +424,15 @@ export async function getBranding(req, res) {
         const business = await Business.findOne({ businessId }).lean()
         if (!business) return res.status(404).json({ error: "Business not found" })
 
+        const previewMenuItem = await MenuItem.findOne({
+            businessId,
+            archivedAt: null,
+            isAvailable: true,
+        })
+            .sort({ createdAt: -1 })
+            .select("name description category price imageUrl")
+            .lean()
+
         return res.json({
             branding: business.branding || {
                 enabled: false,
@@ -433,7 +442,12 @@ export async function getBranding(req, res) {
                 accentColor: "#FB923C",
                 removeQuickServeBranding: false
             },
-            currentPlan: business.currentPlan || "basic"
+            currentPlan: business.currentPlan || "basic",
+            preview: {
+                businessName: business.displayName || business.name,
+                currency: business.currency || "EUR",
+                menuItem: previewMenuItem || null,
+            },
         })
     } catch (err) {
         console.error("[getBranding]", err)
