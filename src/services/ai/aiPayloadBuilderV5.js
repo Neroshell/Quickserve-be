@@ -10,6 +10,54 @@
  */
 
 const STAFF_ANON_PREFIX = "staff_"
+export const AI_ANALYST_EVIDENCE_PACK_VERSION = "5.1"
+
+const EVIDENCE_LIMITS = Object.freeze({
+    arrayItems: 10,
+    objectKeys: 30,
+    textLength: 180,
+    rankedSignals: 5,
+})
+
+function sanitizeEvidenceValue(value) {
+    if (Array.isArray(value)) {
+        return value
+            .slice(0, EVIDENCE_LIMITS.arrayItems)
+            .map((entry) => sanitizeEvidenceValue(entry))
+    }
+    if (value && typeof value === "object") {
+        return Object.fromEntries(
+            Object.entries(value)
+                .slice(0, EVIDENCE_LIMITS.objectKeys)
+                .map(([key, entry]) => [
+                    key,
+                    sanitizeEvidenceValue(entry),
+                ]),
+        )
+    }
+    if (typeof value === "string") {
+        return value
+            .replace(/[\u0000-\u001F\u007F]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, EVIDENCE_LIMITS.textLength)
+    }
+    return value
+}
+
+function compactSignal(insight) {
+    if (!insight || typeof insight !== "object") return null
+    return {
+        id: insight.id,
+        category: insight.category,
+        type: insight.type,
+        priority: insight.priority,
+        impact: insight.impact,
+        confidence: insight.confidence,
+        priorityScore: insight.priorityScore,
+        evidence: insight.evidence || {},
+    }
+}
 
 function anonymizeStaff(foodServiceStaff) {
     if (!Array.isArray(foodServiceStaff)) return []
@@ -193,14 +241,17 @@ function computeDerivedMetrics(snapshot) {
  * @param {Object} snapshot — the full weekly analytics snapshot
  * @returns {Object} sanitized evidence pack for Mayor
  */
-export function buildV5EvidencePack(snapshot) {
+export function buildV5EvidencePack(
+    snapshot,
+    { deterministicInsights = null, recentTheme = null } = {},
+) {
     const s = snapshot || {}
     const biz = s.business || {}
     const hasFood = biz.modules?.includes("foodService")
     const hasLodge = biz.modules?.includes("lodging")
 
     const pack = {
-        packVersion: "5.0",
+        packVersion: AI_ANALYST_EVIDENCE_PACK_VERSION,
         period: {
             start: s.period?.start,
             end: s.period?.end,
@@ -216,6 +267,18 @@ export function buildV5EvidencePack(snapshot) {
         },
         domains: {},
         derivedCrossChecks: {},
+        signalPrioritization: {
+            dominantSignal: compactSignal(
+                deterministicInsights?.insights?.[0] ||
+                deterministicInsights?.dominantSignal,
+            ),
+            rankedSignals: (deterministicInsights?.insights || [])
+                .slice(0, EVIDENCE_LIMITS.rankedSignals)
+                .map(compactSignal)
+                .filter(Boolean),
+            crossDomainSignals: (deterministicInsights?.crossDomainSignals || [])
+                .slice(0, 3),
+        },
     }
 
     // ── Sales ──────────────────────────────────────────────────────────────
@@ -303,10 +366,52 @@ export function buildV5EvidencePack(snapshot) {
     // ── Feedback ────────────────────────────────────────────────────────────
     if (s.feedback) {
         pack.domains.feedback = {
-            reviewCount: s.feedback.reviewCount,
-            averageRating: s.feedback.averageRating,
-            csatPercent: s.feedback.csatPercent,
-            negativeThemes: s.feedback.negativeThemes || [],
+            current: {
+                reviewCount: s.feedback.current?.reviewCount,
+                averageRating: s.feedback.current?.averageRating,
+                ratingDistribution: s.feedback.current?.ratingDistribution,
+                lowRatingCount: s.feedback.current?.lowRatingCount,
+                highRatingCount: s.feedback.current?.highRatingCount,
+                writtenCommentCount: s.feedback.current?.writtenCommentCount,
+                lowRatingRatePercent: s.feedback.current?.lowRatingRatePercent,
+                highRatingRatePercent: s.feedback.current?.highRatingRatePercent,
+                csatPercent: s.feedback.current?.csatPercent,
+                orderTypeBreakdown: s.feedback.current?.orderTypeBreakdown || [],
+            },
+            previous: { ...s.feedback.previous },
+            comparison: { ...s.feedback.comparison },
+        }
+    }
+
+    // Inventory contains aggregates only. Mutable stock/tracking state is
+    // included only when the snapshot marks it as aligned to this period.
+    if (s.inventory) {
+        const alignedStock = s.inventory.stockHealthAsOf?.periodAligned === true
+            ? { ...s.inventory.stockHealthAsOf }
+            : { periodAligned: false }
+        const alignedTracking = s.inventory.tracking?.periodAligned === true
+            ? { ...s.inventory.tracking }
+            : { periodAligned: false }
+        pack.domains.inventory = {
+            stockHealthAsOf: alignedStock,
+            current: {
+                totalMovementCount: s.inventory.current?.totalMovementCount || 0,
+                countsByType: s.inventory.current?.countsByType || {},
+                wasteByUnit: s.inventory.current?.wasteByUnit || [],
+                adjustmentsByUnit: s.inventory.current?.adjustmentsByUnit || [],
+                consumptionByUnit: s.inventory.current?.consumptionByUnit || [],
+                ingredientShortages: s.inventory.current?.ingredientShortages || {},
+            },
+            previous: {
+                totalMovementCount: s.inventory.previous?.totalMovementCount || 0,
+                countsByType: s.inventory.previous?.countsByType || {},
+                wasteByUnit: s.inventory.previous?.wasteByUnit || [],
+                adjustmentsByUnit: s.inventory.previous?.adjustmentsByUnit || [],
+                consumptionByUnit: s.inventory.previous?.consumptionByUnit || [],
+                ingredientShortages: s.inventory.previous?.ingredientShortages || {},
+            },
+            comparison: { ...s.inventory.comparison },
+            tracking: alignedTracking,
         }
     }
 
@@ -369,7 +474,16 @@ export function buildV5EvidencePack(snapshot) {
     // ── Derived Cross-Checks ───────────────────────────────────────────────
     pack.derivedCrossChecks = computeDerivedMetrics(s)
 
-    return pack
+    if (recentTheme) {
+        pack.recentTheme = {
+            previousHeadline: recentTheme.previousHeadline || null,
+            previousTopPriorityDomain: recentTheme.previousTopPriorityDomain || null,
+            previousDominantIssueKey: recentTheme.previousDominantIssueKey || null,
+            sameDominantIssue: recentTheme.sameDominantIssue === true,
+        }
+    }
+
+    return sanitizeEvidenceValue(pack)
 }
 
 export default buildV5EvidencePack

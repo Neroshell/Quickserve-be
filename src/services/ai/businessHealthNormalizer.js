@@ -1,5 +1,6 @@
 const CATEGORY_MATCHERS = [
     ["feedback", /feedback|review|rating/],
+    ["inventory", /inventory|stock|ingredient shortage|waste/],
     ["reservations", /reservation|booking|occupancy/],
     ["servicePoints", /service point|table|room performance/],
     ["tipsPayments", /tip|payment/],
@@ -37,7 +38,12 @@ function domainHasData(category, snapshot) {
         case "customers":
             return Number(snapshot.customers?.distinctVisitors || 0) > 0
         case "feedback":
-            return Number(snapshot.feedback?.reviewCount || 0) > 0
+            return Number(snapshot.feedback?.current?.reviewCount || 0) > 0
+        case "inventory":
+            return Number(snapshot.inventory?.current?.totalMovementCount || 0) > 0 ||
+                Number(snapshot.inventory?.current?.ingredientShortages?.eventCount || 0) > 0 ||
+                (snapshot.inventory?.stockHealthAsOf?.periodAligned === true &&
+                    Number(snapshot.inventory?.stockHealthAsOf?.activeItems || 0) > 0)
         case "reservations":
             return Number(snapshot.reservations?.paidBookingCount || 0) > 0
         case "staff":
@@ -89,11 +95,31 @@ function statusForSnapshot(category, snapshot) {
         case "customers":
             return statusForChange(snapshot?.customers?.returningCustomersChangePercent)
         case "feedback": {
-            const rating = Number(snapshot?.feedback?.averageRating)
+            const rating = Number(snapshot?.feedback?.current?.averageRating)
             if (!Number.isFinite(rating)) return "Stable"
             if (rating >= 4) return "Healthy"
             if (rating < 2.5) return "Strained"
             if (rating < 3.5) return "Watch"
+            return "Stable"
+        }
+        case "inventory": {
+            const shortages = Number(
+                snapshot?.inventory?.current?.ingredientShortages?.eventCount || 0,
+            )
+            const stock = snapshot?.inventory?.stockHealthAsOf
+            const outOfStock = stock?.periodAligned === true
+                ? Number(stock.outOfStockItems || 0)
+                : 0
+            const lowStock = stock?.periodAligned === true
+                ? Number(stock.lowStockItems || 0)
+                : 0
+            const wasteEvents = Number(
+                snapshot?.inventory?.current?.countsByType?.WASTE || 0,
+            )
+            if (shortages >= 5 || outOfStock >= 3) return "Strained"
+            if (shortages > 0 || outOfStock > 0 || lowStock >= 2 || wasteEvents >= 3) {
+                return "Watch"
+            }
             return "Stable"
         }
         case "reservations":

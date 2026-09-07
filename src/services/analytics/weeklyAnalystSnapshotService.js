@@ -2,7 +2,6 @@ import { DateTime } from "luxon"
 import Business from "../../models/Business.js"
 import GuestProfile from "../../models/GuestProfile.js"
 import GuestVisit from "../../models/GuestVisit.js"
-import Feedback from "../../models/Feedback.js"
 import { resolveBusinessCapabilities } from "../businessCapabilityService.js"
 import {
     resolveAnalyticsDomainRanges,
@@ -16,6 +15,9 @@ import {
     resolveLastCompletedWeek,
     resolveCurrentWeek,
 } from "../weeklyPeriodResolver.js"
+import Feedback from "../../models/Feedback.js"
+import { buildFeedbackAnalystSummary } from "./feedbackAnalystSummaryService.js"
+import { buildInventoryAnalystSummary } from "./inventoryAnalystSummaryService.js"
 
 export class WeeklyAnalystSnapshotServiceError extends Error {
     constructor(message, statusCode = 500) {
@@ -161,45 +163,6 @@ async function buildCustomerSnapshot({
 }
 
 
-async function buildFeedbackSnapshot({ businessId, analyticsRange, feedbackModel = Feedback }) {
-    const pStart = analyticsRange.startUtc
-    const pEnd = analyticsRange.endUtcExclusive
-
-    const [agg, negTags] = await Promise.all([
-        feedbackModel.aggregate([
-            { $match: { businessId, createdAt: { $gte: pStart, $lt: pEnd } } },
-            {
-                $group: {
-                    _id: null,
-                    reviewCount: { $sum: 1 },
-                    averageRating: { $avg: "$overallRating" },
-                    fourFiveStarCount: { $sum: { $cond: [{ $gte: ["$overallRating", 4] }, 1, 0] } },
-                }
-            }
-        ]).then(r => r?.[0] || { reviewCount: 0, averageRating: null, fourFiveStarCount: 0 }),
-        
-        feedbackModel.aggregate([
-            { $match: { businessId, createdAt: { $gte: pStart, $lt: pEnd }, sentiment: "negative" } },
-            { $unwind: "$tags" },
-            { $group: { _id: "$tags", count: { $sum: 1 } } },
-            { $sort: { count: -1 } }
-        ])
-    ])
-
-    const negativeThemes = negTags.map(t => ({
-        theme: t._id,
-        count: t.count,
-        severity: "high"
-    }))
-
-    return {
-        reviewCount: integer(agg.reviewCount),
-        averageRating: roundPct(agg.averageRating || 0, 1) || null,
-        csatPercent: agg.reviewCount > 0 ? roundPct((agg.fourFiveStarCount / agg.reviewCount) * 100, 0) : null,
-        negativeThemes
-    }
-}
-
 // ---------- main ----------
 
 /**
@@ -223,6 +186,8 @@ export async function generateWeeklySnapshot({
     guestProfileModel = GuestProfile,
     guestVisitModel = GuestVisit,
     feedbackModel = Feedback,
+    feedbackAnalystSummary = buildFeedbackAnalystSummary,
+    inventoryAnalystSummary = buildInventoryAnalystSummary,
     sharedAnalytics = getSharedAnalytics,
     foodServiceAnalytics = getFoodServiceAnalytics,
     lodgingAnalytics = getLodgingAnalytics,
@@ -263,13 +228,19 @@ export async function generateWeeklySnapshot({
     const sLodge = shared.lodgingFinancials || null
 
     // 5. all module + CRM calls
-    const [fc, fp, lc, lp, crm, fb] = await Promise.all([
+    const [fc, fp, lc, lp, crm, fb, inventory] = await Promise.all([
         hasFood && sFood ? foodServiceAnalytics({ businessId, analyticsRange: fR, financials: sFood }) : null,
         hasFood && sFood ? foodServiceAnalytics({ businessId, analyticsRange: cmpRange(fR), financials: foodPrevFin(sFood) }) : null,
         hasLodge && sLodge ? lodgingAnalytics({ businessId, analyticsRange: lR, financials: sLodge, generatedAt: now, hotelSettings: biz.hotelSettings || {} }) : null,
         hasLodge && sLodge ? lodgingAnalytics({ businessId, analyticsRange: cmpRange(lR), financials: lodgingPrevFin(sLodge), generatedAt: now, hotelSettings: biz.hotelSettings || {} }) : null,
         buildCustomerSnapshot({ businessId, periodFrom: s, periodTo: e, comparisonFrom: fR.comparison.from, comparisonTo: fR.comparison.to, visitorEmails: vis, comparisonVisitorEmails: cmpVis, guestVisitModel, guestProfileModel }),
-        buildFeedbackSnapshot({ businessId, analyticsRange: fR, feedbackModel }),
+        feedbackAnalystSummary({ businessId, analyticsRange: fR, feedbackModel }),
+        inventoryAnalystSummary({
+            businessId,
+            analyticsRange: fR,
+            periodAligned: isPartialWeek,
+            asOf: now,
+        }),
     ])
 
     // ---------- shape ----------
@@ -400,7 +371,7 @@ export async function generateWeeklySnapshot({
     } : null
 
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         period: { key: periodKey, start: s, end: e, previousStart: fR.comparison.from, previousEnd: fR.comparison.to, timezone: tz },
         business: { businessType: bizType, currency, modules: [...modules] },
         sales: salesCents,
@@ -411,6 +382,7 @@ export async function generateWeeklySnapshot({
         staff,
         customers: cust,
         feedback: fb,
+        inventory,
         reservations: res,
         tipsPayments: tips,
     }

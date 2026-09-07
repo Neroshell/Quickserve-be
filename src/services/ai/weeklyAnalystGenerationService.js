@@ -1,7 +1,17 @@
-import { AI_ANALYST_OUTPUT_SCHEMA, AI_ANALYST_SYSTEM_PROMPT, AI_ANALYST_PROMPT_VERSION } from "./aiPromptV5.js"
+import {
+    AI_ANALYST_OUTPUT_SCHEMA,
+    AI_ANALYST_SYSTEM_PROMPT,
+    AI_ANALYST_PROMPT_VERSION,
+    AI_ANALYST_REPORT_VERSION,
+} from "./aiPromptV5.js"
 import { buildV5EvidencePack } from "./aiPayloadBuilderV5.js"
 import { generateStructuredReport, CloudflareProviderError } from "./cloudflareProvider.js"
-import { buildInsufficientDataReport, buildStableWeekReport } from "./aiReportValidator.js"
+import {
+    buildInsufficientDataReport,
+    buildStableWeekReport,
+    ReportValidationError,
+    validateGeneratedReport,
+} from "./aiReportValidator.js"
 import WeeklyAnalystReport from "../../models/WeeklyAnalystReport.js"
 import { normalizeBusinessHealth } from "./businessHealthNormalizer.js"
 
@@ -34,7 +44,9 @@ async function markFailed(businessId, periodKey, { code, message }) {
         {
             $set: {
                 generationStatus: "failed",
-                failureReason: { code, message, failedAt: new Date() },
+                failureCode: String(code || "generation_failed").slice(0, 100),
+                failureMessage: String(message || "").slice(0, 500),
+                failedAt: new Date(),
             },
         }
     )
@@ -51,12 +63,59 @@ async function markCompleted(businessId, periodKey, result) {
                 modelProvider: result.modelProvider,
                 modelVersion: result.modelVersion,
                 promptVersion: result.promptVersion,
-                reportVersion: result.reportVersion || "5",
-                failureReason: null,
+                reportVersion: result.reportVersion || AI_ANALYST_REPORT_VERSION,
+                aiUsage: result.aiUsage || null,
+                failureCode: null,
+                failureMessage: null,
+                failedAt: null,
             },
         }
     )
     return await WeeklyAnalystReport.findOne({ businessId, periodKey })
+}
+
+export function buildRecentThemeSummary(previousReport, currentInsights) {
+    if (!previousReport) return null
+    const previousDominant =
+        previousReport.deterministicInsights?.dominantSignal ||
+        previousReport.deterministicInsights?.insights?.[0] ||
+        null
+    const currentDominant =
+        currentInsights?.dominantSignal || currentInsights?.insights?.[0] || null
+
+    return {
+        previousHeadline: previousReport.generatedReport?.headline || null,
+        previousTopPriorityDomain: previousDominant?.category || null,
+        previousDominantIssueKey: previousDominant?.id || null,
+        sameDominantIssue: Boolean(
+            previousDominant?.id &&
+            currentDominant?.id &&
+            previousDominant.id === currentDominant.id,
+        ),
+    }
+}
+
+async function loadRecentTheme(doc, insights) {
+    const query = WeeklyAnalystReport.findOne(
+        {
+            businessId: doc.businessId,
+            generationStatus: "completed",
+            periodStart: { $lt: doc.periodStart },
+        },
+        "generatedReport.headline deterministicInsights periodStart",
+    ).sort({ periodStart: -1 })
+    const previous = typeof query?.lean === "function" ? await query.lean() : await query
+    return buildRecentThemeSummary(previous, insights)
+}
+
+function normalizedUsage(usage) {
+    if (!usage) return null
+    const token = (value) => Number.isInteger(value) && value >= 0 ? value : null
+    return {
+        inputTokens: token(usage.inputTokens),
+        outputTokens: token(usage.outputTokens),
+        totalTokens: token(usage.totalTokens),
+    }
 }
 
 export async function generateAnalystReportForPeriod({
@@ -80,26 +139,32 @@ export async function generateAnalystReportForPeriod({
         await WeeklyAnalystReport.updateOne({ businessId, periodKey }, { $set: { generationStatus: "generating" } })
 
         if (insights?.insufficientData) {
+            const fallback = validateGeneratedReport(buildInsufficientDataReport())
             return await markCompleted(businessId, periodKey, {
-                generatedReport: buildInsufficientDataReport(),
+                generatedReport: fallback,
                 modelProvider: "deterministic",
                 modelVersion: null,
                 promptVersion: AI_ANALYST_PROMPT_VERSION,
-                reportVersion: "5"
+                reportVersion: AI_ANALYST_REPORT_VERSION,
             })
         }
 
         if (insights?.noSignificantInsights) {
+            const fallback = validateGeneratedReport(buildStableWeekReport())
             return await markCompleted(businessId, periodKey, {
-                generatedReport: buildStableWeekReport(),
+                generatedReport: fallback,
                 modelProvider: "deterministic",
                 modelVersion: null,
                 promptVersion: AI_ANALYST_PROMPT_VERSION,
-                reportVersion: "5"
+                reportVersion: AI_ANALYST_REPORT_VERSION,
             })
         }
 
-        const evidencePack = buildV5EvidencePack(snapshot)
+        const recentTheme = await loadRecentTheme(doc, insights)
+        const evidencePack = buildV5EvidencePack(snapshot, {
+            deterministicInsights: insights,
+            recentTheme,
+        })
 
         let aiResult
         try {
@@ -121,18 +186,34 @@ export async function generateAnalystReportForPeriod({
             throw err
         }
 
-        const assembledReport = normalizeBusinessHealth(
-            aiResult.content,
-            insights,
-            snapshot,
-        )
+        let assembledReport
+        try {
+            const validatedProviderReport = validateGeneratedReport(aiResult.content)
+            assembledReport = normalizeBusinessHealth(
+                validatedProviderReport,
+                insights,
+                snapshot,
+            )
+            validateGeneratedReport(assembledReport)
+        } catch (error) {
+            if (!(error instanceof ReportValidationError)) throw error
+            await markFailed(businessId, periodKey, {
+                code: error.code,
+                message: `${error.message}: ${(error.details || []).join("; ")}`,
+            })
+            throw new GenerationError(error.message, {
+                code: error.code,
+                retryable: true,
+            })
+        }
 
         return await markCompleted(businessId, periodKey, {
             generatedReport: assembledReport,
             modelProvider: "cloudflare",
             modelVersion: aiResult.model,
             promptVersion: AI_ANALYST_PROMPT_VERSION,
-            reportVersion: "5"
+            reportVersion: AI_ANALYST_REPORT_VERSION,
+            aiUsage: normalizedUsage(aiResult.usage),
         })
     } catch (err) {
         if (err instanceof GenerationError && !err.retryable) {

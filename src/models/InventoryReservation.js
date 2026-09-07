@@ -182,6 +182,11 @@ InventoryReservationSchema.index({ businessId: 1, pendingCheckoutId: 1 })
 InventoryReservationSchema.index({ businessId: 1, "components.inventoryItemId": 1 })
 InventoryReservationSchema.index({ businessId: 1, "lineAllocations.inventoryItemId": 1 })
 InventoryReservationSchema.index({ businessId: 1, "sidecarAllocations.inventoryItemId": 1 })
+InventoryReservationSchema.index({
+    businessId: 1,
+    "sidecarAllocations.status": 1,
+    "sidecarAllocations.accountedAt": 1,
+})
 InventoryReservationSchema.index({ stripeSessionId: 1 }, {
     unique: true,
     partialFilterExpression: { stripeSessionId: { $type: "string" } },

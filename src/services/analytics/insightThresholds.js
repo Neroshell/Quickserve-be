@@ -25,6 +25,10 @@ export const MIN_SAMPLE_SIZES = Object.freeze({
     staffActivity: 5,
     bookings: 5,
     checkIns: 5,
+    feedbackReviews: 5,
+    inventoryMovementEvents: 3,
+    inventoryShortageEvents: 1,
+    inventoryActiveItems: 5,
 })
 
 // ---------------------------------------------------------------------------
@@ -38,6 +42,10 @@ export const DATA_SUFFICIENCY = Object.freeze({
     minFoodTransactions: 3,
     /** Minimum bookings for lodging data to be "sufficient" */
     minLodgingBookings: 1,
+    /** Feedback can independently provide a reliable weekly signal. */
+    minFeedbackReviews: 5,
+    /** A recorded shortage or movement is authoritative operational evidence. */
+    minInventoryEvents: 1,
 })
 
 // ---------------------------------------------------------------------------
@@ -47,6 +55,8 @@ export const DATA_SUFFICIENCY = Object.freeze({
 
 export const MATERIALITY = Object.freeze({
     revenueMinChangePercent: 10,
+    revenueConcentrationMinSharePercent: 50,
+    revenueConcentrationMinActiveDays: 3,
     revenueMinAbsoluteCents: 10_00, // €10.00
 
     transactionCountMinChangePercent: 10,
@@ -83,6 +93,16 @@ export const MATERIALITY = Object.freeze({
 
     cancellationMinChangePercent: 25,
     cancellationMinAbsolute: 2,
+
+    feedbackRatingMinDelta: 0.4,
+    feedbackShareMinDeltaPoints: 10,
+    feedbackReviewVolumeMinChangePercent: 25,
+
+    inventoryWasteMinEvents: 3,
+    inventoryWasteMinIncreasePercent: 25,
+    inventoryAdjustmentMinEvents: 5,
+    inventoryStockRiskMinItems: 2,
+    inventoryStockRiskMinSharePercent: 10,
 })
 
 // ---------------------------------------------------------------------------
@@ -156,13 +176,27 @@ function shareWt(pct) {
 /**
  * Category-aware impact score.
  *
- * @param {"revenue"|"operations"|"service"|"customers"|"menu"|"servicePoints"|"staff"|"reservations"|"tipsPayments"} category
+ * @param {"revenue"|"operations"|"service"|"customers"|"menu"|"servicePoints"|"staff"|"reservations"|"tipsPayments"|"feedback"|"inventory"} category
  * @param {Object} inputs
  */
 export function impactScore(category, inputs = {}) {
-    const { revenueCents = 0, volume = 0, sharePercent = 0 } = inputs
+    const {
+        revenueCents = 0,
+        volume = 0,
+        sharePercent = 0,
+        severity = 0,
+        persistence = 0,
+    } = inputs
     switch (category) {
         case "revenue":
+            if (sharePercent > 0) {
+                return Math.min(
+                    1,
+                    revenueWt(Math.abs(revenueCents)) * 0.4 +
+                        volumeWt(volume) * 0.3 +
+                        shareWt(sharePercent) * 0.3,
+                )
+            }
             return Math.min(1, revenueWt(Math.abs(revenueCents)) * volumeWt(volume) * 0.6 + volumeWt(volume) * 0.4)
 
         case "operations":
@@ -196,6 +230,23 @@ export function impactScore(category, inputs = {}) {
         case "tipsPayments":
             // eligible/tipped order volume
             return Math.min(1, volumeWt(volume) * 0.7 + revenueWt(Math.abs(revenueCents)) * 0.3)
+
+        case "feedback":
+            return Math.min(
+                1,
+                volumeWt(volume) * 0.35 +
+                    Math.max(0, Math.min(1, severity)) * 0.55 +
+                    Math.max(0, Math.min(1, persistence)) * 0.1,
+            )
+
+        case "inventory":
+            return Math.min(
+                1,
+                volumeWt(volume) * 0.3 +
+                    shareWt(sharePercent) * 0.2 +
+                    Math.max(0, Math.min(1, severity)) * 0.4 +
+                    Math.max(0, Math.min(1, persistence)) * 0.1,
+            )
 
         default:
             return 0.1
@@ -258,6 +309,15 @@ export const DEDUP_GROUPS = Object.freeze({
     ]),
     bookingVolume: new Set([
         "booking_revenue_growth", "booking_revenue_decline",
+    ]),
+    feedbackSatisfaction: new Set([
+        "feedback_rating_improvement", "feedback_rating_decline",
+        "feedback_low_rating_share_improvement", "feedback_low_rating_share_increase",
+        "feedback_csat_improvement", "feedback_csat_decline",
+        "feedback_low_rating_level",
+    ]),
+    inventoryStockRisk: new Set([
+        "inventory_stock_risk", "inventory_shortages_recorded",
     ]),
 })
 

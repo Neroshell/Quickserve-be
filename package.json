@@ -32,6 +32,7 @@
     "test:inventory-linked-recipes": "node --test test/inventoryLinkedRecipes.test.js test/inventoryPhase6B.test.js",
     "test:inventory-coexistence": "node --test test/inventoryCoexistence.test.js test/inventoryPhase5B.test.js test/inventoryPhase4.test.js test/inventoryPhase3.test.js test/inventoryPhase6B.test.js test/inventoryLifecycle.test.js",
     "test:fulfillment-phase5a": "node --test test/orderFulfillmentService.test.js test/orderFulfillment.integration.test.js test/customerTimingWaiterCall.test.js test/serviceRequestScopeService.test.js test/serviceRequestClassification.test.js",
+    "test:ai-analyst-v5": "node --test test/aiAnalystFeedbackInventoryV5.test.js test/aiAnalystRuntimeV5.test.js test/aiAnalystWorkerLock.test.js",
     "start": "node server.js",
     "worker": "node src/workers/index.js",
     "worker:dev": "node --watch src/workers/index.js",

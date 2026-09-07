@@ -9,6 +9,7 @@ import Feedback from "../models/Feedback.js"
 import Staff from "../models/Staff.js"
 import { getStaffPresence } from "../services/presenceService.js"
 import MenuItem from "../models/menuItem.js"
+import { countCurrentMenuItems } from "../services/menuMetricsService.js"
 import { readOwnerTransactionsPage, aggregateTransactionSummary } from "../services/ownerTransactionsReadService.js"
 import {
     decodeOwnerOrdersCursor,
@@ -237,7 +238,7 @@ export async function getDashboardData(req, res) {
 
             ServiceRequest.find({ businessId, status: "missed", createdAt: { $gte: todayStartJS, $lt: todayEndJS } }).lean(),
 
-            MenuItem.countDocuments({ businessId }),
+            countCurrentMenuItems({ businessId }),
 
             Order.countDocuments({
                 businessId,

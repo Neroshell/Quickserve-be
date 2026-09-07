@@ -37,7 +37,11 @@ function toReportDto(doc) {
             doc.analyticsSnapshot,
         ),
         generatedAt: doc.generatedAt,
+        modelProvider: doc.modelProvider || null,
+        modelVersion: doc.modelVersion || null,
+        promptVersion: doc.promptVersion || null,
         reportVersion: doc.reportVersion || null,
+        aiUsage: doc.aiUsage || null,
     }
 }
 
@@ -191,6 +195,7 @@ export async function getCurrentWeekSnapshot(req, res) {
             staff: snapshot.staff,
             customers: snapshot.customers,
             feedback: snapshot.feedback,
+            inventory: snapshot.inventory,
             reservations: snapshot.reservations,
             tipsPayments: snapshot.tipsPayments,
             deterministicInsights: insights,

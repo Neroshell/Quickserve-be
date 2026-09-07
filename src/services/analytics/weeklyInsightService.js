@@ -20,6 +20,7 @@ import {
     classifyType,
     DATA_SUFFICIENCY,
 } from "./insightThresholds.js"
+import { INVENTORY_MOVEMENT_TYPES } from "../../constants/inventory.js"
 
 // ---------------------------------------------------------------------------
 // Data sufficiency — overall check independent of week-over-week rules.
@@ -43,12 +44,21 @@ function hasSufficientData(snapshot) {
             DATA_SUFFICIENCY.minLodgingBookings
     }
 
-    if (hasFood && hasLodge) return foodOk || lodgeOk
-    if (hasFood) return foodOk
-    if (hasLodge) return lodgeOk
+    const feedbackOk =
+        (snapshot.feedback?.current?.reviewCount || 0) >=
+        DATA_SUFFICIENCY.minFeedbackReviews
+    const inventoryOk =
+        (snapshot.inventory?.current?.totalMovementCount || 0) >=
+            DATA_SUFFICIENCY.minInventoryEvents ||
+        (snapshot.inventory?.current?.ingredientShortages?.eventCount || 0) >=
+            DATA_SUFFICIENCY.minInventoryEvents
+
+    if (hasFood && hasLodge) return foodOk || lodgeOk || feedbackOk || inventoryOk
+    if (hasFood) return foodOk || feedbackOk || inventoryOk
+    if (hasLodge) return lodgeOk || feedbackOk || inventoryOk
 
     // No modules at all → insufficient
-    return false
+    return feedbackOk || inventoryOk
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +282,43 @@ function revenueRules(snapshot) {
                 },
             }),
         )
+    }
+
+    const tradingDays = (s.revenueByDay || []).filter((day) => day.grossCents > 0)
+    if (
+        s.transactionCount >= MIN_SAMPLE_SIZES.transactions &&
+        s.paidRevenueCents > 0 &&
+        tradingDays.length >= MATERIALITY.revenueConcentrationMinActiveDays
+    ) {
+        const topDay = [...tradingDays].sort((a, b) => b.grossCents - a.grossCents)[0]
+        const topDaySharePercent = Math.round(
+            (topDay.grossCents / s.paidRevenueCents) * 1000,
+        ) / 10
+        if (topDaySharePercent >= MATERIALITY.revenueConcentrationMinSharePercent) {
+            results.push(buildInsight({
+                id: "revenue_concentration",
+                category: "revenue",
+                messageKey: "REVENUE_CONCENTRATION",
+                type: "warning",
+                impactInputs: {
+                    revenueCents: s.paidRevenueCents,
+                    volume: s.transactionCount,
+                    sharePercent: topDaySharePercent,
+                },
+                hasValidPrevious: false,
+                actualSample: s.transactionCount,
+                minSample: MIN_SAMPLE_SIZES.transactions,
+                actualChangePct: topDaySharePercent,
+                minChangePct: MATERIALITY.revenueConcentrationMinSharePercent,
+                evidence: {
+                    topDay: topDay.date,
+                    topDayRevenueCents: topDay.grossCents,
+                    topDaySharePercent,
+                    activeTradingDays: tradingDays.length,
+                    weeklyRevenueCents: s.paidRevenueCents,
+                },
+            }))
+        }
     }
 
     return results
@@ -929,6 +976,377 @@ function tipsRules(snapshot) {
     return results
 }
 
+function feedbackRules(snapshot) {
+    const current = snapshot.feedback?.current
+    const previous = snapshot.feedback?.previous
+    const comparison = snapshot.feedback?.comparison
+    if (!current || !previous || !comparison) return []
+
+    const results = []
+    const currentSample = Number(current.reviewCount || 0)
+    const previousSample = Number(previous.reviewCount || 0)
+    const comparable =
+        currentSample >= MIN_SAMPLE_SIZES.feedbackReviews &&
+        previousSample >= MIN_SAMPLE_SIZES.feedbackReviews
+
+    const addComparisonInsight = ({
+        delta,
+        minimum,
+        improvingWhenPositive,
+        improvingId,
+        decliningId,
+        improvingKey,
+        decliningKey,
+        evidence,
+        sharePercent = 0,
+        severityDivisor,
+    }) => {
+        if (!comparable || !Number.isFinite(Number(delta)) || Math.abs(delta) < minimum) {
+            return
+        }
+        const improving = improvingWhenPositive ? delta > 0 : delta < 0
+        results.push(buildInsight({
+            id: improving ? improvingId : decliningId,
+            category: "feedback",
+            messageKey: improving ? improvingKey : decliningKey,
+            type: improving ? "positive" : "warning",
+            impactInputs: {
+                volume: currentSample,
+                sharePercent,
+                severity: Math.min(1, Math.abs(delta) / severityDivisor),
+            },
+            hasValidPrevious: true,
+            actualSample: currentSample,
+            minSample: MIN_SAMPLE_SIZES.feedbackReviews,
+            actualChangePct: Math.abs(delta),
+            minChangePct: minimum,
+            evidence,
+        }))
+    }
+
+    addComparisonInsight({
+        delta: Number(comparison.ratingDelta),
+        minimum: MATERIALITY.feedbackRatingMinDelta,
+        improvingWhenPositive: true,
+        improvingId: "feedback_rating_improvement",
+        decliningId: "feedback_rating_decline",
+        improvingKey: "FEEDBACK_RATING_IMPROVEMENT",
+        decliningKey: "FEEDBACK_RATING_DECLINE",
+        severityDivisor: 1,
+        evidence: {
+            currentAverageRating: current.averageRating,
+            previousAverageRating: previous.averageRating,
+            ratingDelta: comparison.ratingDelta,
+            currentReviews: currentSample,
+            previousReviews: previousSample,
+        },
+    })
+
+    addComparisonInsight({
+        delta: Number(comparison.lowRatingRateDeltaPoints),
+        minimum: MATERIALITY.feedbackShareMinDeltaPoints,
+        improvingWhenPositive: false,
+        improvingId: "feedback_low_rating_share_improvement",
+        decliningId: "feedback_low_rating_share_increase",
+        improvingKey: "FEEDBACK_LOW_RATING_SHARE_IMPROVEMENT",
+        decliningKey: "FEEDBACK_LOW_RATING_SHARE_INCREASE",
+        sharePercent: Number(current.lowRatingRatePercent || 0),
+        severityDivisor: 30,
+        evidence: {
+            currentLowRatingCount: current.lowRatingCount,
+            previousLowRatingCount: previous.lowRatingCount,
+            currentLowRatingRatePercent: current.lowRatingRatePercent,
+            previousLowRatingRatePercent: previous.lowRatingRatePercent,
+            lowRatingRateDeltaPoints: comparison.lowRatingRateDeltaPoints,
+            currentReviews: currentSample,
+        },
+    })
+
+    addComparisonInsight({
+        delta: Number(comparison.csatDeltaPoints),
+        minimum: MATERIALITY.feedbackShareMinDeltaPoints,
+        improvingWhenPositive: true,
+        improvingId: "feedback_csat_improvement",
+        decliningId: "feedback_csat_decline",
+        improvingKey: "FEEDBACK_CSAT_IMPROVEMENT",
+        decliningKey: "FEEDBACK_CSAT_DECLINE",
+        sharePercent: Math.max(0, 100 - Number(current.csatPercent || 0)),
+        severityDivisor: 30,
+        evidence: {
+            currentCsatPercent: current.csatPercent,
+            previousCsatPercent: previous.csatPercent,
+            csatDeltaPoints: comparison.csatDeltaPoints,
+            currentReviews: currentSample,
+        },
+    })
+
+    const volumeGate = materialityGate({
+        current: currentSample,
+        previous: previousSample,
+        minChangePct: MATERIALITY.feedbackReviewVolumeMinChangePercent,
+        actualSample: currentSample,
+        minSample: MIN_SAMPLE_SIZES.feedbackReviews,
+        hasValidPrevious: previousSample >= MIN_SAMPLE_SIZES.feedbackReviews,
+    })
+    if (volumeGate) {
+        const growing = volumeGate.changePct > 0
+        results.push(buildInsight({
+            id: growing ? "feedback_review_volume_growth" : "feedback_review_volume_decline",
+            category: "feedback",
+            messageKey: growing
+                ? "FEEDBACK_REVIEW_VOLUME_GROWTH"
+                : "FEEDBACK_REVIEW_VOLUME_DECLINE",
+            type: "info",
+            impactInputs: { volume: currentSample, severity: 0.2 },
+            hasValidPrevious: true,
+            actualSample: currentSample,
+            minSample: MIN_SAMPLE_SIZES.feedbackReviews,
+            actualChangePct: Math.abs(volumeGate.changePct),
+            minChangePct: MATERIALITY.feedbackReviewVolumeMinChangePercent,
+            evidence: { currentReviews: currentSample, previousReviews: previousSample },
+        }))
+    }
+
+    if (
+        currentSample >= MIN_SAMPLE_SIZES.feedbackReviews &&
+        current.averageRating !== null &&
+        current.averageRating !== undefined &&
+        Number.isFinite(Number(current.averageRating)) &&
+        Number(current.averageRating) < 3
+    ) {
+        results.push(buildInsight({
+            id: "feedback_low_rating_level",
+            category: "feedback",
+            messageKey: "FEEDBACK_LOW_RATING_LEVEL",
+            type: "warning",
+            impactInputs: {
+                volume: currentSample,
+                sharePercent: Number(current.lowRatingRatePercent || 0),
+                severity: Math.min(1, (3 - Number(current.averageRating)) / 1.5),
+            },
+            hasValidPrevious: false,
+            actualSample: currentSample,
+            minSample: MIN_SAMPLE_SIZES.feedbackReviews,
+            actualChangePct: Math.max(0, (3 - Number(current.averageRating)) * 20),
+            minChangePct: 5,
+            evidence: {
+                currentAverageRating: current.averageRating,
+                currentLowRatingRatePercent: current.lowRatingRatePercent,
+                currentReviews: currentSample,
+            },
+        }))
+    }
+
+    return results
+}
+
+function sumMovementCounts(summary, types) {
+    return types.reduce(
+        (total, type) => total + Number(summary?.countsByType?.[type] || 0),
+        0,
+    )
+}
+
+function inventoryRules(snapshot) {
+    const inventory = snapshot.inventory
+    if (!inventory) return []
+    const current = inventory.current || {}
+    const previous = inventory.previous || {}
+    const results = []
+
+    const shortages = Number(current.ingredientShortages?.eventCount || 0)
+    const previousShortages = Number(previous.ingredientShortages?.eventCount || 0)
+    if (shortages >= MIN_SAMPLE_SIZES.inventoryShortageEvents) {
+        const changePercent = previousShortages > 0
+            ? Math.round(((shortages - previousShortages) / previousShortages) * 1000) / 10
+            : 100
+        results.push(buildInsight({
+            id: "inventory_shortages_recorded",
+            category: "inventory",
+            messageKey: "INVENTORY_SHORTAGES_RECORDED",
+            type: "warning",
+            impactInputs: {
+                volume: shortages,
+                severity: Math.min(1, shortages / 5),
+                persistence: previousShortages > 0 ? 1 : 0,
+            },
+            hasValidPrevious: true,
+            actualSample: shortages,
+            minSample: MIN_SAMPLE_SIZES.inventoryShortageEvents,
+            actualChangePct: Math.abs(changePercent),
+            minChangePct: 25,
+            evidence: {
+                shortageEvents: shortages,
+                previousShortageEvents: previousShortages,
+                affectedItemCount: current.ingredientShortages?.affectedItemCount || 0,
+                quantityByUnit: current.ingredientShortages?.quantityByUnit || [],
+            },
+        }))
+    } else if (previousShortages > 0) {
+        results.push(buildInsight({
+            id: "inventory_shortages_cleared",
+            category: "inventory",
+            messageKey: "INVENTORY_SHORTAGES_CLEARED",
+            type: "positive",
+            impactInputs: { volume: previousShortages, severity: 0.5 },
+            hasValidPrevious: true,
+            actualSample: previousShortages,
+            minSample: MIN_SAMPLE_SIZES.inventoryShortageEvents,
+            actualChangePct: 100,
+            minChangePct: 25,
+            evidence: { shortageEvents: 0, previousShortageEvents },
+        }))
+    }
+
+    const wasteEvents = sumMovementCounts(current, [INVENTORY_MOVEMENT_TYPES.WASTE])
+    const previousWasteEvents = sumMovementCounts(previous, [INVENTORY_MOVEMENT_TYPES.WASTE])
+    if (wasteEvents >= MATERIALITY.inventoryWasteMinEvents) {
+        const increasePercent = previousWasteEvents > 0
+            ? ((wasteEvents - previousWasteEvents) / previousWasteEvents) * 100
+            : 100
+        if (
+            previousWasteEvents === 0 ||
+            increasePercent >= MATERIALITY.inventoryWasteMinIncreasePercent
+        ) {
+            results.push(buildInsight({
+                id: "inventory_waste_activity",
+                category: "inventory",
+                messageKey: "INVENTORY_WASTE_ACTIVITY",
+                type: "warning",
+                impactInputs: {
+                    volume: wasteEvents,
+                    severity: Math.min(1, wasteEvents / 10),
+                    persistence: previousWasteEvents > 0 ? 0.5 : 0,
+                },
+                hasValidPrevious: true,
+                actualSample: wasteEvents,
+                minSample: MATERIALITY.inventoryWasteMinEvents,
+                actualChangePct: Math.abs(increasePercent),
+                minChangePct: MATERIALITY.inventoryWasteMinIncreasePercent,
+                evidence: {
+                    wasteEvents,
+                    previousWasteEvents,
+                    wasteByUnit: current.wasteByUnit || [],
+                },
+            }))
+        }
+    }
+
+    const adjustmentTypes = [
+        INVENTORY_MOVEMENT_TYPES.ADJUSTMENT_INCREASE,
+        INVENTORY_MOVEMENT_TYPES.ADJUSTMENT_DECREASE,
+        INVENTORY_MOVEMENT_TYPES.COUNT_RECONCILIATION_INCREASE,
+        INVENTORY_MOVEMENT_TYPES.COUNT_RECONCILIATION_DECREASE,
+    ]
+    const adjustmentEvents = sumMovementCounts(current, adjustmentTypes)
+    const previousAdjustmentEvents = sumMovementCounts(previous, adjustmentTypes)
+    if (adjustmentEvents >= MATERIALITY.inventoryAdjustmentMinEvents) {
+        results.push(buildInsight({
+            id: "inventory_repeated_adjustments",
+            category: "inventory",
+            messageKey: "INVENTORY_REPEATED_ADJUSTMENTS",
+            type: "warning",
+            impactInputs: {
+                volume: adjustmentEvents,
+                severity: Math.min(1, adjustmentEvents / 12),
+                persistence: previousAdjustmentEvents >= MATERIALITY.inventoryAdjustmentMinEvents ? 1 : 0,
+            },
+            hasValidPrevious: true,
+            actualSample: adjustmentEvents,
+            minSample: MATERIALITY.inventoryAdjustmentMinEvents,
+            actualChangePct: Math.abs(adjustmentEvents - previousAdjustmentEvents),
+            minChangePct: 1,
+            evidence: {
+                adjustmentEvents,
+                previousAdjustmentEvents,
+                adjustmentsByUnit: current.adjustmentsByUnit || [],
+            },
+        }))
+    }
+
+    const stock = inventory.stockHealthAsOf
+    if (stock?.periodAligned === true) {
+        const activeItems = Number(stock.activeItems || 0)
+        const riskItems = Number(stock.lowStockItems || 0) + Number(stock.outOfStockItems || 0)
+        const riskShare = activeItems > 0 ? (riskItems / activeItems) * 100 : 0
+        if (
+            activeItems >= MIN_SAMPLE_SIZES.inventoryActiveItems &&
+            (Number(stock.outOfStockItems || 0) > 0 ||
+                riskItems >= MATERIALITY.inventoryStockRiskMinItems ||
+                riskShare >= MATERIALITY.inventoryStockRiskMinSharePercent)
+        ) {
+            results.push(buildInsight({
+                id: "inventory_stock_risk",
+                category: "inventory",
+                messageKey: "INVENTORY_STOCK_RISK",
+                type: "warning",
+                impactInputs: {
+                    volume: riskItems,
+                    sharePercent: riskShare,
+                    severity: Math.min(
+                        1,
+                        Number(stock.outOfStockItems || 0) * 0.35 + riskShare / 50,
+                    ),
+                },
+                hasValidPrevious: false,
+                actualSample: activeItems,
+                minSample: MIN_SAMPLE_SIZES.inventoryActiveItems,
+                actualChangePct: riskShare,
+                minChangePct: MATERIALITY.inventoryStockRiskMinSharePercent,
+                evidence: {
+                    asOf: stock.asOf,
+                    periodAligned: true,
+                    activeItems,
+                    lowStockItems: stock.lowStockItems || 0,
+                    outOfStockItems: stock.outOfStockItems || 0,
+                    riskSharePercent: Math.round(riskShare * 10) / 10,
+                    mostUrgentItems: stock.mostUrgentItems || [],
+                },
+            }))
+        }
+    }
+
+    return results
+}
+
+function buildCrossDomainSignals(insights) {
+    const revenue = insights.find((insight) => insight.category === "revenue")
+    const feedback = insights.find((insight) => insight.category === "feedback")
+    const operations = insights.find((insight) => insight.category === "operations")
+    const inventory = insights.find((insight) => insight.category === "inventory")
+    const signals = []
+
+    if (revenue && feedback && revenue.type !== feedback.type) {
+        signals.push({
+            id: "sales_feedback_divergence",
+            categories: ["revenue", "feedback"],
+            relationship: "occurred_alongside",
+            periodAligned: true,
+            signalIds: [revenue.id, feedback.id],
+        })
+    }
+    if (operations && feedback && operations.type !== feedback.type) {
+        signals.push({
+            id: "operations_feedback_divergence",
+            categories: ["operations", "feedback"],
+            relationship: "occurred_alongside",
+            periodAligned: true,
+            signalIds: [operations.id, feedback.id],
+        })
+    }
+    if (inventory?.type === "warning" && operations) {
+        signals.push({
+            id: "inventory_operational_risk",
+            categories: ["inventory", "operations"],
+            relationship: "operational_risk_during_period",
+            periodAligned: true,
+            signalIds: [inventory.id, operations.id],
+        })
+    }
+
+    return signals.slice(0, 3)
+}
+
 // ---------------------------------------------------------------------------
 // Deduplication
 // ---------------------------------------------------------------------------
@@ -982,24 +1400,19 @@ function balanceCategories(sorted) {
 
     while (primary.length < OUTPUT.maxPrimary && remaining.length > 0) {
         let bestIdx = 0
-        let bestScore = remaining[0].priorityScore
+        const leadingScore = remaining[0].priorityScore
 
         for (let i = 1; i < remaining.length; i++) {
             const candidate = remaining[i]
-            const diff = candidate.priorityScore - bestScore
-            if (diff <= 0) continue
+            if (leadingScore - candidate.priorityScore > DIVERSITY.tieThreshold) break
 
+            const candidateCategoryCount = categoryCounts.get(candidate.category) || 0
+            const bestCategoryCount = categoryCounts.get(remaining[bestIdx].category) || 0
             if (
-                diff <= DIVERSITY.tieThreshold &&
-                (categoryCounts.get(candidate.category) || 0) <
-                    (categoryCounts.get(remaining[bestIdx].category) || 0)
-            ) {
-                bestIdx = i
-                bestScore = candidate.priorityScore
-            } else if (diff > DIVERSITY.tieThreshold) {
-                bestIdx = i
-                bestScore = candidate.priorityScore
-            }
+                candidateCategoryCount < bestCategoryCount ||
+                (candidateCategoryCount === bestCategoryCount &&
+                    candidate.priorityScore > remaining[bestIdx].priorityScore)
+            ) bestIdx = i
         }
 
         const chosen = remaining[bestIdx]
@@ -1025,8 +1438,8 @@ function balanceCategories(sorted) {
  * @returns {{ insights: Array, insufficientData: boolean, noSignificantInsights: boolean }}
  */
 export function generateWeeklyInsights(snapshot) {
-    if (!snapshot || snapshot.schemaVersion !== 1) {
-        throw new TypeError("Invalid snapshot: expected schemaVersion 1")
+    if (!snapshot || snapshot.schemaVersion !== 2) {
+        throw new TypeError("Invalid snapshot: expected schemaVersion 2")
     }
 
     // Overall data sufficiency
@@ -1035,6 +1448,8 @@ export function generateWeeklyInsights(snapshot) {
     if (!sufficient) {
         return {
             insights: [],
+            dominantSignal: null,
+            crossDomainSignals: [],
             insufficientData: true,
             noSignificantInsights: false,
         }
@@ -1051,6 +1466,8 @@ export function generateWeeklyInsights(snapshot) {
         ...staffRules(snapshot),
         ...lodgingRules(snapshot),
         ...tipsRules(snapshot),
+        ...feedbackRules(snapshot),
+        ...inventoryRules(snapshot),
     ]
 
     const deduped = deduplicate(candidates)
@@ -1060,6 +1477,15 @@ export function generateWeeklyInsights(snapshot) {
 
     return {
         insights: primary,
+        dominantSignal: primary[0]
+            ? {
+                id: primary[0].id,
+                category: primary[0].category,
+                type: primary[0].type,
+                priorityScore: primary[0].priorityScore,
+            }
+            : null,
+        crossDomainSignals: buildCrossDomainSignals(primary),
         insufficientData: false,
         noSignificantInsights: primary.length === 0,
     }

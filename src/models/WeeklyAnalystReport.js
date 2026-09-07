@@ -1,7 +1,7 @@
 import mongoose from "mongoose"
 
-export const WEEKLY_SNAPSHOT_VERSION = 1
-export const WEEKLY_INSIGHT_ENGINE_VERSION = 1
+export const WEEKLY_SNAPSHOT_VERSION = 2
+export const WEEKLY_INSIGHT_ENGINE_VERSION = 2
 
 export const GENERATION_STATUSES = Object.freeze([
     "pending",
@@ -17,6 +17,15 @@ export const EMAIL_STATUSES = Object.freeze([
     "sent",
     "failed",
 ])
+
+const AiUsageSchema = new mongoose.Schema(
+    {
+        inputTokens: { type: Number, default: null, min: 0 },
+        outputTokens: { type: Number, default: null, min: 0 },
+        totalTokens: { type: Number, default: null, min: 0 },
+    },
+    { _id: false },
+)
 
 const WeeklyAnalystReportSchema = new mongoose.Schema(
     {
@@ -81,6 +90,10 @@ const WeeklyAnalystReportSchema = new mongoose.Schema(
         },
         modelVersion: {
             type: String,
+            default: null,
+        },
+        aiUsage: {
+            type: AiUsageSchema,
             default: null,
         },
         promptVersion: {

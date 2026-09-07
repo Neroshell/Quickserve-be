@@ -13,6 +13,7 @@ import {
 } from "../src/services/canonicalInventoryService.js"
 import { removeInventoryItemFromWorkspace } from "../src/services/inventoryItemLifecycleService.js"
 import { readInventoryItem } from "../src/services/ownerInventoryReadService.js"
+import { countCurrentMenuItems } from "../src/services/menuMetricsService.js"
 import {
     archiveMappedMenuItem,
     createSimpleStockMenuItem,
@@ -22,6 +23,126 @@ import {
 
 const ACTOR = { staffId: "owner_1", role: "owner", name: "Owner One" }
 const FIXED_TIME = new Date("2026-09-06T12:00:00.000Z")
+
+function menuCountModel(menuItems) {
+    return {
+        async countDocuments(filter) {
+            assert.deepEqual(filter, {
+                businessId: filter.businessId,
+                archivedAt: null,
+            })
+            return menuItems.filter((item) => (
+                item.businessId === filter.businessId &&
+                item.archivedAt === null
+            )).length
+        },
+    }
+}
+
+async function readMenuCount(menuItems, businessId = "biz_alpha") {
+    return countCurrentMenuItems(
+        { businessId },
+        { MenuItemModel: menuCountModel(menuItems) },
+    )
+}
+
+function menuMetricFixture() {
+    const menuItems = Array.from({ length: 20 }, (_, index) => ({
+        _id: `menu_alpha_${index + 1}`,
+        businessId: "biz_alpha",
+        name: `Menu item ${index + 1}`,
+        archivedAt: null,
+        isAvailable: true,
+    }))
+    menuItems.push(...Array.from({ length: 4 }, (_, index) => ({
+        _id: `menu_other_${index + 1}`,
+        businessId: "biz_other",
+        name: `Other tenant item ${index + 1}`,
+        archivedAt: null,
+        isAvailable: true,
+    })))
+    return {
+        menuItems,
+        inventoryItem: { isActive: true, deletedAt: null },
+        mapping: {
+            status: "active",
+            ingredientTrackingStatus: "active",
+            components: [{ inventoryItemId: "inv_linked" }],
+            ingredientComponents: [{ inventoryItemId: "inv_ingredient" }],
+        },
+        historicalOrders: [{ items: [{ itemName: "Menu item 1" }] }],
+    }
+}
+
+test("Total Menu Items matrix is controlled only by MenuItem lifecycle and tenant", async (t) => {
+    const inventoryOnlyScenarios = [
+        ["A: archive linked InventoryItem", ({ inventoryItem }) => { inventoryItem.isActive = false }],
+        ["B: deactivate linked InventoryItem", ({ inventoryItem }) => { inventoryItem.isActive = false }],
+        ["C: delete linked InventoryItem operationally", ({ inventoryItem }) => {
+            inventoryItem.isActive = false
+            inventoryItem.deletedAt = FIXED_TIME
+        }],
+        ["D: disable Simple Stock", ({ mapping }) => { mapping.status = "disabled" }],
+        ["E: enable Ingredient Tracking", ({ mapping }) => { mapping.ingredientTrackingStatus = "active" }],
+        ["F: disable/remove Ingredient Tracking", ({ mapping }) => {
+            mapping.ingredientTrackingStatus = null
+            mapping.ingredientComponents = []
+        }],
+        ["L: change Simple Stock plus Ingredient Tracking lifecycle", ({ mapping }) => {
+            mapping.status = "disabled"
+            mapping.ingredientTrackingStatus = "disabled"
+        }],
+    ]
+
+    for (const [name, mutate] of inventoryOnlyScenarios) {
+        await t.test(name, async () => {
+            const fixture = menuMetricFixture()
+            mutate(fixture)
+            assert.equal(await readMenuCount(fixture.menuItems), 20)
+        })
+    }
+
+    await t.test("G: unavailable MenuItem remains in Total Menu Items", async () => {
+        const fixture = menuMetricFixture()
+        fixture.menuItems[0].isAvailable = false
+        assert.equal(await readMenuCount(fixture.menuItems), 20)
+    })
+
+    await t.test("H: deleting one MenuItem reduces the total once", async () => {
+        const fixture = menuMetricFixture()
+        fixture.menuItems[0].archivedAt = FIXED_TIME
+        assert.equal(await readMenuCount(fixture.menuItems), 19)
+    })
+
+    await t.test("I: Menu-only removal reduces the total and preserves InventoryItem", async () => {
+        const fixture = menuMetricFixture()
+        const inventoryBefore = structuredClone(fixture.inventoryItem)
+        fixture.menuItems[0].archivedAt = FIXED_TIME
+        assert.equal(await readMenuCount(fixture.menuItems), 19)
+        assert.deepEqual(fixture.inventoryItem, inventoryBefore)
+    })
+
+    await t.test("J: Menu-plus-Inventory removal reduces the total exactly once", async () => {
+        const fixture = menuMetricFixture()
+        fixture.menuItems[0].archivedAt = FIXED_TIME
+        fixture.inventoryItem.isActive = false
+        fixture.inventoryItem.deletedAt = FIXED_TIME
+        assert.equal(await readMenuCount(fixture.menuItems), 19)
+    })
+
+    await t.test("K: removed MenuItem is excluded while historical Orders remain intact", async () => {
+        const fixture = menuMetricFixture()
+        fixture.menuItems[0].archivedAt = FIXED_TIME
+        assert.equal(await readMenuCount(fixture.menuItems), 19)
+        assert.equal(fixture.historicalOrders[0].items[0].itemName, "Menu item 1")
+    })
+
+    await t.test("M: cross-tenant records are isolated", async () => {
+        const fixture = menuMetricFixture()
+        assert.equal(await readMenuCount(fixture.menuItems, "biz_alpha"), 20)
+        assert.equal(await readMenuCount(fixture.menuItems, "biz_other"), 4)
+    })
+})
 
 function plainDocument(raw, onSave = null) {
     return {
@@ -295,6 +416,14 @@ function lifecycleHarness({
         updatedAt: FIXED_TIME,
     })
     const filters = []
+    const linkedMenuItem = plainDocument({
+        _id: "507f1f77bcf86cd799439011",
+        businessId,
+        name: "Gulder Beer",
+        archivedAt: null,
+        manualIsAvailable: true,
+        isAvailable: true,
+    })
     const existsModel = (value) => ({
         async exists(filter) {
             filters.push(filter)
@@ -322,23 +451,40 @@ function lifecycleHarness({
             ...existsModel(hasMapping),
             async find(filter) {
                 filters.push(filter)
-                return []
+                return hasMapping
+                    ? [{ menuItemId: linkedMenuItem._id }]
+                    : []
             },
         },
         InventoryReservationModel: existsModel(hasReservation),
         OrderModel: existsModel(hasOrder),
-        MenuItemModel: { async updateMany() { return { modifiedCount: 0 } } },
+        MenuItemModel: {
+            async updateMany(filter, update) {
+                filters.push(filter)
+                if (
+                    filter.businessId === linkedMenuItem.businessId &&
+                    filter._id?.$in?.includes(linkedMenuItem._id) &&
+                    filter.archivedAt === null
+                ) {
+                    Object.assign(linkedMenuItem, update.$set)
+                    return { modifiedCount: 1 }
+                }
+                return { modifiedCount: 0 }
+            },
+        },
         now: () => FIXED_TIME,
     }
     return {
         dependencies,
         filters,
+        linkedMenuItem,
         get item() { return item },
     }
 }
 
 test("archive/reactivate preserves identity and an unused item can be physically removed", async () => {
     const duplicate = duplicateHarness()
+    const menuItems = [{ businessId: "biz_alpha", archivedAt: null, isAvailable: true }]
     const created = await createItem(duplicate)
     const archived = await updateInventoryItem({
         businessId: "biz_alpha",
@@ -351,7 +497,9 @@ test("archive/reactivate preserves identity and an unused item can be physically
         input: { isActive: true },
     }, duplicate.dependencies)
     assert.equal(archived.isActive, false)
+    assert.equal(await readMenuCount(menuItems), 1)
     assert.equal(reactivated.isActive, true)
+    assert.equal(await readMenuCount(menuItems), 1)
     assert.equal(reactivated.inventoryItemId, created.inventoryItemId)
 
     const lifecycle = lifecycleHarness()
@@ -364,6 +512,24 @@ test("archive/reactivate preserves identity and an unused item can be physically
     assert.equal(removal.preservation, "hard")
     assert.equal(lifecycle.item, null)
     assert.ok(lifecycle.filters.every((filter) => filter.businessId === "biz_alpha"))
+})
+
+test("direct operational Inventory deletion leaves its linked MenuItem current", async () => {
+    const lifecycle = lifecycleHarness({ hasMapping: true })
+    assert.equal(await readMenuCount([lifecycle.linkedMenuItem]), 1)
+
+    const removal = await removeInventoryItemFromWorkspace({
+        businessId: "biz_alpha",
+        inventoryItemId: "inv_lifecycle",
+        actor: ACTOR,
+        session: {},
+    }, lifecycle.dependencies)
+
+    assert.equal(removal.preservation, "historical")
+    assert.equal(lifecycle.item.deletedAt, FIXED_TIME)
+    assert.equal(lifecycle.linkedMenuItem.archivedAt, null)
+    assert.equal(lifecycle.linkedMenuItem.isAvailable, false)
+    assert.equal(await readMenuCount([lifecycle.linkedMenuItem]), 1)
 })
 
 test("historically used items become hidden tombstones while item and movement history remain readable", async () => {
@@ -611,6 +777,7 @@ function menuRemovalHarness({ sharedCount = 0 } = {}) {
 test("menu-only removal archives the relationship and leaves InventoryItem state intact", async () => {
     const harness = menuRemovalHarness()
     const before = structuredClone(harness.inventoryItem)
+    assert.equal(await readMenuCount([harness.menuItem]), 1)
     await archiveMappedMenuItem({
         businessId: "biz_alpha",
         menuItemId: harness.menuItem._id,
@@ -618,12 +785,14 @@ test("menu-only removal archives the relationship and leaves InventoryItem state
 
     assert.equal(harness.mapping.status, "archived")
     assert.equal(harness.menuItem.archivedAt, FIXED_TIME)
+    assert.equal(await readMenuCount([harness.menuItem]), 0)
     assert.deepEqual(harness.inventoryItem, before)
     assert.equal(harness.inventoryRemovalCalls, 0)
 })
 
 test("exclusive Simple Stock can remove menu and inventory in one lifecycle action", async () => {
     const harness = menuRemovalHarness()
+    assert.equal(await readMenuCount([harness.menuItem]), 1)
     const preview = await readSimpleStockMenuRemovalPreview({
         businessId: "biz_alpha",
         menuItemId: harness.menuItem._id,
@@ -639,6 +808,7 @@ test("exclusive Simple Stock can remove menu and inventory in one lifecycle acti
     assert.equal(result.removed, true)
     assert.equal(harness.mapping.status, "archived")
     assert.equal(harness.menuItem.archivedAt, FIXED_TIME)
+    assert.equal(await readMenuCount([harness.menuItem]), 0)
     assert.equal(harness.inventoryRemovalCalls, 1)
     assert.ok(harness.filters.every((filter) => filter.businessId === "biz_alpha"))
 })
