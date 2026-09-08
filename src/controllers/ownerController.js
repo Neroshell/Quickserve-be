@@ -164,7 +164,7 @@ export async function getTableSessionsOverview(req, res) {
         const tableIds = sessions.map(s => s._id)
 
         const servicePoints = await ServicePoint.find(
-            { servicePointId: { $in: tableIds } },
+            { businessId, servicePointId: { $in: tableIds } },
             "servicePointId label"
         ).lean()
 
