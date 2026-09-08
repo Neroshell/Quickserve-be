@@ -166,6 +166,20 @@ router.patch("/branding", requireManagementArea(MANAGEMENT_ACCESS_AREAS.BRANDING
  *         schema:
  *           type: string
  *       - in: query
+ *         name: orderType
+ *         schema:
+ *           type: string
+ *           enum: [all, dine-in, takeout]
+ *       - in: query
+ *         name: paymentStatus
+ *         schema:
+ *           type: string
+ *           enum: [all, unpaid, pending, paid]
+ *       - in: query
+ *         name: servicePointId
+ *         schema:
+ *           type: string
+ *       - in: query
  *         name: cursor
  *         description: Opaque cursor returned by a previous response
  *         schema:

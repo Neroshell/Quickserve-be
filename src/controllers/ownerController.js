@@ -22,7 +22,7 @@ import {
 } from "../services/cacheInvalidationService.js"
 import { resolveBusinessDay, resolveAnalyticsDateRange } from "../utils/businessDate.js"
 
-// GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...&cursor=...&direction=next|previous&limit=25
+// GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...&orderType=...&paymentStatus=...&servicePointId=...&cursor=...&direction=next|previous&limit=25
 export async function ownerOrders(req, res) {
     try {
         const {
@@ -31,6 +31,9 @@ export async function ownerOrders(req, res) {
             to,
             status = "all",
             search = "",
+            orderType = "all",
+            paymentStatus = "all",
+            servicePointId = "all",
             cursor,
             direction = "next",
             limit,
@@ -51,12 +54,15 @@ export async function ownerOrders(req, res) {
 
         const { startDateJS, endDateJS } = resolveAnalyticsDateRange(business, range, from, to)
 
-        const { rawOrders, counts, pagination } = await readOwnerOrdersPage({
+        const { rawOrders, counts, summary, filterOptions, pagination } = await readOwnerOrdersPage({
             businessId,
             startDate: startDateJS,
             endDate: endDateJS,
             status,
             search,
+            orderType,
+            paymentStatus,
+            servicePointId,
             cursor,
             direction,
             limit,
@@ -120,6 +126,8 @@ export async function ownerOrders(req, res) {
         return res.json({
             range,
             counts,
+            summary,
+            filterOptions,
             orders,
             pagination,
         })

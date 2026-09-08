@@ -5,6 +5,8 @@ export const OWNER_ORDERS_DEFAULT_LIMIT = 25
 export const OWNER_ORDERS_MAX_LIMIT = 25
 
 const OWNER_ORDER_STATUSES = ["placed", "in_progress", "ready", "completed"]
+const OWNER_ORDER_TYPES = new Set(["dine-in", "takeout"])
+const OWNER_PAYMENT_STATUSES = new Set(["unpaid", "pending", "paid"])
 const CURSOR_DIRECTIONS = new Set(["next", "previous"])
 
 const OWNER_ORDER_PROJECTION = {
@@ -129,7 +131,16 @@ function getCursorConstraint(cursor, direction) {
     }
 }
 
-function buildOrdersFilter({ businessId, startDate, endDate, status, search }) {
+function buildOrdersFilter({
+    businessId,
+    startDate,
+    endDate,
+    status,
+    search,
+    orderType,
+    paymentStatus,
+    servicePointId,
+}) {
     const filter = {
         businessId,
         createdAt: { $gte: startDate, $lt: endDate },
@@ -138,16 +149,68 @@ function buildOrdersFilter({ businessId, startDate, endDate, status, search }) {
             : { $in: OWNER_ORDER_STATUSES },
     }
 
+    if (OWNER_ORDER_TYPES.has(orderType)) {
+        filter.orderType = orderType
+    }
+    if (OWNER_PAYMENT_STATUSES.has(paymentStatus)) {
+        filter.paymentStatus = paymentStatus
+    }
+    if (
+        typeof servicePointId === "string" &&
+        servicePointId.trim() &&
+        servicePointId.trim() !== "all"
+    ) {
+        filter.servicePointLabel = servicePointId.trim()
+    }
+
     const normalizedSearch = typeof search === "string" ? search.trim() : ""
     if (normalizedSearch) {
         const searchRegex = new RegExp(escapeRegex(normalizedSearch), "i")
         filter.$or = [
             { orderId: { $regex: searchRegex } },
             { servicePointLabel: { $regex: searchRegex } },
+            { displayLabel: { $regex: searchRegex } },
         ]
     }
 
     return filter
+}
+
+function buildSummary(countRows) {
+    return {
+        totalOrders: countRows.reduce((total, row) => total + Number(row?.count || 0), 0),
+        totalOrderValue: countRows.reduce(
+            (total, row) => total + Number(row?.totalOrderValue || 0),
+            0,
+        ),
+    }
+}
+
+function buildFilterOptions(metadataRows) {
+    const metadata = metadataRows?.[0] || {}
+    const orderTypes = Array.isArray(metadata.orderTypes)
+        ? metadata.orderTypes.filter((value) => OWNER_ORDER_TYPES.has(value)).sort()
+        : []
+    const paymentStatuses = Array.isArray(metadata.paymentStatuses)
+        ? metadata.paymentStatuses.filter((value) => OWNER_PAYMENT_STATUSES.has(value)).sort()
+        : []
+    const servicePointsById = new Map()
+
+    for (const servicePoint of metadata.servicePoints || []) {
+        const id = typeof servicePoint?.id === "string" ? servicePoint.id.trim() : ""
+        if (!id) continue
+        const label = typeof servicePoint?.label === "string" && servicePoint.label.trim()
+            ? servicePoint.label.trim()
+            : id
+        servicePointsById.set(id, label)
+    }
+
+    return {
+        orderTypes,
+        paymentStatuses,
+        servicePoints: Array.from(servicePointsById, ([id, label]) => ({ id, label }))
+            .sort((left, right) => left.label.localeCompare(right.label)),
+    }
 }
 
 function buildCounts(countRows) {
@@ -168,6 +231,9 @@ export async function readOwnerOrdersPage({
     endDate,
     status = "all",
     search = "",
+    orderType = "all",
+    paymentStatus = "all",
+    servicePointId = "all",
     cursor: cursorValue,
     direction = "next",
     limit: requestedLimit,
@@ -194,6 +260,9 @@ export async function readOwnerOrdersPage({
         endDate,
         status,
         search,
+        orderType,
+        paymentStatus,
+        servicePointId,
     })
     const cursorConstraint = getCursorConstraint(cursor, direction)
     const listFilter = cursorConstraint
@@ -208,14 +277,36 @@ export async function readOwnerOrdersPage({
         ? { createdAt: 1, _id: 1 }
         : { createdAt: -1, _id: -1 }
 
-    const [rawRows, countRows] = await Promise.all([
+    const [rawRows, countRows, metadataRows] = await Promise.all([
         OrderModel.find(listFilter, OWNER_ORDER_PROJECTION)
             .sort(sort)
             .limit(limit + 1)
             .lean(),
         OrderModel.aggregate([
             { $match: countsFilter },
-            { $group: { _id: "$status", count: { $sum: 1 } } },
+            {
+                $group: {
+                    _id: "$status",
+                    count: { $sum: 1 },
+                    totalOrderValue: { $sum: { $ifNull: ["$total", 0] } },
+                },
+            },
+        ]),
+        OrderModel.aggregate([
+            { $match: countsFilter },
+            {
+                $group: {
+                    _id: null,
+                    orderTypes: { $addToSet: "$orderType" },
+                    paymentStatuses: { $addToSet: "$paymentStatus" },
+                    servicePoints: {
+                        $addToSet: {
+                            id: "$servicePointLabel",
+                            label: "$displayLabel",
+                        },
+                    },
+                },
+            },
         ]),
     ])
 
@@ -236,6 +327,8 @@ export async function readOwnerOrdersPage({
     return {
         rawOrders: orders,
         counts: buildCounts(countRows),
+        summary: buildSummary(countRows),
+        filterOptions: buildFilterOptions(metadataRows),
         pagination: {
             limit,
             nextCursor: hasNextPage && orders.length > 0
