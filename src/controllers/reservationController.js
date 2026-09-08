@@ -23,6 +23,10 @@ import { createReservationService, createHotelReservation } from "../services/re
 import { HOTEL_PAYMENT_WINDOW_MINUTES, getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
 import { resolveBusinessDay } from "../utils/businessDate.js";
 import { buildRestaurantTodayOperations } from "../services/restaurantReservationOperationsService.js";
+import {
+  RESTAURANT_AVAILABILITY_POLICIES,
+  getRestaurantAvailability,
+} from "../services/restaurantReservationAvailabilityService.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 const ARCHIVABLE_RESERVATION_STATUSES = new Set([
@@ -1472,9 +1476,9 @@ export async function createStaffReservation(req, res) {
         source: shouldSeatNow ? "walk_in" : "dashboard",
         initialStatus: shouldSeatNow ? "seated" : "confirmed",
         staffSnapshot,
-        allowPastStart: shouldSeatNow,
-        allowReservationsDisabled: true,
-        allowNonReservableServicePoint: shouldSeatNow,
+        availabilityPolicy: shouldSeatNow
+          ? RESTAURANT_AVAILABILITY_POLICIES.ownerWalkIn
+          : RESTAURANT_AVAILABILITY_POLICIES.owner,
         notificationMode: shouldSeatNow ? "none" : "confirmed",
       });
 
@@ -1489,6 +1493,53 @@ export async function createStaffReservation(req, res) {
       return res.status(error.statusCode).json({ error: error.message });
     }
     console.error("[reservationController.createStaffReservation] Error:", error);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * GET /owner/reservations/restaurant-availability
+ * Authenticated restaurant availability. Tenant scope always comes from the
+ * session; query-string businessId values are intentionally ignored.
+ */
+export async function getOwnerRestaurantAvailability(req, res) {
+  try {
+    const sessionUser = req.session?.user;
+    if (!sessionUser?.businessId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const business = await Business.findOne({
+      businessId: sessionUser.businessId,
+    }).lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
+    }
+    if (resolveBusinessCapabilities(business).reservations.primaryMode !== "timeslot") {
+      return res.status(404).json({ error: "Restaurant availability is not available for this business" });
+    }
+
+    const isWalkIn = req.query.mode === "walk_in";
+    const availability = await getRestaurantAvailability({
+      businessId: sessionUser.businessId,
+      business,
+      date: req.query.date,
+      month: req.query.month,
+      partySize: req.query.partySize,
+      durationMinutes: req.query.durationMinutes,
+      startTime: req.query.startTime || undefined,
+      servicePointId: req.query.servicePointId || undefined,
+      policy: isWalkIn
+        ? RESTAURANT_AVAILABILITY_POLICIES.ownerWalkIn
+        : RESTAURANT_AVAILABILITY_POLICIES.owner,
+    });
+
+    return res.json(availability);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    console.error("[reservationController.getOwnerRestaurantAvailability] Error:", error);
     return res.status(500).json({ error: "Server error" });
   }
 }

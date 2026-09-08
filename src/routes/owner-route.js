@@ -55,6 +55,7 @@ import {
     updateReservationStatus,
     checkInHotelReservation,
     createStaffReservation,
+    getOwnerRestaurantAvailability,
     getHotelRoomAvailability,
     getHotelPricingPreview,
     deleteReservation,
@@ -769,6 +770,12 @@ router.get("/reservations", requirePermission(PERMISSIONS.RESERVATIONS_VIEW), ge
  *         description: Reservation created
  */
 router.post("/reservations", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), createStaffReservation)
+
+router.get(
+    "/reservations/restaurant-availability",
+    requirePermission(PERMISSIONS.RESERVATIONS_MANAGE),
+    getOwnerRestaurantAvailability,
+)
 
 /**
  * @openapi

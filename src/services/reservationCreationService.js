@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import { DateTime } from "luxon";
 import crypto from "crypto";
 import Business from "../models/Business.js";
-import Reservation, { timeStringToMinutes, MIN_DURATION_MINUTES } from "../models/Reservation.js";
+import Reservation from "../models/Reservation.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "./reservationPricingService.js";
 import {
@@ -14,6 +14,16 @@ import { dispatchRestaurantReservationEmail } from "./email/emailDispatchService
 import { validateReservationGuestCapacity } from "./reservationCapacityService.js";
 import { EMAIL_JOB_NAMES, enqueueReservationPaymentExpiry } from "../queues/index.js";
 import { getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
+import {
+  RESTAURANT_AVAILABILITY_POLICIES,
+  assertNoRestaurantReservationConflict,
+  assertRestaurantAvailabilityPolicy,
+  findAvailableRestaurantServicePointsForRange,
+  findEligibleRestaurantServicePoints,
+  lockRestaurantServicePointForCreation,
+  validateRestaurantPartySize,
+  validateRestaurantReservationWindow,
+} from "./restaurantReservationAvailabilityService.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PHASE C — Business-timezone date helper
@@ -443,14 +453,11 @@ export async function createRestaurantReservation({
   guestCount,
   seatingPreference,
   servicePointId,
-  servicePointLabel,
   specialRequest,
   source = "public_hub",
   initialStatus = "pending",
   staffSnapshot = null,
-  allowPastStart = false,
-  allowReservationsDisabled = false,
-  allowNonReservableServicePoint = false,
+  availabilityPolicy = RESTAURANT_AVAILABILITY_POLICIES.public,
   notificationMode = "request",
 }) {
   if (!businessSlug || !customerName || !phone || !email || !date || !startTime || !endTime || !guestCount) {
@@ -459,37 +466,7 @@ export async function createRestaurantReservation({
     throw err;
   }
 
-  const startMinutes = timeStringToMinutes(startTime);
-  const endMinutes = timeStringToMinutes(endTime);
-  if (Number.isNaN(startMinutes) || Number.isNaN(endMinutes)) {
-    const err = new Error("startTime and endTime must be valid HH:MM values");
-    err.statusCode = 400;
-    throw err;
-  }
-  if (endMinutes <= startMinutes) {
-    const err = new Error("End time must be after start time");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const duration = endMinutes - startMinutes;
-  if (durationMinutes != null && Number(durationMinutes) !== duration) {
-    const err = new Error("durationMinutes does not match the start/end time range");
-    err.statusCode = 400;
-    throw err;
-  }
-  if (duration < MIN_DURATION_MINUTES) {
-    const err = new Error("Duration must be at least 30 minutes");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const guests = parseInt(guestCount, 10);
-  if (isNaN(guests) || guests < 1 || guests > 50) {
-    const err = new Error("Guest count must be between 1 and 50");
-    err.statusCode = 400;
-    throw err;
-  }
+  const guests = validateRestaurantPartySize(guestCount);
 
   if (specialRequest && specialRequest.length > 500) {
     const err = new Error("Special request is too long (max 500 characters)");
@@ -507,47 +484,15 @@ export async function createRestaurantReservation({
     throw err;
   }
 
-  const [year, month, day] = date.split("-").map(Number);
-  const [hours, minutes] = startTime.split(":").map(Number);
-
-  if (!year || isNaN(month) || isNaN(day) || isNaN(hours) || isNaN(minutes)) {
-    const err = new Error("Invalid date or time format");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const reservationDate = DateTime.fromISO(`${date}T${startTime}`, {
-    zone: business.timezone || "UTC",
+  assertRestaurantAvailabilityPolicy(business, availabilityPolicy);
+  const { durationMinutes: duration } = validateRestaurantReservationWindow({
+    business,
+    date,
+    startTime,
+    endTime,
+    durationMinutes,
+    policy: availabilityPolicy,
   });
-  if (!reservationDate.isValid) {
-    const err = new Error("Invalid date or time format");
-    err.statusCode = 400;
-    throw err;
-  }
-  if (!allowPastStart && reservationDate < DateTime.now().setZone(business.timezone || "UTC")) {
-    const err = new Error("Reservation cannot be in the past");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (!allowReservationsDisabled && business.settings?.reservationsEnabled === false) {
-    const err = new Error("Reservations are currently disabled for this business.");
-    err.statusCode = 403;
-    throw err;
-  }
-
-  const dayOfWeek = new Date(year, month - 1, day).toLocaleDateString("en-US", { weekday: "long" });
-  const dayConfig = business.operatingHours?.[dayOfWeek];
-  if (!dayConfig || !dayConfig.enabled) {
-    const err = new Error("Reservations are only available during business hours.");
-    err.statusCode = 400;
-    throw err;
-  }
-  if (startTime < dayConfig.openTime || endTime > dayConfig.closeTime) {
-    const err = new Error("Reservations are only available during business hours.");
-    err.statusCode = 400;
-    throw err;
-  }
 
   const allowedInitialStatuses = new Set(["pending", "confirmed", "seated"]);
   if (!allowedInitialStatuses.has(initialStatus)) {
@@ -563,16 +508,12 @@ export async function createRestaurantReservation({
     await session.withTransaction(async () => {
       let capacityServicePoints;
       if (servicePointId) {
-        const sp = await ServicePoint.findOne({
+        const sp = await lockRestaurantServicePointForCreation({
           servicePointId,
           businessId: business.businessId,
-          isActive: { $ne: false },
-          ...(allowNonReservableServicePoint
-            ? {}
-            : { reservable: { $ne: false } }),
-        })
-          .session(session)
-          .lean();
+          policy: availabilityPolicy,
+          session,
+        });
         if (!sp) {
           const err = new Error("The selected service point is not available for reservations.");
           err.statusCode = 400;
@@ -594,33 +535,20 @@ export async function createRestaurantReservation({
           throw err;
         }
 
-        const existingReservation = await Reservation.findOne({
+        await assertNoRestaurantReservationConflict({
           businessId: business.businessId,
           servicePointId,
           date,
-          status: { $in: ["confirmed", "arrived", "seated"] },
-          startTime: { $lt: endTime },
-          endTime: { $gt: startTime },
-        })
-          .session(session)
-          .lean();
-
-        if (existingReservation) {
-          const err = new Error("This place is already booked for the selected date and time.");
-          err.statusCode = 409;
-          throw err;
-        }
+          startTime,
+          endTime,
+          session,
+        });
       } else {
-        capacityServicePoints = await ServicePoint.find({
+        capacityServicePoints = await findEligibleRestaurantServicePoints({
           businessId: business.businessId,
-          isActive: { $ne: false },
-          ...(allowNonReservableServicePoint
-            ? {}
-            : { reservable: { $ne: false } }),
-        })
-          .select("servicePointId capacity")
-          .session(session)
-          .lean();
+          policy: availabilityPolicy,
+          session,
+        });
 
         const { capacity, valid } = validateReservationGuestCapacity({
           guestCount: guests,
@@ -631,6 +559,23 @@ export async function createRestaurantReservation({
             "Reservations cannot accommodate more than " + capacity + " guests.",
           );
           err.statusCode = 400;
+          throw err;
+        }
+
+        const currentlyAvailableServicePoints = await findAvailableRestaurantServicePointsForRange({
+          businessId: business.businessId,
+          servicePoints: capacityServicePoints,
+          partySize: guests,
+          date,
+          startTime,
+          endTime,
+          session,
+        });
+        if (currentlyAvailableServicePoints.length === 0) {
+          const err = new Error(
+            "No service point is currently available for this party and time.",
+          );
+          err.statusCode = 409;
           throw err;
         }
       }
@@ -650,7 +595,7 @@ export async function createRestaurantReservation({
         guestCount: guests,
         seatingPreference,
         servicePointId,
-        servicePointLabel: resolvedServicePointLabel || servicePointLabel || null,
+        servicePointLabel: resolvedServicePointLabel,
         specialRequest,
         status: initialStatus,
         source,
@@ -791,7 +736,6 @@ export async function createReservationService(data) {
     email,
     guestCount,
     servicePointId,
-    servicePointLabel,
     specialRequest,
     // Hotel-specific
     checkInDate,
@@ -808,9 +752,7 @@ export async function createReservationService(data) {
     checkInNow = false,
     staffSnapshot = null,
     initialStatus = "pending",
-    allowPastStart = false,
-    allowReservationsDisabled = false,
-    allowNonReservableServicePoint = false,
+    availabilityPolicy = RESTAURANT_AVAILABILITY_POLICIES.public,
     notificationMode = "request",
     // Business is pre-loaded by the staff controller (avoid double lookup)
     business: preloadedBusiness = null,
@@ -861,14 +803,11 @@ export async function createReservationService(data) {
     guestCount,
     seatingPreference,
     servicePointId,
-    servicePointLabel,
     specialRequest,
     source,
     initialStatus,
     staffSnapshot,
-    allowPastStart,
-    allowReservationsDisabled,
-    allowNonReservableServicePoint,
+    availabilityPolicy,
     notificationMode,
   });
 }

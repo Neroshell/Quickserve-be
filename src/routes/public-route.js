@@ -1,6 +1,6 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { getBusinessBySlug, createReservation, getPublicBusinessConfig, getReservationByToken, getReservationById } from "../controllers/publicController.js";
+import { getBusinessBySlug, createReservation, getPublicBusinessConfig, getPublicRestaurantAvailability, getReservationByToken, getReservationById } from "../controllers/publicController.js";
 import { getAvailableStayServicePoints } from "../controllers/reservationController.js";
 import { getPlans } from "../controllers/planController.js";
 import {
@@ -21,6 +21,14 @@ const reservationLimiter = rateLimit({
   message: { error: "Too many reservation requests from this IP, please try again later." },
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+});
+
+const reservationAvailabilityLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  message: { error: "Too many availability requests from this IP, please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 const arrivalLimiter = rateLimit({
@@ -125,6 +133,12 @@ router.get("/business-config", getPublicBusinessConfig);
  *         description: Reservation requested successfully
  */
 router.post("/reservations", reservationLimiter, createReservation);
+
+router.get(
+  "/reservations/restaurant-availability",
+  reservationAvailabilityLimiter,
+  getPublicRestaurantAvailability,
+);
 
 router.post(
   "/reservations/arrival/validate",

@@ -7,6 +7,11 @@ import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "
 import { dispatchRestaurantReservationEmail } from "../services/email/emailDispatchService.js";
 import { validateReservationGuestCapacity } from "../services/reservationCapacityService.js";
 import { EMAIL_JOB_NAMES } from "../queues/index.js";
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js";
+import {
+  RESTAURANT_AVAILABILITY_POLICIES,
+  getRestaurantAvailability,
+} from "../services/restaurantReservationAvailabilityService.js";
 import {
   CACHE_TTL_SECONDS,
   cacheKeys,
@@ -318,6 +323,52 @@ export async function createReservation(req, res) {
     }
     console.error("[publicController.createReservation] Error:", error);
     res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * GET /public/reservations/restaurant-availability
+ * Public policy wrapper around the canonical restaurant availability engine.
+ */
+export async function getPublicRestaurantAvailability(req, res) {
+  try {
+    const businessSlug = String(req.query.businessSlug || "").trim().toLowerCase();
+    const countryCode = String(req.query.countryCode || "").trim().toLowerCase();
+    if (!businessSlug) {
+      return res.status(400).json({ error: "businessSlug is required" });
+    }
+
+    const business = await Business.findOne({
+      slug: businessSlug,
+      ...(countryCode ? { countryCode } : {}),
+      status: { $in: SERVABLE_STATUSES },
+    }).lean();
+    if (
+      !business ||
+      resolveBusinessCapabilities(business).reservations.primaryMode !== "timeslot"
+    ) {
+      return res.status(404).json({ error: "Restaurant not found" });
+    }
+
+    const availability = await getRestaurantAvailability({
+      businessId: business.businessId,
+      business,
+      date: req.query.date,
+      month: req.query.month,
+      partySize: req.query.partySize,
+      durationMinutes: req.query.durationMinutes,
+      startTime: req.query.startTime || undefined,
+      servicePointId: req.query.servicePointId || undefined,
+      policy: RESTAURANT_AVAILABILITY_POLICIES.public,
+    });
+
+    return res.json(availability);
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    console.error("[publicController.getPublicRestaurantAvailability] Error:", error);
+    return res.status(500).json({ error: "Server error" });
   }
 }
 

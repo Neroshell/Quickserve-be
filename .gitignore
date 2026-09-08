@@ -78,6 +78,7 @@ test/*
 !test/inventoryLinkedRecipes.test.js
 !test/aiAnalystFeedbackInventoryV5.test.js
 !test/aiAnalystRuntimeV5.test.js
+!test/restaurantReservationAvailability.test.js
 test/managerPermissions.test.js
 !test/coOwnerAccess.test.js
 !test/billingHardening.test.js

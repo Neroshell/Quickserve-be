@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import mongoose from "mongoose";
 import {
   getMaximumConfiguredServicePointCapacity,
   getReservationGuestCapacity,
@@ -108,60 +109,60 @@ function createBusinessForDate(date) {
   };
 }
 
-test("public reservations reject guest counts above the selected service point capacity", async () => {
-  const originalBusinessFindOne = Business.findOne;
-  const originalServicePointFindOne = ServicePoint.findOne;
+test("public reservations reject guest counts above the selected service point capacity", async (t) => {
   const request = createRestaurantReservationRequest({
     servicePointId: "sp_small",
     servicePointLabel: "Small Table",
   });
   const business = createBusinessForDate(request.body.date);
 
-  Business.findOne = () => ({ lean: async () => business });
-  ServicePoint.findOne = () => ({
+  t.mock.method(Business, "findOne", () => ({ lean: async () => business }));
+  t.mock.method(ServicePoint, "findOneAndUpdate", () => ({
+    select() { return this; },
+    session() { return this; },
     lean: async () => ({
       servicePointId: "sp_small",
       businessId: business.businessId,
+      servicePointType: "table",
+      isActive: true,
+      reservable: true,
       capacity: 2,
     }),
-  });
+  }));
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  }));
 
-  try {
-    const response = createResponse();
-    await createReservation(request, response);
+  const response = createResponse();
+  await createReservation(request, response);
 
-    assert.equal(response.statusCode, 400);
-    assert.match(response.body.error, /maximum of 2 guests/i);
-  } finally {
-    Business.findOne = originalBusinessFindOne;
-    ServicePoint.findOne = originalServicePointFindOne;
-  }
+  assert.equal(response.statusCode, 400);
+  assert.match(response.body.error, /maximum of 2 guests/i);
 });
 
-test("no-preference reservations reject counts above every configured capacity", async () => {
-  const originalBusinessFindOne = Business.findOne;
-  const originalServicePointFind = ServicePoint.find;
+test("no-preference reservations reject counts above every configured capacity", async (t) => {
   const request = createRestaurantReservationRequest({ guestCount: 5 });
   const business = createBusinessForDate(request.body.date);
 
-  Business.findOne = () => ({ lean: async () => business });
-  ServicePoint.find = () => ({
+  t.mock.method(Business, "findOne", () => ({ lean: async () => business }));
+  t.mock.method(ServicePoint, "find", () => ({
     select: () => ({
+      session() { return this; },
       lean: async () => [
-        { servicePointId: "sp_small", capacity: 2 },
-        { servicePointId: "sp_large", capacity: 4 },
+        { businessId: business.businessId, servicePointId: "sp_small", servicePointType: "table", isActive: true, reservable: true, capacity: 2 },
+        { businessId: business.businessId, servicePointId: "sp_large", servicePointType: "table", isActive: true, reservable: true, capacity: 4 },
       ],
     }),
-  });
+  }));
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  }));
 
-  try {
-    const response = createResponse();
-    await createReservation(request, response);
+  const response = createResponse();
+  await createReservation(request, response);
 
-    assert.equal(response.statusCode, 400);
-    assert.match(response.body.error, /more than 4 guests/i);
-  } finally {
-    Business.findOne = originalBusinessFindOne;
-    ServicePoint.find = originalServicePointFind;
-  }
+  assert.equal(response.statusCode, 400);
+  assert.match(response.body.error, /more than 4 guests/i);
 });
