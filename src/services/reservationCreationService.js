@@ -5,7 +5,11 @@ import Business from "../models/Business.js";
 import Reservation, { timeStringToMinutes, MIN_DURATION_MINUTES } from "../models/Reservation.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "./reservationPricingService.js";
-import { sendReservationRequestEmail, sendReservationRequestReceivedEmail } from "../utils/emailService.js";
+import {
+  sendReservationConfirmedEmail,
+  sendReservationRequestEmail,
+  sendReservationRequestReceivedEmail,
+} from "../utils/emailService.js";
 import { dispatchRestaurantReservationEmail } from "./email/emailDispatchService.js";
 import { validateReservationGuestCapacity } from "./reservationCapacityService.js";
 import { EMAIL_JOB_NAMES, enqueueReservationPaymentExpiry } from "../queues/index.js";
@@ -428,6 +432,7 @@ export async function createHotelReservation({
  */
 export async function createRestaurantReservation({
   businessSlug,
+  business: preloadedBusiness = null,
   customerName,
   phone,
   email,
@@ -441,7 +446,12 @@ export async function createRestaurantReservation({
   servicePointLabel,
   specialRequest,
   source = "public_hub",
-  overrides = {},
+  initialStatus = "pending",
+  staffSnapshot = null,
+  allowPastStart = false,
+  allowReservationsDisabled = false,
+  allowNonReservableServicePoint = false,
+  notificationMode = "request",
 }) {
   if (!businessSlug || !customerName || !phone || !email || !date || !startTime || !endTime || !guestCount) {
     const err = new Error("Missing required fields");
@@ -487,23 +497,7 @@ export async function createRestaurantReservation({
     throw err;
   }
 
-  const [year, month, day] = date.split("-").map(Number);
-  const [hours, minutes] = startTime.split(":").map(Number);
-
-  if (!year || isNaN(month) || isNaN(day) || isNaN(hours) || isNaN(minutes)) {
-    const err = new Error("Invalid date or time format");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const reservationDate = new Date(year, month - 1, day, hours, minutes);
-  if (reservationDate < new Date()) {
-    const err = new Error("Reservation cannot be in the past");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const business = await Business.findOne({
+  const business = preloadedBusiness || await Business.findOne({
     slug: businessSlug.toLowerCase(),
     status: { $in: ["active", "onboarding", "draft"] },
   }).lean();
@@ -513,7 +507,30 @@ export async function createRestaurantReservation({
     throw err;
   }
 
-  if (business.settings?.reservationsEnabled === false) {
+  const [year, month, day] = date.split("-").map(Number);
+  const [hours, minutes] = startTime.split(":").map(Number);
+
+  if (!year || isNaN(month) || isNaN(day) || isNaN(hours) || isNaN(minutes)) {
+    const err = new Error("Invalid date or time format");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const reservationDate = DateTime.fromISO(`${date}T${startTime}`, {
+    zone: business.timezone || "UTC",
+  });
+  if (!reservationDate.isValid) {
+    const err = new Error("Invalid date or time format");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!allowPastStart && reservationDate < DateTime.now().setZone(business.timezone || "UTC")) {
+    const err = new Error("Reservation cannot be in the past");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!allowReservationsDisabled && business.settings?.reservationsEnabled === false) {
     const err = new Error("Reservations are currently disabled for this business.");
     err.statusCode = 403;
     throw err;
@@ -532,7 +549,15 @@ export async function createRestaurantReservation({
     throw err;
   }
 
+  const allowedInitialStatuses = new Set(["pending", "confirmed", "seated"]);
+  if (!allowedInitialStatuses.has(initialStatus)) {
+    const err = new Error("Invalid initial restaurant reservation status");
+    err.statusCode = 400;
+    throw err;
+  }
+
   let reservation;
+  let resolvedServicePointLabel = null;
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
@@ -542,7 +567,9 @@ export async function createRestaurantReservation({
           servicePointId,
           businessId: business.businessId,
           isActive: { $ne: false },
-          reservable: { $ne: false },
+          ...(allowNonReservableServicePoint
+            ? {}
+            : { reservable: { $ne: false } }),
         })
           .session(session)
           .lean();
@@ -553,6 +580,7 @@ export async function createRestaurantReservation({
         }
 
         capacityServicePoints = [sp];
+        resolvedServicePointLabel = sp.label;
         const { capacity, valid } = validateReservationGuestCapacity({
           guestCount: guests,
           servicePoints: capacityServicePoints,
@@ -570,7 +598,7 @@ export async function createRestaurantReservation({
           businessId: business.businessId,
           servicePointId,
           date,
-          status: { $in: ["confirmed", "arrived"] },
+          status: { $in: ["confirmed", "arrived", "seated"] },
           startTime: { $lt: endTime },
           endTime: { $gt: startTime },
         })
@@ -586,7 +614,9 @@ export async function createRestaurantReservation({
         capacityServicePoints = await ServicePoint.find({
           businessId: business.businessId,
           isActive: { $ne: false },
-          reservable: { $ne: false },
+          ...(allowNonReservableServicePoint
+            ? {}
+            : { reservable: { $ne: false } }),
         })
           .select("servicePointId capacity")
           .session(session)
@@ -605,6 +635,7 @@ export async function createRestaurantReservation({
         }
       }
 
+      const now = new Date();
       reservation = new Reservation({
         businessId: business.businessId,
         businessSlug: business.slug,
@@ -619,11 +650,24 @@ export async function createRestaurantReservation({
         guestCount: guests,
         seatingPreference,
         servicePointId,
-        servicePointLabel,
+        servicePointLabel: resolvedServicePointLabel || servicePointLabel || null,
         specialRequest,
-        status: "pending",
+        status: initialStatus,
         source,
-        ...overrides,
+        ...(staffSnapshot ? { createdBy: staffSnapshot } : {}),
+        ...(["confirmed", "seated"].includes(initialStatus)
+          ? {
+            confirmedAt: now,
+            ...(staffSnapshot ? { confirmedBy: staffSnapshot } : {}),
+          }
+          : {}),
+        ...(initialStatus === "seated"
+          ? {
+            arrivedAt: now,
+            arrivalSource: "staff",
+            seatedAt: now,
+          }
+          : {}),
       });
 
       await reservation.save({ session });
@@ -657,7 +701,7 @@ export async function createRestaurantReservation({
   const deliveries = [];
 
   const targetEmail = business.contactEmail || business.ownerEmail;
-  if (targetEmail) {
+  if (notificationMode === "request" && targetEmail) {
     deliveries.push(
       dispatchRestaurantReservationEmail({
         jobName: EMAIL_JOB_NAMES.RESERVATION_REQUEST_OWNER,
@@ -675,7 +719,7 @@ export async function createRestaurantReservation({
     );
   }
 
-  if (reservationObj.email) {
+  if (notificationMode === "request" && reservationObj.email) {
     deliveries.push(
       dispatchRestaurantReservationEmail({
         jobName: EMAIL_JOB_NAMES.RESERVATION_REQUEST_GUEST,
@@ -693,11 +737,33 @@ export async function createRestaurantReservation({
           }),
       }),
     );
+  } else if (notificationMode === "confirmed" && reservationObj.email) {
+    deliveries.push(
+      dispatchRestaurantReservationEmail({
+        jobName: EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CONFIRMED,
+        businessId: reservation.businessId,
+        reservationId: reservation._id,
+        deliveryVersion: reservation.confirmedAt || deliveryVersion,
+        waitForDirect: false,
+        directSend: () =>
+          sendReservationConfirmedEmail({
+            to: reservationObj.email,
+            businessName: businessDisplayName,
+            businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
+            primaryColor: business.branding?.primaryColor,
+            reservation: reservationObj,
+          }),
+      }),
+    );
   }
   await Promise.all(deliveries);
 
   return {
-    message: "Reservation request received.",
+    message: initialStatus === "seated"
+      ? "Walk-in guest seated."
+      : initialStatus === "confirmed"
+        ? "Reservation created and confirmed."
+        : "Reservation request received.",
     reservationId: reservation._id,
     reservation,
   };
@@ -741,8 +807,11 @@ export async function createReservationService(data) {
     paymentMethod = null,
     checkInNow = false,
     staffSnapshot = null,
-    // Legacy overrides path (restaurant / old callers) — kept for compat
-    overrides = {},
+    initialStatus = "pending",
+    allowPastStart = false,
+    allowReservationsDisabled = false,
+    allowNonReservableServicePoint = false,
+    notificationMode = "request",
     // Business is pre-loaded by the staff controller (avoid double lookup)
     business: preloadedBusiness = null,
   } = data;
@@ -781,6 +850,7 @@ export async function createReservationService(data) {
   // ── Restaurant path ───────────────────────────────────────────────────────
   return createRestaurantReservation({
     businessSlug,
+    business: preloadedBusiness,
     customerName,
     phone,
     email,
@@ -794,6 +864,11 @@ export async function createReservationService(data) {
     servicePointLabel,
     specialRequest,
     source,
-    overrides,
+    initialStatus,
+    staffSnapshot,
+    allowPastStart,
+    allowReservationsDisabled,
+    allowNonReservableServicePoint,
+    notificationMode,
   });
 }

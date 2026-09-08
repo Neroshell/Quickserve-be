@@ -132,7 +132,7 @@ const ReservationSchema = new mongoose.Schema(
       type: String,
       // Canonical booking-origin values. "public_hub" and "dashboard" are legacy
       // values preserved for backward compatibility. New code should use
-      // "online" or "walk_in". Resolves to the canonical origin via sourceLabel().
+      // "online", "dashboard", or "walk_in". Resolves to the canonical origin via sourceLabel().
       enum: ["public_hub", "dashboard", "online", "walk_in"],
       default: "public_hub",
     },
@@ -273,6 +273,8 @@ const ReservationSchema = new mongoose.Schema(
     cancellationTokenExpiresAt: { type: Date, default: null },
     cancellationTokenUsedAt: { type: Date, default: null },
     arrivedAt: { type: Date, default: null },
+    seatedAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
     arrivalSource: {
       type: String,
       enum: ["email", "staff"],
@@ -345,6 +347,7 @@ ReservationSchema.index(
   },
 );
 ReservationSchema.index({ businessId: 1, status: 1, arrivedAt: 1 });
+ReservationSchema.index({ businessId: 1, status: 1, seatedAt: 1 });
 ReservationSchema.index({ businessId: 1, cancelledAt: 1 });
 ReservationSchema.index({ businessId: 1, checkedInAt: 1 });
 ReservationSchema.index({ businessId: 1, checkedOutAt: 1 });

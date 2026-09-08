@@ -261,8 +261,39 @@ import { createReservationService } from "../services/reservationCreationService
  */
 export async function createReservation(req, res) {
   try {
+    const {
+      isHotelBooking,
+      businessSlug,
+      customerName,
+      phone,
+      email,
+      guestCount,
+      servicePointId,
+      specialRequest,
+      checkInDate,
+      checkOutDate,
+      date,
+      startTime,
+      endTime,
+      durationMinutes,
+      seatingPreference,
+    } = req.body || {};
     const result = await createReservationService({
-      ...req.body,
+      isHotelBooking,
+      businessSlug,
+      customerName,
+      phone,
+      email,
+      guestCount,
+      servicePointId,
+      specialRequest,
+      checkInDate,
+      checkOutDate,
+      date,
+      startTime,
+      endTime,
+      durationMinutes,
+      seatingPreference,
       source: "online",
     });
 

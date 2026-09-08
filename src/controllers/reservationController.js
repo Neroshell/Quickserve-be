@@ -22,6 +22,7 @@ import { scheduleReservationArrivalReminder } from "../services/reservationArriv
 import { createReservationService, createHotelReservation } from "../services/reservationCreationService.js";
 import { HOTEL_PAYMENT_WINDOW_MINUTES, getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
 import { resolveBusinessDay } from "../utils/businessDate.js";
+import { buildRestaurantTodayOperations } from "../services/restaurantReservationOperationsService.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 const ARCHIVABLE_RESERVATION_STATUSES = new Set([
@@ -48,9 +49,8 @@ const STAY_STATUS_TRANSITIONS = Object.freeze({
 const TIMESLOT_STATUS_TRANSITIONS = Object.freeze({
   pending: ["confirmed", "declined", "cancelled"],
   confirmed: ["arrived", "no_show", "cancelled"],
-  arrived: ["cancelled"],
-  // seated and completed are terminal legacy states; no new transitions lead into them.
-  seated: [],
+  arrived: ["seated", "cancelled"],
+  seated: ["completed"],
   completed: [],
   cancelled: [],
   declined: [],
@@ -298,6 +298,51 @@ export async function getReservations(req, res) {
             totalRooms
           }
         }
+      });
+    }
+
+    if (view === "today" && !isHotel) {
+      const currentBusinessDay = resolveBusinessDay(business);
+      const requestedDate = typeof date === "string" ? date : "";
+      const parsedRequestedDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
+        ? new Date(`${requestedDate}T00:00:00.000Z`)
+        : null;
+      const requestedDateIsValid = Boolean(
+        parsedRequestedDate &&
+        !Number.isNaN(parsedRequestedDate.getTime()) &&
+        parsedRequestedDate.toISOString().slice(0, 10) === requestedDate,
+      );
+      const operationalDate = requestedDateIsValid
+        ? requestedDate
+        : currentBusinessDay.businessDay;
+
+      const [restaurantReservations, restaurantServicePoints] = await Promise.all([
+        Reservation.find({
+          ...baseQuery,
+          date: operationalDate,
+        })
+          .sort({ startTime: 1, createdAt: 1 })
+          .lean(),
+        ServicePoint.find({
+          businessId,
+          isActive: { $ne: false },
+          servicePointType: { $ne: "room" },
+        })
+          .select("servicePointId label servicePointType capacity isActive reservable")
+          .lean(),
+      ]);
+
+      const operations = buildRestaurantTodayOperations({
+        reservations: restaurantReservations.map(toOwnerReservationResponse),
+        servicePoints: restaurantServicePoints,
+        businessDate: operationalDate,
+        currentBusinessDate: currentBusinessDay.businessDay,
+        currentTime: currentBusinessDay.generatedAt?.slice(11, 16) || "00:00",
+      });
+
+      return res.json({
+        businessDate: operationalDate,
+        ...operations,
       });
     }
 
@@ -602,7 +647,7 @@ export async function updateReservationStatus(req, res) {
     }
 
     // Basic status validation
-    const validStatuses = ["pending", "confirmed", "arrived", "cancelled", "declined", "no_show",
+    const validStatuses = ["pending", "confirmed", "arrived", "seated", "completed", "cancelled", "declined", "no_show",
       "accepted_awaiting_payment", "expired", "checked_out"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
@@ -662,7 +707,7 @@ export async function updateReservationStatus(req, res) {
             businessId: reservation.businessId,
             servicePointId: reservation.servicePointId,
             date: reservation.date,
-            status: { $in: ["confirmed", "arrived"] },
+            status: { $in: ["confirmed", "arrived", "seated"] },
             startTime: { $lt: reservation.endTime },
             endTime: { $gt: reservation.startTime },
             _id: { $ne: reservation._id }
@@ -733,6 +778,12 @@ export async function updateReservationStatus(req, res) {
       if (status === "arrived" && !isHotel && !reservation.arrivedAt) {
         fields.arrivedAt = now;
         fields.arrivalSource = "staff";
+      }
+      if (status === "seated" && !isHotel && !reservation.seatedAt) {
+        fields.seatedAt = now;
+      }
+      if (status === "completed" && !isHotel && !reservation.completedAt) {
+        fields.completedAt = now;
       }
 
       reservation = await Reservation.findOneAndUpdate(
@@ -1328,14 +1379,12 @@ export async function resendReservationPaymentLink(req, res) {
 
 /**
  * POST /owner/reservations
- * Staff-created hotel walk-in booking from the dashboard.
+ * Staff-created hotel or restaurant reservation from the dashboard.
  *
  * Product rules (enforced server-side):
- * - source is always walk_in — never trusted from client
- * - paymentChannel is always offline
- * - paidVia must be "cash" or "pos_card"
- * - paymentStatus is always "paid" — no unpaid walk-in
- * - status is "confirmed" unless checkInNow=true AND checkInDate is business-local today
+ * - source and initial status are derived server-side, never trusted from client
+ * - hotel bookings preserve the existing offline-payment workflow
+ * - restaurant bookings are confirmed, or immediately seated when seatNow=true
  * - createdBy is always derived from the authenticated session
  * - businessId is always from the authenticated session
  */
@@ -1352,12 +1401,8 @@ export async function createStaffReservation(req, res) {
       return res.status(404).json({ error: "Business not found" });
     }
 
-    // Capabilities check: business must have lodging capability
-    const { resolveBusinessCapabilities } = await import("../services/businessCapabilityService.js");
-    const capabilities = await resolveBusinessCapabilities(business);
-    if (!capabilities?.visibleModules?.includes("lodging")) {
-      return res.status(403).json({ error: "This business does not have lodging capability." });
-    }
+    const capabilities = resolveBusinessCapabilities(business);
+    const reservationMode = capabilities?.reservations?.primaryMode;
 
     // Extract ONLY safe, allowlisted fields from the request body.
     // We deliberately ignore any attempt by the client to send:
@@ -1373,26 +1418,70 @@ export async function createStaffReservation(req, res) {
       specialRequest,
       paymentMethod, // "cash" | "pos_card"
       checkInNow,    // boolean — only honoured when check-in date = business-local today
+      date,
+      startTime,
+      endTime,
+      durationMinutes,
+      seatingPreference,
+      seatNow,
     } = req.body;
 
     // Phase E: Build staff attribution server-side
     const staffSnapshot = buildReservationStaffSnapshot(sessionUser);
 
-    const result = await createHotelReservation({
-      business,
-      customerName,
-      phone,
-      email,
-      checkInDate,
-      checkOutDate,
-      guestCount,
-      servicePointId,
-      specialRequest,
-      source: "walk_in",       // Phase D: always walk_in for staff bookings
-      paymentMethod,            // validated inside createHotelReservation
-      checkInNow: Boolean(checkInNow),
-      staffSnapshot,            // Phase E: createdBy / checkedInBy attribution
-    });
+    let result;
+    if (reservationMode === "stay") {
+      result = await createHotelReservation({
+        business,
+        customerName,
+        phone,
+        email,
+        checkInDate,
+        checkOutDate,
+        guestCount,
+        servicePointId,
+        specialRequest,
+        source: "walk_in",
+        paymentMethod,
+        checkInNow: Boolean(checkInNow),
+        staffSnapshot,
+      });
+    } else {
+      const shouldSeatNow = seatNow === true;
+      if (shouldSeatNow && !servicePointId) {
+        return res.status(400).json({
+          error: "A service point is required to seat a walk-in guest.",
+        });
+      }
+
+      result = await createReservationService({
+        isHotelBooking: false,
+        business,
+        businessSlug: business.slug,
+        customerName,
+        phone,
+        email,
+        date,
+        startTime,
+        endTime,
+        durationMinutes,
+        guestCount,
+        seatingPreference,
+        servicePointId,
+        specialRequest,
+        source: shouldSeatNow ? "walk_in" : "dashboard",
+        initialStatus: shouldSeatNow ? "seated" : "confirmed",
+        staffSnapshot,
+        allowPastStart: shouldSeatNow,
+        allowReservationsDisabled: true,
+        allowNonReservableServicePoint: shouldSeatNow,
+        notificationMode: shouldSeatNow ? "none" : "confirmed",
+      });
+
+      if (!shouldSeatNow) {
+        await tryScheduleArrivalReminder(req, result.reservation, business);
+      }
+    }
 
     return res.status(201).json(result);
   } catch (error) {

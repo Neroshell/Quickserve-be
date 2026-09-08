@@ -9,6 +9,7 @@ import {
     updateReservationStatus,
 } from "../src/controllers/reservationController.js"
 import { applyReservationPaymentConfirmation } from "../src/services/reservationPaymentConfirmationService.js"
+import { buildRestaurantTodayOperations } from "../src/services/restaurantReservationOperationsService.js"
 
 function response() {
     return {
@@ -508,7 +509,9 @@ test("restaurant: valid forward transitions are allowed", () => {
         { from: "confirmed", to: "arrived" },
         { from: "confirmed", to: "no_show" },
         { from: "confirmed", to: "cancelled" },
+        { from: "arrived", to: "seated" },
         { from: "arrived", to: "cancelled" },
+        { from: "seated", to: "completed" },
     ]
     for (const { from, to } of allowed) {
         assert.equal(
@@ -525,6 +528,8 @@ test("restaurant: invalid transitions are rejected", () => {
         { from: "confirmed", to: "completed" },
         { from: "arrived", to: "no_show" },
         { from: "arrived", to: "confirmed" },
+        { from: "seated", to: "arrived" },
+        { from: "completed", to: "seated" },
         { from: "no_show", to: "arrived" },
         { from: "cancelled", to: "confirmed" },
         { from: "declined", to: "confirmed" },
@@ -610,3 +615,109 @@ test("restaurant: pending → declined is allowed and hotel transitions are unaf
     )
 })
 
+test("restaurant: seated and completed transitions persist their event timestamps", async (t) => {
+    mockRestaurantBusiness(t)
+    let currentReservation = restaurantReservation({
+        status: "arrived",
+        arrivedAt: new Date(),
+    })
+    const updates = []
+    t.mock.method(Reservation, "findOne", async () => currentReservation)
+    t.mock.method(Reservation, "findOneAndUpdate", async (_filter, update) => {
+        updates.push(update.$set)
+        currentReservation = restaurantReservation({
+            ...currentReservation,
+            ...update.$set,
+        })
+        return currentReservation
+    })
+
+    for (const status of ["seated", "completed"]) {
+        const res = response()
+        await updateReservationStatus(
+            {
+                params: { id: currentReservation._id },
+                body: { status },
+                session: { user: sessionUser({ businessId: "restaurant_1" }) },
+                app: { locals: { publishEvent: async () => {} } },
+            },
+            res
+        )
+        assert.equal(res.statusCode, 200)
+    }
+
+    assert.ok(updates[0].seatedAt instanceof Date)
+    assert.ok(updates[1].completedAt instanceof Date)
+})
+
+test("restaurant: Today operations derive attention and live table metrics", () => {
+    const reservations = [
+        { _id: "late", status: "confirmed", startTime: "17:30", guestCount: 2, servicePointId: "sp_1" },
+        { _id: "future", status: "confirmed", startTime: "19:00", guestCount: 2, servicePointId: "sp_2" },
+        { _id: "pending", status: "pending", startTime: "20:00", guestCount: 5, servicePointId: "sp_3" },
+        { _id: "arrived", status: "arrived", startTime: "17:45", guestCount: 3 },
+        { _id: "seated", status: "seated", startTime: "17:00", guestCount: 4, servicePointId: "sp_1" },
+        { _id: "completed", status: "completed", startTime: "16:00", guestCount: 2, servicePointId: "sp_4" },
+        { _id: "cancelled", status: "cancelled", startTime: "18:30", guestCount: 2, servicePointId: "sp_4" },
+    ]
+    const servicePoints = [
+        { servicePointId: "sp_1", servicePointType: "table", isActive: true },
+        { servicePointId: "sp_2", servicePointType: "table", isActive: true },
+        { servicePointId: "sp_3", servicePointType: "booth", isActive: true },
+        { servicePointId: "sp_4", servicePointType: "table", isActive: true, reservable: false },
+        { servicePointId: "sp_inactive", servicePointType: "table", isActive: false },
+        { servicePointId: "sp_room", servicePointType: "room", isActive: true },
+    ]
+
+    const result = buildRestaurantTodayOperations({
+        reservations,
+        servicePoints,
+        businessDate: "2026-09-07",
+        currentBusinessDate: "2026-09-07",
+        currentTime: "18:00",
+    })
+
+    assert.deepEqual(result.stats.expectedToday, { total: 6, upcoming: 2 })
+    assert.deepEqual(result.stats.arrivedToday, { total: 3, percent: 50 })
+    assert.deepEqual(result.stats.seatedNow, { reservations: 1, guests: 4 })
+    assert.deepEqual(result.stats.tableAvailability, {
+        available: 3,
+        total: 4,
+        occupied: 1,
+        reservedLater: 2,
+    })
+    assert.equal(result.stats.nextBusyTime, "19:00")
+    assert.deepEqual(
+        result.operations.needsAttention.map(({ _id, attentionReason, minutesLate }) => [
+            _id,
+            attentionReason,
+            minutesLate,
+        ]),
+        [
+            ["late", "late", 30],
+            ["arrived", "awaiting_seating", 0],
+            ["pending", "pending_confirmation", 0],
+        ]
+    )
+    assert.equal(result.operations.reservations.some(({ _id }) => _id === "cancelled"), false)
+})
+
+test("restaurant: future operational dates never classify guests as late", () => {
+    const result = buildRestaurantTodayOperations({
+        reservations: [
+            { status: "confirmed", startTime: "17:30" },
+            { status: "confirmed", startTime: "19:00" },
+            { status: "pending", startTime: "20:00" },
+        ],
+        servicePoints: [],
+        businessDate: "2026-09-08",
+        currentBusinessDate: "2026-09-07",
+        currentTime: "18:00",
+    })
+
+    assert.equal(result.stats.expectedToday.upcoming, 3)
+    assert.deepEqual(
+        result.operations.needsAttention.map(({ attentionReason }) => attentionReason),
+        ["pending_confirmation"]
+    )
+})
