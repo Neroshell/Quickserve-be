@@ -76,6 +76,7 @@ test/*
 !test/inventoryLifecycle.test.js
 !test/inventoryCoexistence.test.js
 !test/inventoryLinkedRecipes.test.js
+!test/uploadRoute.test.js
 !test/aiAnalystFeedbackInventoryV5.test.js
 !test/aiAnalystRuntimeV5.test.js
 !test/restaurantReservationAvailability.test.js

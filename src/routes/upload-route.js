@@ -17,9 +17,13 @@ const router = express.Router()
 router.use(requireAuth)
 
 // Memory storage — no files written to disk
+export const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 }, // 5MB cap
+  // Multer emits LIMIT_FILE_SIZE when the byte count reaches this boundary,
+  // so allow one parser byte beyond the public maximum and enforce 5MB below.
+  limits: { fileSize: MAX_IMAGE_UPLOAD_BYTES + 1 },
   fileFilter: (req, file, cb) => {
     const allowedMimes = ["image/jpeg", "image/png", "image/webp"]
     if (!allowedMimes.includes(file.mimetype)) {
@@ -28,6 +32,25 @@ const upload = multer({
     cb(null, true)
   },
 })
+
+export function uploadSingleImage(req, res, next) {
+  upload.single("image")(req, res, (error) => {
+    if (!error) {
+      if (req.file?.size > MAX_IMAGE_UPLOAD_BYTES) {
+        return res.status(413).json({ error: "Image must be 5MB or smaller." })
+      }
+      return next()
+    }
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "Image must be 5MB or smaller." })
+    }
+    if (error?.message?.startsWith("Invalid file type")) {
+      return res.status(415).json({ error: error.message })
+    }
+    console.error("[upload/image-middleware]", error)
+    return res.status(400).json({ error: "Image upload could not be processed." })
+  })
+}
 
 /**
  * @openapi
@@ -66,7 +89,7 @@ const upload = multer({
 router.post(
   "/image",
   requireAnyPermission(PERMISSIONS.MENU_MANAGE, PERMISSIONS.SERVICE_POINTS_MANAGE),
-  upload.single("image"),
+  uploadSingleImage,
   async (req, res) => {
   try {
     if (!req.file) {
@@ -115,7 +138,7 @@ router.post(
 router.post(
   "/business-logo",
   requireManagementArea(MANAGEMENT_ACCESS_AREAS.BRANDING),
-  upload.single("image"),
+  uploadSingleImage,
   async (req, res) => {
   try {
     // Always the authenticated user's own business — never a businessId from the body.
@@ -193,7 +216,7 @@ router.post(
 router.post(
   "/menu-item",
   requirePermission(PERMISSIONS.MENU_MANAGE),
-  upload.single("image"),
+  uploadSingleImage,
   async (req, res) => {
   try {
     // Scope to the authenticated user's business so one tenant can't overwrite
@@ -212,29 +235,44 @@ router.post(
       return res.status(400).json({ error: "Image file is required" })
     }
 
-    const menuItem = await MenuItem.findOne({ _id: menuItemId, businessId })
+    const menuItem = await MenuItem.findOne({ _id: menuItemId, businessId, archivedAt: null })
     if (!menuItem) {
       return res.status(404).json({ error: "Menu item not found" })
     }
 
-    // Delete old image from Cloudinary if it exists
-    if (menuItem.imagePublicId) {
-      await deleteFromCloudinary(menuItem.imagePublicId)
-    }
-
-    // Upload new image
+    const previousPublicId = menuItem.imagePublicId || null
     const { secure_url, public_id } = await uploadToCloudinary(
       req.file.buffer,
       "quickserve/menu-items",
       req.file.mimetype
     )
 
-    // Persist to database
-    menuItem.imageUrl = secure_url
-    menuItem.imagePublicId = public_id
-    await menuItem.save()
+    try {
+      menuItem.imageUrl = secure_url
+      menuItem.imagePublicId = public_id
+      await menuItem.save()
+    } catch (saveError) {
+      try {
+        await deleteFromCloudinary(public_id)
+      } catch (cleanupError) {
+        console.error("[upload/menu-item] failed to clean up replacement image", cleanupError)
+      }
+      throw saveError
+    }
 
-    await invalidateMenuItems(businessId)
+    try {
+      await invalidateMenuItems(businessId)
+    } catch (cacheError) {
+      console.error("[upload/menu-item] cache invalidation failed", cacheError)
+    }
+
+    if (previousPublicId && previousPublicId !== public_id) {
+      try {
+        await deleteFromCloudinary(previousPublicId)
+      } catch (cleanupError) {
+        console.error("[upload/menu-item] previous image cleanup failed", cleanupError)
+      }
+    }
 
     return res.json({ imageUrl: secure_url, publicId: public_id })
   } catch (err) {

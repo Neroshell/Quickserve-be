@@ -76,7 +76,33 @@ function buildCursorConstraint(cursor, targetRank, direction) {
     return { $or: constraints }
 }
 
-function buildBaseFilters({ businessId, dateRangeBounds, search, module, filterBy }) {
+const PAYMENT_STATUSES = new Set([
+    "paid",
+    "pending",
+    "unpaid",
+    "failed",
+    "partially_refunded",
+    "refunded",
+])
+const PAYMENT_CHANNELS = new Set(["online", "offline"])
+const PAYMENT_METHODS = new Set(["online_card", "pos_card", "cash"])
+
+function appendConstraint(filter, constraint) {
+    filter.$and = filter.$and || []
+    filter.$and.push(constraint)
+}
+
+export function buildOwnerTransactionFilters({
+    businessId,
+    dateRangeBounds,
+    search,
+    module,
+    filterBy,
+    paymentStatus,
+    paymentChannel,
+    paidVia,
+    servicePoint,
+}) {
     const orderFilter = {
         businessId,
         status: { $in: [...TRANSACTION_ORDER_STATUSES] },
@@ -98,6 +124,8 @@ function buildBaseFilters({ businessId, dateRangeBounds, search, module, filterB
             { orderId: { $regex: searchRegex } },
             { servicePointLabel: { $regex: searchRegex } },
             { displayLabel: { $regex: searchRegex } },
+            { receiptEmail: { $regex: searchRegex } },
+            { crmEmail: { $regex: searchRegex } },
         ]
         reservationFilter.$or = [
             { publicReference: { $regex: searchRegex } },
@@ -135,6 +163,30 @@ function buildBaseFilters({ businessId, dateRangeBounds, search, module, filterB
         }
     }
 
+    if (PAYMENT_STATUSES.has(paymentStatus)) {
+        orderFilter.paymentStatus = paymentStatus
+        reservationFilter.paymentStatus = paymentStatus
+    }
+    if (PAYMENT_CHANNELS.has(paymentChannel)) {
+        orderFilter.paymentChannel = paymentChannel
+        reservationFilter.paymentChannel = paymentChannel
+    }
+    if (PAYMENT_METHODS.has(paidVia)) {
+        orderFilter.paidVia = paidVia
+        reservationFilter.paidVia = paidVia
+    }
+    const normalizedServicePoint =
+        typeof servicePoint === "string" ? servicePoint.trim() : ""
+    if (normalizedServicePoint) {
+        appendConstraint(orderFilter, {
+            $or: [
+                { displayLabel: normalizedServicePoint },
+                { servicePointLabel: normalizedServicePoint },
+            ],
+        })
+        reservationFilter.servicePointLabel = normalizedServicePoint
+    }
+
     if (module === "lodging") return { orderFilter: null, reservationFilter }
     if (module === "foodService") return { orderFilter, reservationFilter: null }
     
@@ -144,7 +196,7 @@ function buildBaseFilters({ businessId, dateRangeBounds, search, module, filterB
 export async function aggregateTransactionSummary({ businessId, dateRangeBounds, search, module }) {
     // We explicitly bypass API'status' querying (filterBy="all") so the summary cards
     // can calculate the total revenue accurate pool regardless of the active visual "filter".
-    const { orderFilter, reservationFilter } = buildBaseFilters({
+    const { orderFilter, reservationFilter } = buildOwnerTransactionFilters({
         businessId,
         dateRangeBounds,
         search,
@@ -233,6 +285,10 @@ export async function readOwnerTransactionsPage({
     search = "",
     module = "overview",
     filterBy = "all",
+    paymentStatus = "all",
+    paymentChannel = "all",
+    paidVia = "all",
+    servicePoint = "",
     limit = 25,
     cursor = null,
     direction = "next",
@@ -254,7 +310,17 @@ export async function readOwnerTransactionsPage({
         }
     }
 
-    const { orderFilter, reservationFilter } = buildBaseFilters({ businessId, dateRangeBounds, search, module, filterBy })
+    const { orderFilter, reservationFilter } = buildOwnerTransactionFilters({
+        businessId,
+        dateRangeBounds,
+        search,
+        module,
+        filterBy,
+        paymentStatus,
+        paymentChannel,
+        paidVia,
+        servicePoint,
+    })
 
     const orderQuery = orderFilter ? { ...orderFilter } : null
     const resQuery = reservationFilter ? { ...reservationFilter } : null

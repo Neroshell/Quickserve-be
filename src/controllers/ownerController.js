@@ -564,6 +564,10 @@ export async function ownerTransactions(req, res) {
             direction = "next",
             module: txnModule = "overview",
             filterBy = "all",
+            paymentStatus = "all",
+            paymentChannel = "all",
+            paidVia = "all",
+            servicePoint = "",
         } = req.query
         const businessId = req.session?.user?.businessId
 
@@ -586,6 +590,10 @@ export async function ownerTransactions(req, res) {
                 search,
                 module: txnModule,
                 filterBy,
+                paymentStatus,
+                paymentChannel,
+                paidVia,
+                servicePoint,
                 limit: 25,
                 cursor: cursor || null,
                 direction,

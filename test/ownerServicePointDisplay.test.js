@@ -4,10 +4,12 @@ import Order from "../src/models/order.js"
 import Reservation from "../src/models/Reservation.js"
 import ReservationRefund from "../src/models/ReservationRefund.js"
 import ServicePoint from "../src/models/ServicePoint.js"
+import Business from "../src/models/Business.js"
 import {
     ownerOrders,
     ownerTransactions,
 } from "../src/controllers/ownerController.js"
+import { buildOwnerTransactionFilters } from "../src/services/ownerTransactionsReadService.js"
 
 function createResponse() {
     return {
@@ -27,11 +29,14 @@ function createResponse() {
 test("owner orders expose the persisted display label and preserve the internal ID", async (t) => {
     let servicePointLookups = 0
 
+    t.mock.method(Business, "findOne", () => ({
+        lean: async () => ({ businessId: "business-123", timezone: "UTC" }),
+    }))
     t.mock.method(Order, "find", () => ({
-        sort() {
-            return this
-        },
+        sort() { return this },
+        limit() { return this },
         lean: async () => [{
+            _id: "64b000000000000000000001",
             orderId: "ORDER-123",
             servicePointLabel: "sp_2a357e40",
             displayLabel: "Table 20",
@@ -66,8 +71,15 @@ test("owner orders expose the persisted display label and preserve the internal 
 test("owner transactions reshape orders without changing reservation labels or querying ServicePoint", async (t) => {
     let servicePointLookups = 0
 
+    t.mock.method(Business, "findOne", () => ({
+        lean: async () => ({ businessId: "business-123", timezone: "UTC" }),
+    }))
     t.mock.method(Order, "find", () => ({
+        sort() { return this },
+        limit() { return this },
+        select() { return this },
         lean: async () => [{
+            _id: "64b000000000000000000002",
             orderId: "ORDER-123",
             servicePointLabel: "sp_2a357e40",
             displayLabel: "Table 20",
@@ -76,6 +88,9 @@ test("owner transactions reshape orders without changing reservation labels or q
         }],
     }))
     t.mock.method(Reservation, "find", () => ({
+        sort() { return this },
+        limit() { return this },
+        select() { return this },
         lean: async () => [{
             _id: "64b000000000000000000001",
             publicReference: "BOOKING-123",
@@ -87,8 +102,11 @@ test("owner transactions reshape orders without changing reservation labels or q
         }],
     }))
     t.mock.method(ReservationRefund, "find", () => ({
+        select() { return this },
         lean: async () => [],
     }))
+    t.mock.method(Order, "countDocuments", async () => 1)
+    t.mock.method(Reservation, "countDocuments", async () => 1)
     t.mock.method(ServicePoint, "find", () => {
         servicePointLookups += 1
         throw new Error("owner transactions must not query ServicePoint for display labels")
@@ -114,4 +132,34 @@ test("owner transactions reshape orders without changing reservation labels or q
     assert.equal(order.servicePointLabel, "Table 20")
     assert.equal(reservation.servicePointLabel, "Suite 101")
     assert.equal(servicePointLookups, 0)
+})
+
+test("owner transaction filters keep financial dimensions separate and tenant scoped", () => {
+    const filters = buildOwnerTransactionFilters({
+        businessId: "business-1",
+        dateRangeBounds: {
+            $gte: new Date("2026-09-01T00:00:00.000Z"),
+            $lt: new Date("2026-10-01T00:00:00.000Z"),
+        },
+        search: "guest@example.com",
+        module: "overview",
+        filterBy: "all",
+        paymentStatus: "partially_refunded",
+        paymentChannel: "online",
+        paidVia: "online_card",
+        servicePoint: "Suite 8",
+    })
+
+    assert.equal(filters.orderFilter.businessId, "business-1")
+    assert.equal(filters.reservationFilter.businessId, "business-1")
+    assert.equal(filters.orderFilter.paymentStatus, "partially_refunded")
+    assert.equal(filters.reservationFilter.paymentStatus, "partially_refunded")
+    assert.equal(filters.orderFilter.paymentChannel, "online")
+    assert.equal(filters.orderFilter.paidVia, "online_card")
+    assert.equal(filters.reservationFilter.servicePointLabel, "Suite 8")
+    assert.equal(filters.orderFilter.$and[0].$or[0].displayLabel, "Suite 8")
+    assert.ok(
+        filters.orderFilter.$or.some((entry) => entry.receiptEmail),
+        "order customer email remains searchable",
+    )
 })
