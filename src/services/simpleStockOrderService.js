@@ -17,6 +17,7 @@ import MenuItem from "../models/menuItem.js"
 import Order from "../models/order.js"
 import { withCanonicalInventoryTransaction } from "./canonicalInventoryService.js"
 import { invalidateMenuItems } from "./cacheInvalidationService.js"
+import { safelyNotifyInventoryStockTransitions } from "./inventoryNotificationIntegrationService.js"
 import { assertSimpleStockRuntimeEnabled } from "./inventoryRuntimePolicy.js"
 import {
     applyCanonicalSimpleStockProjection,
@@ -351,7 +352,7 @@ async function findOrderForMutation(orderValue, session) {
 async function deductWithinTransaction(orderValue, { session, actor, env }) {
     const order = await findOrderForMutation(orderValue, session)
     if (order.inventoryDeducted) {
-        return { changed: false, tracked: true, order }
+        return { changed: false, tracked: true, order, movements: [], inventoryItems: [] }
     }
     const { targets, failures } = await resolveDeductionTargets({
         businessId: order.businessId,
@@ -365,10 +366,14 @@ async function deductWithinTransaction(orderValue, { session, actor, env }) {
             { code: "INSUFFICIENT_STOCK", statusCode: 409, failures },
         )
     }
-    if (targets.length === 0) return { changed: false, tracked: false, order }
+    if (targets.length === 0) {
+        return { changed: false, tracked: false, order, movements: [], inventoryItems: [] }
+    }
 
     const performedBy = normalizeActor(actor)
     const lines = []
+    const movements = []
+    const inventoryItems = []
     for (const target of targets) {
         if (target.authority === ORDER_INVENTORY_AUTHORITIES.LEGACY_MENU_ITEM) {
             target.menuItem.stockQuantity -= target.orderQuantity
@@ -402,6 +407,8 @@ async function deductWithinTransaction(orderValue, { session, actor, env }) {
             actor: performedBy,
             session,
         })
+        movements.push(movement)
+        inventoryItems.push(target.inventoryItem)
         applyCanonicalSimpleStockProjection(target)
         await target.menuItem.save({ session })
         lines.push(buildOrderInventoryDeductionLine({
@@ -422,7 +429,7 @@ async function deductWithinTransaction(orderValue, { session, actor, env }) {
     order.inventoryDeducted = true
     order.inventoryDeductedAt = new Date()
     await order.save({ session })
-    return { changed: true, tracked: true, order }
+    return { changed: true, tracked: true, order, movements, inventoryItems }
 }
 
 function legacyRestorationInputs(order, semantics) {
@@ -444,8 +451,12 @@ function legacyRestorationInputs(order, semantics) {
 
 async function restoreWithinTransaction(orderValue, { session, actor }) {
     const order = await findOrderForMutation(orderValue, session)
-    if (!order.inventoryDeducted) return { changed: false, tracked: false, order }
-    if (order.inventoryRestored) return { changed: false, tracked: true, order }
+    if (!order.inventoryDeducted) {
+        return { changed: false, tracked: false, order, movements: [], inventoryItems: [] }
+    }
+    if (order.inventoryRestored) {
+        return { changed: false, tracked: true, order, movements: [], inventoryItems: [] }
+    }
 
     const semantics = resolveOrderRestorationAuthority(order)
     const lines = semantics.version === ORDER_INVENTORY_SEMANTICS.LEGACY_MENU_STOCK_V1
@@ -508,6 +519,8 @@ async function restoreWithinTransaction(orderValue, { session, actor }) {
     }
 
     const restoredMovementByMenuItem = new Map()
+    const movements = []
+    const inventoryItems = []
     for (const entry of canonicalInventoryItems) {
         const movement = await insertOrderMovement({
             businessId: order.businessId,
@@ -519,6 +532,8 @@ async function restoreWithinTransaction(orderValue, { session, actor }) {
             actor: performedBy,
             session,
         })
+        movements.push(movement)
+        inventoryItems.push(entry.inventoryItem)
         restoredMovementByMenuItem.set(String(entry.line.menuItemId), movement.movementId)
 
         // Mapping state is consulted only for the compatibility projection. The
@@ -553,12 +568,23 @@ async function restoreWithinTransaction(orderValue, { session, actor }) {
     order.inventoryRestored = true
     order.inventoryRestoredAt = new Date()
     await order.save({ session })
-    return { changed: true, tracked: true, order }
+    return { changed: true, tracked: true, order, movements, inventoryItems }
 }
 
-async function runMutation(work, { session, businessId }) {
+async function runMutation(work, {
+    session,
+    businessId,
+    notifyInventoryTransitions = null,
+}) {
     if (session) return work(session)
     const result = await withCanonicalInventoryTransaction(work)
+    await safelyNotifyInventoryStockTransitions({
+        businessId,
+        movements: result.movements || [],
+        inventoryItems: result.inventoryItems || [],
+    }, {
+        notify: notifyInventoryTransitions,
+    })
     if (result.changed) await invalidateMenuItems(businessId)
     return result
 }
@@ -581,6 +607,7 @@ export async function deductSimpleStockOrder(orderValue, {
     session = null,
     actor = null,
     env = process.env,
+    notifyInventoryTransitions = null,
 } = {}) {
     const businessId = requiredText(orderValue?.businessId, "businessId")
     const result = await runMutation(
@@ -589,7 +616,7 @@ export async function deductSimpleStockOrder(orderValue, {
             actor,
             env,
         }),
-        { session, businessId },
+        { session, businessId, notifyInventoryTransitions },
     )
     return result.tracked
 }
@@ -597,6 +624,7 @@ export async function deductSimpleStockOrder(orderValue, {
 export async function restoreSimpleStockOrder(orderValue, {
     session = null,
     actor = null,
+    notifyInventoryTransitions = null,
 } = {}) {
     const businessId = requiredText(orderValue?.businessId, "businessId")
     const result = await runMutation(
@@ -604,7 +632,7 @@ export async function restoreSimpleStockOrder(orderValue, {
             session: transactionSession,
             actor,
         }),
-        { session, businessId },
+        { session, businessId, notifyInventoryTransitions },
     )
     return result.tracked
 }

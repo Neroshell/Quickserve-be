@@ -98,6 +98,10 @@ test("owner reservation response exposes refund summaries without leaking the in
     assert.equal(responseRecord.originalPaidAmountCents, 30000)
     assert.equal(responseRecord.refundedAmountCents, 12000)
     assert.equal(responseRecord.remainingRefundableAmountCents, 18000)
+    assert.equal(
+        responseRecord.refundEconomics.remainingRefundableAmountCents,
+        18000,
+    )
     assert.equal(responseRecord.refundPending, true)
     assert.equal("activeRefundId" in responseRecord, false)
 })
@@ -212,6 +216,8 @@ test("payment confirmation writes confirmedAt once without inventing an actor", 
     assert.equal(retry.confirmedAt, originalConfirmedAt)
     assert.equal(retry.paidAt, originalPaidAt)
     assert.equal(retry.paymentStatus, "paid")
+    assert.equal(retry.paymentChannel, "online")
+    assert.equal(retry.paidVia, "online_card")
     assert.equal(retry.status, "confirmed")
     assert.equal(retry.amountPaidCents, 25000)
     assert.equal("confirmedBy" in retry, false)

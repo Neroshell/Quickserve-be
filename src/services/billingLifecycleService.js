@@ -7,6 +7,10 @@ import {
 } from "../queues/index.js";
 import { invalidatePublicBusinessConfig } from "./cacheInvalidationService.js";
 import { dispatchBillingNotification } from "./email/emailDispatchService.js";
+import {
+    FINANCIAL_NOTIFICATION_METHODS,
+    safelyNotifyFinancialEvent,
+} from "./financialNotificationIntegrationService.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
@@ -401,6 +405,7 @@ export async function processBillingLifecycleAction({
     now = new Date(),
     businessModel = Business,
     sendNotification = dispatchBillingNotification,
+    sendOwnerNotification = null,
     claimId = crypto.randomUUID(),
 } = {}) {
     if (!BILLING_ACTIONS[jobName]) {
@@ -495,6 +500,25 @@ export async function processBillingLifecycleAction({
             await invalidatePublicBusinessConfig(businessId);
         }
 
+        let ownerNotification = { skipped: true, reason: "event_not_approved" };
+        if (jobName === BILLING_JOB_NAMES.RESTRICT_SERVICE) {
+            ownerNotification = await safelyNotifyFinancialEvent({
+                method: FINANCIAL_NOTIFICATION_METHODS.SERVICE_RESTRICTED,
+                input: {
+                    business: transitioned,
+                    periodKey,
+                    now,
+                },
+            }, {
+                notify: sendOwnerNotification,
+                context: {
+                    businessId,
+                    jobName,
+                    periodKey,
+                },
+            });
+        }
+
         const recipient = getRecipient(transitioned);
         let notificationResult = { queued: false, reason: "recipient_missing" };
         if (recipient) {
@@ -542,6 +566,7 @@ export async function processBillingLifecycleAction({
             stage: BILLING_ACTIONS[jobName].stage,
             notified: Boolean(recipient),
             notification: notificationResult,
+            ownerNotification,
         };
     } catch (error) {
         await markClaimFailed({

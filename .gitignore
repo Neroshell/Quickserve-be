@@ -79,6 +79,10 @@ test/*
 !test/aiAnalystFeedbackInventoryV5.test.js
 !test/aiAnalystRuntimeV5.test.js
 !test/restaurantReservationAvailability.test.js
+!test/notificationSystem.test.js
+!test/notificationPhase3.test.js
+!test/notificationPhase4.test.js
+!test/notificationPhase5.test.js
 test/managerPermissions.test.js
 !test/coOwnerAccess.test.js
 !test/billingHardening.test.js

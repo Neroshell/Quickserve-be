@@ -13,6 +13,8 @@ export function applyReservationPaymentConfirmation(
     }
 ) {
     reservation.paymentStatus = "paid";
+    reservation.paymentChannel = "online";
+    reservation.paidVia = "online_card";
     reservation.status = "confirmed";
     reservation.stripeCheckoutSessionId =
         checkoutSessionId;
@@ -61,6 +63,8 @@ export async function confirmReservationPaymentAtomic({
         {
             $set: {
                 paymentStatus: "paid",
+                paymentChannel: "online",
+                paidVia: "online_card",
                 status: "confirmed",
                 stripeCheckoutSessionId: checkoutSessionId,
                 stripePaymentIntentId: paymentIntentId,

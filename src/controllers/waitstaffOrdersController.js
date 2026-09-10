@@ -40,6 +40,7 @@ import {
 import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/businessDate.js"
 import { createOrderLineFulfillmentSnapshot } from "../services/orderFulfillmentService.js"
 import { publishOrderRealtime } from "../services/orderRealtimeService.js"
+import { safelyNotifyInventoryStockTransitions } from "../services/inventoryNotificationIntegrationService.js"
 
 function getOrderIdempotencyKey(req, fallback) {
   const supplied = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"]
@@ -735,8 +736,10 @@ export async function createWaiterOrder(req, res) {
 
     let replayed = false
     let saved
+    let inventoryNotificationBatch = null
     try {
       saved = await withCanonicalInventoryTransaction(async (session) => {
+        inventoryNotificationBatch = null
         const existing = await Order.findOne({
           businessId,
           creationIdempotencyKey,
@@ -752,7 +755,7 @@ export async function createWaiterOrder(req, res) {
           return existing
         }
         const [created] = await Order.create([orderInput], { session })
-        await reserveInventoryForSource({
+        const inventoryReservation = await reserveInventoryForSource({
           businessId,
           items: enrichedItems,
           sourceType: INVENTORY_RESERVATION_SOURCE_TYPES.WAITSTAFF_ORDER,
@@ -769,6 +772,11 @@ export async function createWaiterOrder(req, res) {
           },
           session,
         })
+        inventoryNotificationBatch = {
+          businessId,
+          movements: inventoryReservation.movements || [],
+          inventoryItems: inventoryReservation.inventoryItems || [],
+        }
         return Order.findOne({ businessId, orderId }, null, { session })
       })
     } catch (error) {
@@ -777,6 +785,9 @@ export async function createWaiterOrder(req, res) {
       if (!existing || existing.creationRequestFingerprint !== creationRequestFingerprint) throw error
       replayed = true
       saved = existing
+    }
+    if (!replayed && inventoryNotificationBatch) {
+      await safelyNotifyInventoryStockTransitions(inventoryNotificationBatch)
     }
     if (!replayed && (saved.inventoryReservationId || saved.inventoryDeducted)) {
       await invalidateMenuItems(businessId)

@@ -6,6 +6,7 @@ export const QUEUE_NAMES = Object.freeze({
     POST_PAYMENT: "post-payment",
     AI_ANALYST: "ai-analyst",
     INVENTORY: "inventory",
+    NOTIFICATIONS: "notifications",
 });
 
 export const DIAGNOSTIC_JOB_NAME = "diagnostic-ping";
@@ -53,4 +54,9 @@ export const AI_ANALYST_JOB_NAMES = Object.freeze({
 export const INVENTORY_JOB_NAMES = Object.freeze({
     HOLD_REPAIR_SCAN: "inventory-hold-repair-scan",
     RECONCILE_RESERVATION: "inventory-reconcile-reservation",
+});
+
+export const NOTIFICATION_JOB_NAMES = Object.freeze({
+    PROCESS_INTENT: "notification-process-intent",
+    REPAIR_SCAN: "notification-repair-scan",
 });

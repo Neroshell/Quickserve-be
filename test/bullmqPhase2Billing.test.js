@@ -180,6 +180,7 @@ test("restriction is conditionally durable before its notification", async () =>
         periodKey,
         now,
         businessModel: store,
+        sendOwnerNotification: async () => ({ created: true }),
         sendNotification: async () => {
             observedDurableState = store.document.offlineServiceRestricted === true;
             return { success: true, messageId: "restriction-message" };
@@ -238,6 +239,7 @@ test("email failure does not roll back or retry a durable restriction transition
         periodKey,
         now,
         businessModel: store,
+        sendOwnerNotification: async () => ({ created: true }),
         sendNotification: async () => {
             throw new Error("provider offline");
         },

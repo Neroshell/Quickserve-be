@@ -33,6 +33,7 @@ import MenuInventoryRecipe from "../models/MenuInventoryRecipe.js"
 import MenuItem from "../models/menuItem.js"
 import Order from "../models/order.js"
 import { withCanonicalInventoryTransaction } from "./canonicalInventoryService.js"
+import { safelyNotifyInventoryStockTransitions } from "./inventoryNotificationIntegrationService.js"
 import { assertSimpleStockRuntimeEnabled } from "./inventoryRuntimePolicy.js"
 import {
     applyCanonicalSimpleStockProjection,
@@ -722,7 +723,14 @@ export async function reserveInventoryForSource({
                 "INVENTORY_IDEMPOTENCY_CONFLICT",
             )
         }
-        return { reservation: existing, resolved: null, replayed: true, tracked: true }
+        return {
+            reservation: existing,
+            resolved: null,
+            replayed: true,
+            tracked: true,
+            movements: [],
+            inventoryItems: [],
+        }
     }
 
     const resolved = await resolveInventoryRequirements({
@@ -740,7 +748,14 @@ export async function reserveInventoryForSource({
         )
     }
     if (!resolved.tracked) {
-        return { reservation: null, resolved, replayed: false, tracked: false }
+        return {
+            reservation: null,
+            resolved,
+            replayed: false,
+            tracked: false,
+            movements: [],
+            inventoryItems: [],
+        }
     }
 
     const finalStatus = status || (
@@ -750,6 +765,7 @@ export async function reserveInventoryForSource({
     )
     const performedBy = normalizeActor(actor)
     const canonicalComponents = []
+    const movements = []
     for (const requirement of resolved.requirements) {
         const available = requirement.inventoryItem.onHandQuantity -
             requirement.inventoryItem.reservedQuantity
@@ -770,6 +786,7 @@ export async function reserveInventoryForSource({
             session,
             InventoryMovementModel,
         })
+        movements.push(movement)
         canonicalComponents.push({
             inventoryItemId: requirement.inventoryItemId,
             canonicalQuantity: requirement.canonicalQuantity,
@@ -876,7 +893,14 @@ export async function reserveInventoryForSource({
         await order.save({ session })
     }
 
-    return { reservation, resolved, replayed: false, tracked: true }
+    return {
+        reservation,
+        resolved,
+        replayed: false,
+        tracked: true,
+        movements,
+        inventoryItems: resolved.requirements.map((requirement) => requirement.inventoryItem),
+    }
 }
 
 async function createConsumptionMovement({
@@ -1382,6 +1406,7 @@ export async function consumeReservedInventoryForFulfillment({
         changed: true,
         replayed: false,
         movements,
+        inventoryItems,
         consumedAllocationIds: allocationsToConsume.map(
             (allocation) => allocation.allocationId,
         ),
@@ -1432,7 +1457,13 @@ export async function releaseInventoryReservationWithinTransaction({
         INVENTORY_RESERVATION_STATUSES.RELEASED,
         INVENTORY_RESERVATION_STATUSES.EXPIRED,
     ].includes(reservation.status)) {
-        return { reservation, changed: false, replayed: true }
+        return {
+            reservation,
+            changed: false,
+            replayed: true,
+            movements: [],
+            inventoryItems: [],
+        }
     }
     validateReleaseAuthority(reservation, releaseEvidence)
     if (
@@ -1521,6 +1552,7 @@ export async function releaseInventoryReservationWithinTransaction({
 
     const performedBy = normalizeActor(actor)
     const now = new Date()
+    const movements = []
     for (const component of reservation.components || []) {
         const inventoryItem = inventoryById.get(component.inventoryItemId)
         const releaseQuantity = hasLineAllocationSnapshot
@@ -1537,6 +1569,7 @@ export async function releaseInventoryReservationWithinTransaction({
             session,
             InventoryMovementModel,
         })
+        movements.push(movement)
         component.releaseMovementId = movement.movementId
         for (const allocation of releaseAllocations) {
             if (allocation.inventoryItemId !== component.inventoryItemId) continue
@@ -1596,12 +1629,25 @@ export async function releaseInventoryReservationWithinTransaction({
             await order.save({ session })
         }
     }
-    return { reservation, changed: true, replayed: false }
+    return {
+        reservation,
+        changed: true,
+        replayed: false,
+        movements,
+        inventoryItems,
+    }
 }
 
 export async function releaseInventoryReservation(command, dependencies = {}) {
     const result = await withCanonicalInventoryTransaction((session) =>
         releaseInventoryReservationWithinTransaction({ ...command, session }, dependencies))
+    await safelyNotifyInventoryStockTransitions({
+        businessId: command.businessId,
+        movements: result.movements || [],
+        inventoryItems: result.inventoryItems || [],
+    }, {
+        notify: dependencies.notifyInventoryTransitions || null,
+    })
     return result
 }
 

@@ -52,6 +52,7 @@ import {
   createOrderLineFulfillmentSnapshot,
 } from "../services/orderFulfillmentService.js"
 import { publishOrderRealtime } from "../services/orderRealtimeService.js"
+import { safelyNotifyInventoryStockTransitions } from "../services/inventoryNotificationIntegrationService.js"
 // Restaurant-flow defect safeguards for direct/offline orders:
 // validate and normalize the cart, enforce business ordering/payment settings,
 // and derive currency from the business instead of accepting client values.
@@ -412,8 +413,10 @@ export async function createOrder(req, res) {
     // restoration linkage commit together. A losing stock race creates no order.
     let replayed = false
     let saved
+    let inventoryNotificationBatch = null
     try {
       saved = await withCanonicalInventoryTransaction(async (session) => {
+        inventoryNotificationBatch = null
         const existing = await Order.findOne({
           businessId,
           creationIdempotencyKey,
@@ -430,7 +433,7 @@ export async function createOrder(req, res) {
         }
 
         const [created] = await Order.create([orderInput], { session })
-        await reserveInventoryForSource({
+        const inventoryReservation = await reserveInventoryForSource({
           businessId,
           items: enrichedItems,
           sourceType: isWaiter
@@ -454,6 +457,11 @@ export async function createOrder(req, res) {
           })(),
           session,
         })
+        inventoryNotificationBatch = {
+          businessId,
+          movements: inventoryReservation.movements || [],
+          inventoryItems: inventoryReservation.inventoryItems || [],
+        }
         return Order.findOne({ businessId, orderId }, null, { session })
       })
     } catch (error) {
@@ -462,6 +470,9 @@ export async function createOrder(req, res) {
       if (!existing || existing.creationRequestFingerprint !== creationRequestFingerprint) throw error
       replayed = true
       saved = existing
+    }
+    if (!replayed && inventoryNotificationBatch) {
+      await safelyNotifyInventoryStockTransitions(inventoryNotificationBatch)
     }
     if (!replayed && (saved.inventoryReservationId || saved.inventoryDeducted)) {
       await invalidateMenuItems(businessId)

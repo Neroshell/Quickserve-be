@@ -261,10 +261,20 @@ export async function getBusinessBySlug(req, res) {
 
 import { createReservationService } from "../services/reservationCreationService.js";
 
+async function createExternalReservationNotification(...args) {
+  const { notifyExternalReservationCreated } = await import(
+    "../services/reservationNotificationService.js"
+  );
+  return notifyExternalReservationCreated(...args);
+}
+
 /**
  * Handles new public reservation requests.
  */
-export async function createReservation(req, res) {
+export async function createReservation(req, res, {
+  createReservationRequest = createReservationService,
+  notifyExternalReservation = createExternalReservationNotification,
+} = {}) {
   try {
     const {
       isHotelBooking,
@@ -283,7 +293,7 @@ export async function createReservation(req, res) {
       durationMinutes,
       seatingPreference,
     } = req.body || {};
-    const result = await createReservationService({
+    const result = await createReservationRequest({
       isHotelBooking,
       businessSlug,
       customerName,
@@ -301,6 +311,15 @@ export async function createReservation(req, res) {
       seatingPreference,
       source: "online",
     });
+
+    try {
+      await notifyExternalReservation({ reservation: result.reservation });
+    } catch (notificationError) {
+      console.error("[publicController.createReservation] Notification intent failed", {
+        reservationId: String(result.reservationId || ""),
+        errorClass: notificationError?.name || "Error",
+      });
+    }
 
     // Build safe public DTO — never expose full reservation internals
     const dto = {

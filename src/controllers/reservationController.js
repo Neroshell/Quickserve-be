@@ -10,7 +10,7 @@ import { resolveBusinessCapabilities } from "../services/businessCapabilityServi
 import { ensureReservationPricingSnapshot } from "../services/reservationPricingService.js";
 import { expireAwaitingPaymentReservations } from "../services/reservationExpiryService.js";
 import {
-  getRemainingRefundableAmountCents,
+  getReservationRefundEconomics,
   getReservationCapturedAmountCents,
 } from "../services/reservationCancellationService.js";
 import { dispatchRestaurantReservationEmail } from "../services/email/emailDispatchService.js";
@@ -137,6 +137,10 @@ export function toOwnerReservationResponse(reservation) {
   const refundedAmountCents = Number(
     safeReservation.refundedAmountCents || 0,
   );
+  const refundEconomics = getReservationRefundEconomics({
+    reservation: safeReservation,
+    successfulRefundedAmountCents: refundedAmountCents,
+  });
   const canUsePaymentLink =
     safeReservation.status === "accepted_awaiting_payment" &&
     safeReservation.paymentStatus !== "paid" &&
@@ -150,10 +154,8 @@ export function toOwnerReservationResponse(reservation) {
     originalPaidAmountCents,
     refundedAmountCents,
     remainingRefundableAmountCents:
-      getRemainingRefundableAmountCents({
-        capturedAmountCents: originalPaidAmountCents,
-        successfulRefundedAmountCents: refundedAmountCents,
-      }),
+      refundEconomics.remainingRefundableAmountCents,
+    refundEconomics,
     refundPending: Boolean(activeRefundId),
   };
 }
@@ -178,6 +180,7 @@ export async function getReservations(req, res) {
       search,
       sortBy,
       sortDirection,
+      reservationId,
     } = req.query;
 
     const sessionUser = req.session?.user;
@@ -213,6 +216,21 @@ export async function getReservations(req, res) {
     await expireAwaitingPaymentReservations({ businessId });
 
     const baseQuery = { businessId, archivedAt: null };
+
+    // Narrow, tenant-scoped lookup used by Owner notification deep links.
+    if (reservationId) {
+      if (!mongoose.isValidObjectId(reservationId)) {
+        return res.status(400).json({ error: "reservationId is invalid" });
+      }
+      const linkedReservation = await Reservation.findOne({
+        ...baseQuery,
+        _id: reservationId,
+      }).lean();
+      if (!linkedReservation) {
+        return res.status(404).json({ error: "Reservation not found" });
+      }
+      return res.json({ reservation: toOwnerReservationResponse(linkedReservation) });
+    }
 
     // =========================================================================
     // 0. TODAY PMS WORKSPACE VIEW

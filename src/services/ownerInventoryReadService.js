@@ -7,13 +7,14 @@ import {
     toInventoryItemDTO,
     toInventoryMovementDTO,
 } from "./canonicalInventoryService.js"
+import { INVENTORY_STOCK_STATUSES } from "./inventoryStockStatusService.js"
 
 export const OWNER_INVENTORY_DEFAULT_LIMIT = 25
 export const OWNER_INVENTORY_MAX_LIMIT = 100
 export const OWNER_INVENTORY_STOCK_STATUSES = Object.freeze({
     ALL: "all",
-    LOW_STOCK: "low_stock",
-    OUT_OF_STOCK: "out_of_stock",
+    LOW_STOCK: INVENTORY_STOCK_STATUSES.LOW_STOCK,
+    OUT_OF_STOCK: INVENTORY_STOCK_STATUSES.OUT_OF_STOCK,
 })
 
 const MOVEMENT_TYPE_SET = new Set(INVENTORY_MOVEMENT_TYPE_VALUES)

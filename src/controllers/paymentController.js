@@ -37,6 +37,7 @@ import {
 import { invalidateMenuItems } from "../services/cacheInvalidationService.js";
 import { enqueueInventoryReservationReconciliation } from "../queues/index.js";
 import { createOrderLineFulfillmentSnapshot } from "../services/orderFulfillmentService.js";
+import { safelyNotifyInventoryStockTransitions } from "../services/inventoryNotificationIntegrationService.js";
 // Restaurant-flow defect safeguards for online checkout:
 // validate and normalize the cart, reject disabled business/order/payment modes,
 // and derive Stripe currency from the business instead of the client request.
@@ -387,8 +388,11 @@ export async function createCheckoutSession(req, res) {
         let replayed = false;
         let reservationChanged = false;
         let pending;
+        let inventoryNotificationBatch = null;
         try {
             pending = await withCanonicalInventoryTransaction(async (mongoSession) => {
+                reservationChanged = false;
+                inventoryNotificationBatch = null;
                 const existing = await PendingCheckout.findOne({
                     businessId: businessIdToUse,
                     idempotencyKey: checkoutIdempotencyKey,
@@ -464,6 +468,11 @@ export async function createCheckoutSession(req, res) {
                     session: mongoSession,
                 });
                 reservationChanged = held.tracked;
+                inventoryNotificationBatch = {
+                    businessId: businessIdToUse,
+                    movements: held.movements || [],
+                    inventoryItems: held.inventoryItems || [],
+                };
                 created.inventoryReservationId = held.reservation?.reservationId || null;
                 created.stripeRequestSnapshot = {
                     ...baseStripeSessionConfig,
@@ -491,6 +500,9 @@ export async function createCheckoutSession(req, res) {
             pending = existing;
         }
 
+        if (!replayed && inventoryNotificationBatch) {
+            await safelyNotifyInventoryStockTransitions(inventoryNotificationBatch);
+        }
         if (reservationChanged) await invalidateMenuItems(businessIdToUse);
         if (pending.inventoryReservationId && !replayed) {
             await enqueueInventoryRepairSafely({

@@ -32,6 +32,11 @@ const ReservationRefundSchema = new mongoose.Schema(
     idempotencyKey: { type: String, required: true, unique: true },
     requestFingerprint: { type: String, required: true },
     originalPaidAmountCents: { type: Number, required: true, min: 1 },
+    customerRefundableCeilingCents: { type: Number, min: 0 },
+    customerPlatformFeeCents: { type: Number, default: 0, min: 0 },
+    customerProcessingFeeCents: { type: Number, default: 0, min: 0 },
+    totalPlatformFeeCents: { type: Number, default: 0, min: 0 },
+    businessAbsorbedPlatformFeeCents: { type: Number, default: 0, min: 0 },
     requestedAmountCents: { type: Number, required: true, min: 1 },
     successfulAmountCents: { type: Number, default: 0, min: 0 },
     currency: {

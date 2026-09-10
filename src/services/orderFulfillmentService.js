@@ -11,6 +11,7 @@ import {
 } from "../constants/orderFulfillment.js"
 import Order from "../models/order.js"
 import { consumeReservedInventoryForFulfillment } from "./inventoryReservationService.js"
+import { safelyNotifyInventoryStockTransitions } from "./inventoryNotificationIntegrationService.js"
 import { resolveOrderStartAssistanceDelayMinutes } from "../utils/customerOrderTiming.js"
 import { generateOrderLineId } from "../utils/orderLineId.js"
 
@@ -721,7 +722,9 @@ export async function transitionOrderFulfillment({
     )
   }
 
-  return runTransaction(async (session) => {
+  let inventoryNotificationBatch = null
+  const result = await runTransaction(async (session) => {
+    inventoryNotificationBatch = null
     const order = await OrderModel.findOne({ businessId, orderId }, null, { session })
     if (!order) throw new OrderFulfillmentError("Order not found", "ORDER_NOT_FOUND", 404)
     if (TERMINAL_ORDER_STATUSES.has(order.status)) {
@@ -781,6 +784,11 @@ export async function transitionOrderFulfillment({
           now,
         }, dependencies.inventoryDependencies)
         inventoryChanged = inventoryResult.changed === true
+        inventoryNotificationBatch = {
+          businessId,
+          movements: inventoryResult.movements || [],
+          inventoryItems: inventoryResult.inventoryItems || [],
+        }
       }
       for (const line of lines) {
         if (line.fulfillmentStatus !== FULFILLMENT_STATUSES.PENDING) continue
@@ -813,6 +821,11 @@ export async function transitionOrderFulfillment({
           now,
         }, dependencies.inventoryDependencies)
         inventoryChanged = inventoryResult.changed === true
+        inventoryNotificationBatch = {
+          businessId,
+          movements: inventoryResult.movements || [],
+          inventoryItems: inventoryResult.inventoryItems || [],
+        }
       }
       for (const line of lines) {
         if (line.fulfillmentStatus === FULFILLMENT_STATUSES.READY) continue
@@ -868,6 +881,12 @@ export async function transitionOrderFulfillment({
       customerNotification: buildCustomerFulfillmentNotification(order, eventType),
     }
   })
+  if (inventoryNotificationBatch) {
+    await safelyNotifyInventoryStockTransitions(inventoryNotificationBatch, {
+      notify: dependencies.notifyInventoryTransitions || null,
+    })
+  }
+  return result
 }
 
 export async function completeOrderForWaitstaff({ businessId, orderId, actor }, dependencies = {}) {

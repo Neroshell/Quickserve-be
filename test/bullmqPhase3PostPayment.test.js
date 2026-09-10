@@ -523,6 +523,8 @@ test("reservation payment confirmation uses a conditional tenant-scoped update",
     assert.equal(filter.currency, "eur");
     assert.equal(update.$set.status, "confirmed");
     assert.equal(update.$set.paymentStatus, "paid");
+    assert.equal(update.$set.paymentChannel, "online");
+    assert.equal(update.$set.paidVia, "online_card");
 });
 
 test("Stripe webhook event claims are durable and completed events deduplicate", async () => {

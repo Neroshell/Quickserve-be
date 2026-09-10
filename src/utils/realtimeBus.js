@@ -42,7 +42,14 @@ export function startRealtimeBus() {
         // the same transition back to those clients a second time.
         if (msg.originInstanceId === REALTIME_INSTANCE_ID) return
 
-        const { event, businessId, targets, payload } = msg
+        const {
+            event,
+            businessId,
+            targets,
+            payload,
+            recipientTargets,
+            notificationAccess,
+        } = msg
 
         if (!event || !businessId || !payload) {
             console.warn("[RealtimeBus] ⚠️ Received malformed message — missing required fields:", msg)
@@ -53,7 +60,14 @@ export function startRealtimeBus() {
             `[RealtimeBus] 📨 Received event=${event} businessId=${businessId} targets=${JSON.stringify(targets ?? "all")}`
         )
 
-        void broadcastLocal({ event, businessId, targets: targets ?? null, payload }).catch((err) => {
+        void broadcastLocal({
+            event,
+            businessId,
+            targets: targets ?? null,
+            payload,
+            recipientTargets,
+            notificationAccess,
+        }).catch((err) => {
             console.error("[RealtimeBus] Failed to broadcast event locally:", err.message)
         })
     })

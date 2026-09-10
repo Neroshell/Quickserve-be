@@ -47,6 +47,9 @@ export async function buildReservationPricingSnapshot({
     customerPlatformFeeCents: pricing.customerPlatformFeeCents,
     businessAbsorbedPlatformFeeCents:
       pricing.businessAbsorbedPlatformFeeCents,
+    // Reservation Checkout currently has no customer-paid processing-fee
+    // line item. Freeze that fact for refund calculations.
+    customerProcessingFeeCents: 0,
     platformFeeMode: pricing.platformFeeMode,
     customerPlatformFeePercent: pricing.customerPlatformFeePercent,
     planApplied: pricing.planApplied,

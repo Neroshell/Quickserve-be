@@ -14,6 +14,7 @@ export {
     RESERVATION_JOB_NAMES,
     AI_ANALYST_JOB_NAMES,
     INVENTORY_JOB_NAMES,
+    NOTIFICATION_JOB_NAMES,
 } from "./queueNames.js";
 export {
     buildEmailJobId,
@@ -61,3 +62,10 @@ export {
     isInventorySchedulersEnabled,
     validateInventoryReconciliationPayload,
 } from "./inventoryQueue.js";
+export {
+    buildNotificationIntentJobId,
+    enqueueNotificationIntent,
+    isNotificationQueueEnabled,
+    NOTIFICATION_JOB_OPTIONS,
+    validateNotificationIntentPayload,
+} from "./notificationQueue.js";

@@ -5,8 +5,20 @@ import ServicePoint from "../models/ServicePoint.js"
 import Business from "../models/Business.js"
 
 import { resolveAnalyticsDateRange } from "../utils/businessDate.js"
+import { classifyFeedbackSentiment, isLowFeedbackRating } from "../services/feedbackRatingService.js"
 
-export async function submitFeedback(req, res) {
+async function createLowRatingNotification(...args) {
+    const { notifyLowRatingFeedback } = await import(
+        "../services/feedbackNotificationService.js"
+    )
+    return notifyLowRatingFeedback(...args)
+}
+
+export async function submitFeedback(req, res, {
+    FeedbackModel = Feedback,
+    OrderModel = Order,
+    notifyLowRating = createLowRatingNotification,
+} = {}) {
     try {
         const {
             orderId,
@@ -25,7 +37,7 @@ export async function submitFeedback(req, res) {
             return res.status(400).json({ error: "sessionId is required" });
         }
 
-        const order = await Order.findOne({ orderId, businessId }).lean();
+        const order = await OrderModel.findOne({ orderId, businessId }).lean();
         if (!order) {
             return res.status(404).json({ error: "Order not found" });
         }
@@ -40,13 +52,12 @@ export async function submitFeedback(req, res) {
             return res.status(400).json({ error: "Feedback can only be submitted for completed (served) orders" });
         }
 
-        let sentiment = "neutral";
-        if (overallRating >= 4) sentiment = "positive";
-        else if (overallRating <= 2) sentiment = "negative";
+        const sentiment = classifyFeedbackSentiment(overallRating);
 
+        let feedback;
         try {
-            await Feedback.create({
-                businessId,
+            feedback = await FeedbackModel.create({
+                businessId: order.businessId,
                 orderId,
                 sessionId: order.sessionId || "unknown",
                 overallRating,
@@ -66,7 +77,21 @@ export async function submitFeedback(req, res) {
             throw dbErr;
         }
 
-        await Order.updateOne({ _id: order._id }, { $set: { feedbackSubmitted: true } });
+        await OrderModel.updateOne(
+            { _id: order._id, businessId: order.businessId },
+            { $set: { feedbackSubmitted: true } },
+        );
+
+        if (isLowFeedbackRating(feedback.overallRating)) {
+            try {
+                await notifyLowRating({ feedback });
+            } catch (notificationError) {
+                console.error("[feedbackController.submitFeedback] Notification intent failed", {
+                    feedbackId: String(feedback._id || ""),
+                    errorClass: notificationError?.name || "Error",
+                });
+            }
+        }
 
         return res.status(201).json({ message: "Feedback submitted successfully" });
     } catch (error) {

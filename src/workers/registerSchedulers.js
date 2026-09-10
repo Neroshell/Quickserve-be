@@ -12,6 +12,9 @@ import {
     INVENTORY_JOB_NAMES,
     INVENTORY_JOB_OPTIONS,
     isInventorySchedulersEnabled,
+    NOTIFICATION_JOB_NAMES,
+    NOTIFICATION_JOB_OPTIONS,
+    isNotificationQueueEnabled,
 } from "../queues/index.js";
 import {
     AI_ANALYST_JOB_OPTIONS,
@@ -30,6 +33,8 @@ export const AI_ANALYST_WEEKLY_SCHEDULER_ID =
     "ai-analyst-weekly-scan-monday-6am-utc";
 export const INVENTORY_HOLD_REPAIR_SCHEDULER_ID =
     "inventory-hold-repair-scan-every-5-minutes";
+export const NOTIFICATION_REPAIR_SCHEDULER_ID =
+    "notification-repair-scan-every-5-minutes";
 
 export async function registerWorkerSchedulers({
     runtime = null,
@@ -44,6 +49,20 @@ export async function registerWorkerSchedulers({
         aiAnalyst: false,
     };
     if (runtime !== "worker") return result;
+
+    if (isNotificationQueueEnabled(env)) {
+        const notificationQueue = createQueueFn(QUEUE_NAMES.NOTIFICATIONS, { env });
+        await notificationQueue.upsertJobScheduler(
+            NOTIFICATION_REPAIR_SCHEDULER_ID,
+            { every: 5 * 60 * 1000 },
+            {
+                name: NOTIFICATION_JOB_NAMES.REPAIR_SCAN,
+                data: {},
+                opts: NOTIFICATION_JOB_OPTIONS,
+            },
+        );
+        result.notifications = true;
+    }
 
     if (isReservationSchedulersEnabled(env)) {
         const reservationQueue = createQueueFn(QUEUE_NAMES.RESERVATIONS, { env });

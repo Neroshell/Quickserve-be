@@ -19,6 +19,7 @@
 
 import { randomUUID } from "node:crypto"
 import { redisPub, REDIS_CHANNEL } from "../config/redisClient.js"
+import Business from "../models/Business.js"
 import GuestSession from "../models/GuestSession.js"
 import Staff from "../models/Staff.js"
 import { resolveCurrentCoOwner, resolveCurrentManager } from "../middleware/authMiddleware.js"
@@ -27,6 +28,7 @@ import {
     MANAGEMENT_AREA_BY_PERMISSION,
     resolveManagementAccess,
 } from "../constants/managementAccess.js"
+import { resolveNotificationAccessContext } from "../services/notificationReadService.js"
 
 // Which SSE channel(s) a given authenticated staff role is allowed to subscribe to.
 // The channel is derived from the session role — NOT the client-supplied query —
@@ -67,6 +69,7 @@ const MANAGER_SSE_PERMISSIONS_BY_CHANNEL = {
 
 const MANAGER_ACCESS_REVOKED_EVENT = "__manager_access_revoked"
 const MANAGEMENT_ACCESS_REVOKED_EVENT = "__management_access_revoked"
+export const NOTIFICATION_CHANGED_EVENT = "notification_changed"
 
 function managerPermissionAllowsEvent(permission, event) {
     if (permission === PERMISSIONS.DASHBOARD_VIEW) return true
@@ -141,6 +144,118 @@ async function findCurrentCoOwnerForClient(client) {
 }
 
 // ── SSE HTTP handler ─────────────────────────────────────────────────────────
+function notificationRecipientMatches(client, recipientTargets) {
+    if (!Array.isArray(recipientTargets) || recipientTargets.length === 0) return false
+    return recipientTargets.some((target) => (
+        target?.recipientKind === client.notificationIdentity?.recipientKind &&
+        String(target?.recipientId) === String(client.notificationIdentity?.recipientId)
+    ))
+}
+
+async function revalidateNotificationClient(client, access = {}) {
+    try {
+        if (client.notificationRole === "owner") {
+            return Boolean(await Business.exists({
+                _id: client.notificationIdentity?.recipientId,
+                businessId: client.businessId,
+                ownerStatus: "active",
+            }))
+        }
+
+        const staff = await Staff.findOne({
+            _id: client.notificationIdentity?.recipientId,
+            businessId: client.businessId,
+            role: client.notificationRole,
+            accountStatus: "active",
+        })
+            .select("permissions coOwnerRestrictions")
+            .lean()
+        if (!staff) return false
+
+        if (!access?.area) return true
+        if (client.notificationRole === "co_owner") {
+            return resolveManagementAccess({
+                role: "co_owner",
+                coOwnerRestrictions: staff.coOwnerRestrictions || [],
+            }, { area: access.area })
+        }
+        if (client.notificationRole === "manager") {
+            if (!access.permission) return false
+            return resolveManagementAccess({
+                role: "manager",
+                permissions: staff.permissions || [],
+            }, {
+                area: access.area,
+                managerPermissions: [access.permission],
+            })
+        }
+        return false
+    } catch (error) {
+        console.error("[SSE] Failed to revalidate notification stream:", error.message)
+        return false
+    }
+}
+
+function configureStreamResponse(res) {
+    res.setHeader("Content-Type", "text/event-stream")
+    res.setHeader("Cache-Control", "no-cache")
+    res.setHeader("Connection", "keep-alive")
+    res.setHeader("X-Accel-Buffering", "no")
+    res.flushHeaders?.()
+}
+
+/** Authenticated, recipient-scoped, content-free notification invalidation stream. */
+export async function notificationSseHandler(req, res, {
+    resolveAccess = resolveNotificationAccessContext,
+    revalidateClient = revalidateNotificationClient,
+} = {}) {
+    let context
+    try {
+        context = await resolveAccess(req)
+    } catch (error) {
+        const statusCode = Number(error?.statusCode) || 403
+        return res.status(statusCode).end(statusCode === 401 ? "Unauthorized" : "Forbidden")
+    }
+
+    configureStreamResponse(res)
+    const client = {
+        res,
+        role: "notifications",
+        businessId: context.businessId,
+        notificationRole: context.user.role,
+        notificationIdentity: {
+            recipientKind: context.recipientKind,
+            recipientId: String(context.recipientId),
+        },
+        notificationRevalidator: revalidateClient,
+    }
+    addClient(client)
+    res.write(`event: heartbeat\ndata: ${JSON.stringify({ ok: true, t: Date.now() })}\n\n`)
+
+    const keepAlive = setInterval(async () => {
+        try {
+            const stillAllowed = await revalidateClient(client)
+            if (!clients.has(client)) return
+            if (!stillAllowed) {
+                res.end()
+                removeClient(client)
+                return
+            }
+            res.write(`event: heartbeat\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`)
+        } catch (error) {
+            console.error("[SSE] Notification heartbeat failed:", error.message)
+            try {
+                res.end()
+            } catch {}
+            removeClient(client)
+        }
+    }, 25_000)
+    keepAlive.unref?.()
+    client.keepAlive = keepAlive
+
+    req.on("close", () => removeClient(client))
+}
+
 export async function sseHandler(req, res) {
     let role = req.query.role || "anon"
     const businessId = req.query.businessId || req.query.businessId
@@ -343,7 +458,7 @@ export function disconnectManagementClients({ businessId, staffObjectId, staffId
  * @param {{ event: string, businessId: string, targets: string[]|null, payload: object }} msg
  */
 export async function broadcastLocal(msg) {
-    const { event, businessId, targets, payload } = msg
+    const { event, businessId, targets, payload, recipientTargets, notificationAccess } = msg
 
     if (!event || !businessId) {
         console.warn("[SSE] broadcastLocal called with missing event or businessId — skipping", msg)
@@ -387,6 +502,37 @@ export async function broadcastLocal(msg) {
         // Role targeting — if targets is null/empty every role passes.
         // Dashboard roles (owner) bypass target filtering to receive all
         // staff-targeted operational events as invalidation signals.
+        if (event === NOTIFICATION_CHANGED_EVENT) {
+            if (client.role !== "notifications") continue
+            if (!notificationRecipientMatches(client, recipientTargets)) continue
+
+            const stillAllowed = await client.notificationRevalidator(client, notificationAccess)
+            if (!clients.has(client)) continue
+            if (!stillAllowed) {
+                try {
+                    client.res.end()
+                } catch (error) {
+                    console.error("[SSE] Failed to close unauthorized notification stream:", error.message)
+                }
+                removeClient(client)
+                continue
+            }
+
+            try {
+                client.res.write(
+                    `event: ${NOTIFICATION_CHANGED_EVENT}\ndata: ${JSON.stringify({ invalidated: true })}\n\n`,
+                )
+                matched++
+            } catch (error) {
+                console.error("[SSE] Notification write failed, removing client:", error.message)
+                removeClient(client)
+            }
+            continue
+        }
+
+        // Notification clients never receive operational event payloads.
+        if (client.role === "notifications") continue
+
         if (targets && targets.length > 0 && !targets.includes(client.role) && !SSE_DASHBOARD_ROLES.has(client.role)) continue
 
         if (client.managerPermission) {
@@ -464,12 +610,13 @@ export async function broadcastLocal(msg) {
  * @param {string[]|null}     targets      Role whitelist, e.g. ["kitchen"], or null for all
  * @param {object}            payload      Data forwarded verbatim to the browser
  */
-export async function publishEvent(event, businessId, targets, payload) {
+export async function publishEvent(event, businessId, targets, payload, internal = {}) {
     const msg = {
         event,
         businessId,
         targets: targets ?? null,
         payload,
+        ...internal,
         originInstanceId: REALTIME_INSTANCE_ID,
     }
 
@@ -491,6 +638,41 @@ export async function publishEvent(event, businessId, targets, payload) {
     } catch (err) {
         console.error("[RealtimeBus] ❌ Redis PUBLISH failed; local clients were still updated:", err.message)
         // Local clients were already updated before the cross-instance publish.
+    }
+}
+
+/** Publish a recipient-scoped, content-free notification invalidation signal. */
+export async function publishNotificationChanged({
+    businessId,
+    recipients,
+    requiredAccessArea = null,
+    requiredPermission = null,
+}) {
+    const recipientTargets = (Array.isArray(recipients) ? recipients : [])
+        .map((recipient) => ({
+            recipientKind: recipient?.recipientKind,
+            recipientId: recipient?.recipientId ? String(recipient.recipientId) : "",
+        }))
+        .filter((recipient) => recipient.recipientKind && recipient.recipientId)
+    if (!businessId || recipientTargets.length === 0) return
+
+    try {
+        await publishEvent(
+            NOTIFICATION_CHANGED_EVENT,
+            businessId,
+            ["notifications"],
+            { invalidated: true },
+            {
+                recipientTargets,
+                notificationAccess: {
+                    area: requiredAccessArea,
+                    permission: requiredPermission,
+                },
+            },
+        )
+    } catch (error) {
+        // MongoDB remains authoritative. Clients refetch on reconnect/focus.
+        console.error("[Notifications] Realtime invalidation failed:", error.message)
     }
 }
 

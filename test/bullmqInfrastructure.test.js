@@ -29,6 +29,7 @@ test("queue names expose the registered durable worker queues", () => {
         POST_PAYMENT: "post-payment",
         AI_ANALYST: "ai-analyst",
         INVENTORY: "inventory",
+        NOTIFICATIONS: "notifications",
     });
     assert.equal(DIAGNOSTIC_JOB_NAME, "diagnostic-ping");
 });

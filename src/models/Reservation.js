@@ -172,6 +172,10 @@ const ReservationSchema = new mongoose.Schema(
     platformFeeCents: { type: Number, default: 0, min: 0 },
     customerPlatformFeeCents: { type: Number, default: 0, min: 0 },
     businessAbsorbedPlatformFeeCents: { type: Number, default: 0, min: 0 },
+    // Chillow does not currently add a customer-facing card-processing
+    // surcharge. Persist that original-payment fact explicitly so a future
+    // policy/configuration change cannot alter historical refund economics.
+    customerProcessingFeeCents: { type: Number, default: 0, min: 0 },
     platformFeeMode: {
       type: String,
       enum: ["business_absorbs", "customer_pays", "split"],

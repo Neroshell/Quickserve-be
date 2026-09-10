@@ -61,6 +61,10 @@ import {
 import { finalizePaidOrderWithInventory } from "../services/paidOrderInventoryService.js";
 import { publishOrderRealtime } from "../services/orderRealtimeService.js";
 import { reconcileFrozenCheckoutFulfillment } from "../services/orderFulfillmentService.js";
+import {
+    FINANCIAL_NOTIFICATION_METHODS,
+    safelyNotifyFinancialEvent,
+} from "../services/financialNotificationIntegrationService.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -420,9 +424,12 @@ export async function handleStripeWebhook(req, res) {
         upsertBillingInvoiceFromStripe;
     const billingEmailDispatcher = req.app?.locals?.dispatchBillingNotification ||
         dispatchBillingNotification;
+    const invoicePaymentFailureNotifier =
+        req.app?.locals?.notifyBillingInvoicePaymentFailed || null;
     const businessConfigurationInvalidator =
         req.app?.locals?.invalidateBusinessConfiguration ||
         invalidateBusinessConfiguration;
+    const businessModel = req.app?.locals?.BusinessModel || Business;
     const sig = req.headers["stripe-signature"];
     let event = req.stripeWebhookEvent || null;
 
@@ -601,13 +608,13 @@ export async function handleStripeWebhook(req, res) {
             const subscriptionId = getStripeInvoiceSubscriptionId(invoice);
             const customerId = getStripeInvoiceCustomerId(invoice);
             const biz = subscriptionId
-                ? await Business.findOne({ stripeSubscriptionId: subscriptionId })
+                ? await businessModel.findOne({ stripeSubscriptionId: subscriptionId })
                 : customerId
-                    ? await Business.findOne({ stripeCustomerId: customerId })
+                    ? await businessModel.findOne({ stripeCustomerId: customerId })
                     : null;
             if (biz) {
                 const failedAt = new Date();
-                const stamped = await Business.findOneAndUpdate(
+                const stamped = await businessModel.findOneAndUpdate(
                     {
                         businessId: biz.businessId,
                         $or: [
@@ -624,7 +631,7 @@ export async function handleStripeWebhook(req, res) {
                 );
                 let fallbackBiz = null;
                 if (!stamped) {
-                    fallbackBiz = await Business.findOneAndUpdate(
+                    fallbackBiz = await businessModel.findOneAndUpdate(
                         { businessId: biz.businessId },
                         { $set: { billingStatus: 'past_due' } },
                     );
@@ -632,12 +639,30 @@ export async function handleStripeWebhook(req, res) {
 
                 const affectedBusiness = stamped || fallbackBiz;
                 if (affectedBusiness) {
-                    await billingInvoiceUpsert({
+                    const failedInvoice = await billingInvoiceUpsert({
                         businessId: affectedBusiness.businessId,
                         invoice,
                         eventType: event.type,
                     });
                     await businessConfigurationInvalidator(affectedBusiness.businessId);
+                    await safelyNotifyFinancialEvent({
+                        method: FINANCIAL_NOTIFICATION_METHODS.INVOICE_PAYMENT_FAILED,
+                        input: {
+                            billingInvoice: failedInvoice,
+                            stripeInvoice: invoice,
+                            providerEventId: event.id,
+                            occurredAt: Number.isFinite(Number(event.created))
+                                ? new Date(Number(event.created) * 1000)
+                                : failedAt,
+                        },
+                    }, {
+                        notify: invoicePaymentFailureNotifier,
+                        context: {
+                            businessId: affectedBusiness.businessId,
+                            stripeInvoiceId: invoice.id,
+                            stripeEventId: event.id,
+                        },
+                    });
                 }
             }
             return res.status(200).send();

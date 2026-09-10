@@ -6,6 +6,10 @@ import { sendReservationRefundEmail } from "../utils/emailService.js";
 import { canRefundReservation } from "./reservationRefundAuthorization.js";
 import { dispatchRefundConfirmation } from "./email/emailDispatchService.js";
 import { deliverRefundEmailDirect } from "./email/refundEmailDeliveryService.js";
+import {
+  FINANCIAL_NOTIFICATION_METHODS,
+  safelyNotifyFinancialEvent,
+} from "./financialNotificationIntegrationService.js";
 
 export const RESERVATION_CANCELLATION_OUTCOMES = Object.freeze([
   "cancel_unpaid",
@@ -38,6 +42,45 @@ const REFUNDABLE_PAYMENT_STATUSES = new Set([
   "partially_refunded",
 ]);
 
+const DEFINITIVE_STRIPE_REFUND_ERROR_TYPES = new Set([
+  "stripecarderror",
+  "stripeinvalidrequesterror",
+  "stripeauthenticationerror",
+  "stripepermissionerror",
+  "striperatelimiterror",
+  "stripeidempotencyerror",
+  "stripeinvalidgranterror",
+  "card_error",
+  "invalid_request_error",
+  "authentication_error",
+  "permission_error",
+  "rate_limit_error",
+  "idempotency_error",
+  "invalid_grant",
+]);
+const AMBIGUOUS_STRIPE_REFUND_ERROR_TYPES = new Set([
+  "stripeconnectionerror",
+  "stripeapierror",
+  "stripeunknownerror",
+  "api_connection_error",
+  "api_error",
+]);
+const AMBIGUOUS_NETWORK_ERROR_CODES = new Set([
+  "api_connection_error",
+  "econnaborted",
+  "econnrefused",
+  "econnreset",
+  "ehostunreach",
+  "enetdown",
+  "enetunreach",
+  "epipe",
+  "etimedout",
+  "und_err_connect_timeout",
+  "und_err_headers_timeout",
+  "und_err_socket",
+]);
+const REFUND_PROVIDER_RESULT_UNKNOWN = "provider_result_unknown";
+
 export class ReservationCancellationError extends Error {
   constructor(message, { status = 400, code = "INVALID_REQUEST", details } = {}) {
     super(message);
@@ -64,6 +107,91 @@ export function getReservationCapturedAmountCents(reservation) {
   return Number.isSafeInteger(totalPriceCents) && totalPriceCents > 0
     ? totalPriceCents
     : 0;
+}
+
+function originalCustomerPlatformFeeCents(reservation) {
+  const storedMinorUnits = integerCents(
+    reservation?.customerPlatformFeeCents,
+  );
+  const storedMajorUnits = Number(reservation?.platformFeeTotal);
+  const legacyMinorUnits = Number.isFinite(storedMajorUnits) &&
+    storedMajorUnits > 0
+    ? Math.round(storedMajorUnits * 100)
+    : 0;
+
+  // platformFeeTotal is the historical customer-paid portion despite its
+  // legacy name. Use the greater persisted representation when old records
+  // predate the minor-unit field or contain a partially backfilled snapshot.
+  return Math.max(storedMinorUnits || 0, legacyMinorUnits);
+}
+
+function originalTotalPlatformFeeCents(reservation) {
+  return Math.max(
+    integerCents(reservation?.platformFeeCents) || 0,
+    integerCents(reservation?.commissionAmountCents) || 0,
+    originalCustomerPlatformFeeCents(reservation) +
+      (integerCents(reservation?.businessAbsorbedPlatformFeeCents) || 0),
+  );
+}
+
+export function isOnlineHotelPayment(reservation) {
+  if (reservation?.paymentChannel === "offline") return false;
+  if (reservation?.paymentChannel === "online") return true;
+
+  // Historical hotel Checkout confirmations did not stamp paymentChannel.
+  // Their immutable Stripe identifiers remain authoritative evidence that
+  // the captured payment was online.
+  return Boolean(
+    reservation?.stripePaymentIntentId ||
+      reservation?.stripeCheckoutSessionId ||
+      reservation?.stripeSessionId,
+  );
+}
+
+export function getReservationRefundEconomics({
+  reservation,
+  successfulRefundedAmountCents = 0,
+} = {}) {
+  const customerPaidAmountCents =
+    getReservationCapturedAmountCents(reservation);
+  const onlinePayment = isOnlineHotelPayment(reservation);
+  const customerPlatformFeeCents = onlinePayment
+    ? originalCustomerPlatformFeeCents(reservation)
+    : 0;
+  const customerProcessingFeeCents = onlinePayment
+    ? integerCents(reservation?.customerProcessingFeeCents) || 0
+    : 0;
+  const totalPlatformFeeCents = onlinePayment
+    ? originalTotalPlatformFeeCents(reservation)
+    : 0;
+  const businessAbsorbedPlatformFeeCents = onlinePayment
+    ? Math.max(
+        integerCents(reservation?.businessAbsorbedPlatformFeeCents) || 0,
+        totalPlatformFeeCents - customerPlatformFeeCents,
+      )
+    : 0;
+  const successfulRefunds = integerCents(successfulRefundedAmountCents) || 0;
+  const customerRefundableCeilingCents = Math.max(
+    0,
+    customerPaidAmountCents -
+      customerPlatformFeeCents -
+      customerProcessingFeeCents,
+  );
+
+  return {
+    paymentChannel: onlinePayment ? "online" : "offline",
+    customerPaidAmountCents,
+    totalPlatformFeeCents,
+    customerPlatformFeeCents,
+    businessAbsorbedPlatformFeeCents,
+    customerProcessingFeeCents,
+    customerRefundableCeilingCents,
+    successfulRefundedAmountCents: successfulRefunds,
+    remainingRefundableAmountCents: Math.max(
+      0,
+      customerRefundableCeilingCents - successfulRefunds,
+    ),
+  };
 }
 
 export function getRemainingRefundableAmountCents({
@@ -178,6 +306,40 @@ function normalizeStripeRefundStatus(status) {
   return "pending";
 }
 
+function normalizedErrorSignal(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+export function classifyStripeRefundCreationError(error) {
+  const typeSignals = [
+    error?.type,
+    error?.name,
+    error?.rawType,
+    error?.raw?.type,
+  ].map(normalizedErrorSignal);
+  const errorCode = normalizedErrorSignal(error?.code || error?.raw?.code);
+  const statusCode = Number(error?.statusCode || error?.raw?.statusCode);
+
+  if (
+    typeSignals.some((value) => AMBIGUOUS_STRIPE_REFUND_ERROR_TYPES.has(value)) ||
+    AMBIGUOUS_NETWORK_ERROR_CODES.has(errorCode) ||
+    statusCode === 408 ||
+    statusCode >= 500
+  ) {
+    return "ambiguous";
+  }
+  if (
+    typeSignals.some((value) => DEFINITIVE_STRIPE_REFUND_ERROR_TYPES.has(value)) ||
+    (statusCode >= 400 && statusCode < 500)
+  ) {
+    return "definitive";
+  }
+
+  // Unknown exceptions provide no authoritative evidence that Stripe rejected
+  // the request. Preserve the attempt until provider truth is available.
+  return "ambiguous";
+}
+
 function stripeReason(reason) {
   if (reason === "duplicate_booking") return "duplicate";
   if (reason === "guest_request") return "requested_by_customer";
@@ -217,6 +379,7 @@ export async function reconcileReservationRefund({
   refundModel = ReservationRefund,
   businessModel = Business,
   sendRefundEmail = sendReservationRefundEmail,
+  sendOwnerRefundFailure = null,
   now = new Date(),
 }) {
   const providerStatus = normalizeStripeRefundStatus(providerRefund?.status);
@@ -247,9 +410,11 @@ export async function reconcileReservationRefund({
   }
 
   if (providerStatus === "failed" || providerStatus === "cancelled") {
+    const wasFailed = refundRecord.status === "failed";
     const failedRefund = await refundModel.findOneAndUpdate(
       {
         _id: refundRecord._id,
+        businessId: refundRecord.businessId,
         status: { $ne: "succeeded" },
       },
       {
@@ -280,6 +445,19 @@ export async function reconcileReservationRefund({
       },
       { $set: { activeRefundId: null } },
     );
+    if (providerStatus === "failed" && failedRefund && !wasFailed) {
+      await safelyNotifyFinancialEvent({
+        method: FINANCIAL_NOTIFICATION_METHODS.RESERVATION_REFUND_FAILED,
+        input: { refund: failedRefund, now },
+      }, {
+        notify: sendOwnerRefundFailure,
+        context: {
+          businessId: refundRecord.businessId,
+          refundId: refundRecord.refundId,
+          reservationId: String(refundRecord.reservationId),
+        },
+      });
+    }
     return { refund: failedRefund, reservation: null };
   }
 
@@ -291,6 +469,8 @@ export async function reconcileReservationRefund({
           providerRefundId:
             providerRefund?.id || refundRecord.providerRefundId || null,
           providerCreatedAt,
+          failureCode: null,
+          failureMessage: null,
         },
       },
       { new: true },
@@ -339,8 +519,17 @@ export async function reconcileReservationRefund({
     Number(reservation.refundedAmountCents || 0),
   );
   const capturedAmountCents = getReservationCapturedAmountCents(reservation);
+  const refundEconomics = getReservationRefundEconomics({
+    reservation,
+    successfulRefundedAmountCents: successfulRefundedCents,
+  });
+  const storedRefundableCeilingCents = integerCents(
+    finalRefund.customerRefundableCeilingCents,
+  );
+  const customerRefundableCeilingCents = storedRefundableCeilingCents ??
+    refundEconomics.customerRefundableCeilingCents;
   const paymentStatus =
-    successfulRefundedCents >= capturedAmountCents
+    successfulRefundedCents >= customerRefundableCeilingCents
       ? "refunded"
       : "partially_refunded";
   const cancelledBy = {
@@ -416,6 +605,7 @@ export async function reconcileStripeReservationRefund({
   refundModel = ReservationRefund,
   businessModel = Business,
   sendRefundEmail = sendReservationRefundEmail,
+  sendOwnerRefundFailure = null,
   now = new Date(),
 }) {
   const metadata = providerRefund?.metadata || {};
@@ -476,6 +666,7 @@ export async function reconcileStripeReservationRefund({
     refundModel,
     businessModel,
     sendRefundEmail,
+    sendOwnerRefundFailure,
     now,
   });
 }
@@ -510,6 +701,7 @@ export async function cancelHotelReservation({
   refundModel = ReservationRefund,
   businessModel = Business,
   sendRefundEmail = sendReservationRefundEmail,
+  sendOwnerRefundFailure = null,
   now = new Date(),
 }) {
   const normalizedNotes = assertCancellationInput({ outcome, reason, notes });
@@ -690,11 +882,12 @@ export async function cancelHotelReservation({
     ledgerRefundedCents,
     Number(reservation.refundedAmountCents || 0),
   );
+  const refundEconomics = getReservationRefundEconomics({
+    reservation,
+    successfulRefundedAmountCents,
+  });
   const remainingRefundableAmountCents =
-    getRemainingRefundableAmountCents({
-      capturedAmountCents,
-      successfulRefundedAmountCents,
-    });
+    refundEconomics.remainingRefundableAmountCents;
   const requestedAmountCents =
     outcome === "full_refund"
       ? remainingRefundableAmountCents
@@ -732,6 +925,15 @@ export async function cancelHotelReservation({
       idempotencyKey,
       requestFingerprint: fingerprint,
       originalPaidAmountCents: capturedAmountCents,
+      customerRefundableCeilingCents:
+        refundEconomics.customerRefundableCeilingCents,
+      customerPlatformFeeCents:
+        refundEconomics.customerPlatformFeeCents,
+      customerProcessingFeeCents:
+        refundEconomics.customerProcessingFeeCents,
+      totalPlatformFeeCents: refundEconomics.totalPlatformFeeCents,
+      businessAbsorbedPlatformFeeCents:
+        refundEconomics.businessAbsorbedPlatformFeeCents,
       requestedAmountCents,
       currency: String(reservation.currency || "").toLowerCase(),
       type: outcome === "full_refund" ? "full" : "partial",
@@ -759,6 +961,7 @@ export async function cancelHotelReservation({
       refundModel,
       businessModel,
       sendRefundEmail,
+      sendOwnerRefundFailure,
       now,
     });
   }
@@ -812,7 +1015,9 @@ export async function cancelHotelReservation({
         payment_intent: reservation.stripePaymentIntentId,
         amount: requestedAmountCents,
         reverse_transfer: true,
-        refund_application_fee: true,
+        // Founder policy: retain the entire original Chillow application fee,
+        // including both customer-paid and hotel-absorbed portions.
+        refund_application_fee: false,
         metadata: {
           quickServeRefundId: refund.refundId,
           reservationId: String(reservation._id),
@@ -825,8 +1030,36 @@ export async function cancelHotelReservation({
       { idempotencyKey },
     );
   } catch (error) {
-    await refundModel.updateOne(
-      { _id: refund._id, status: "pending" },
+    if (classifyStripeRefundCreationError(error) === "ambiguous") {
+      const pendingRefund = await refundModel.findOneAndUpdate(
+        { _id: refund._id, businessId, status: "pending" },
+        {
+          $set: {
+            failureCode: REFUND_PROVIDER_RESULT_UNKNOWN,
+            failureMessage: "Refund outcome is being verified with Stripe.",
+          },
+        },
+        { new: true },
+      );
+
+      // The activeRefundId lock intentionally remains held. A retry of this
+      // logical request reuses the persisted Stripe idempotency key, while a
+      // different request cannot acquire the reservation lock.
+      throw new ReservationCancellationError(
+        "The refund outcome is being verified. The reservation remains confirmed until Stripe confirms the result.",
+        {
+          status: 503,
+          code: "REFUND_PROVIDER_RESULT_UNKNOWN",
+          details: {
+            refundId: (pendingRefund || refund).refundId,
+            refundPending: true,
+          },
+        },
+      );
+    }
+
+    const failedRefund = await refundModel.findOneAndUpdate(
+      { _id: refund._id, businessId, status: "pending" },
       {
         $set: {
           status: "failed",
@@ -837,15 +1070,32 @@ export async function cancelHotelReservation({
           ).slice(0, 500),
         },
       },
+      { new: true },
     );
-    await reservationModel.updateOne(
-      {
-        _id: reservation._id,
-        businessId,
-        activeRefundId: refund.refundId,
-      },
-      { $set: { activeRefundId: null } },
-    );
+    if (failedRefund) {
+      await reservationModel.updateOne(
+        {
+          _id: reservation._id,
+          businessId,
+          activeRefundId: refund.refundId,
+        },
+        { $set: { activeRefundId: null } },
+      );
+      await safelyNotifyFinancialEvent({
+        method: FINANCIAL_NOTIFICATION_METHODS.RESERVATION_REFUND_FAILED,
+        input: {
+          refund: failedRefund,
+          now,
+        },
+      }, {
+        notify: sendOwnerRefundFailure,
+        context: {
+          businessId,
+          refundId: refund.refundId,
+          reservationId: String(refund.reservationId),
+        },
+      });
+    }
     throw new ReservationCancellationError(
       "Stripe did not accept the refund. The reservation remains confirmed.",
       { status: 502, code: "REFUND_PROVIDER_FAILED" },
@@ -859,6 +1109,7 @@ export async function cancelHotelReservation({
     refundModel,
     businessModel,
     sendRefundEmail,
+    sendOwnerRefundFailure,
     now,
   });
   return {

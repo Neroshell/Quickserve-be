@@ -18,6 +18,13 @@ function toRefundResponse(refund) {
     refundId: source.refundId,
     status: source.status,
     type: source.type,
+    customerRefundableCeilingCents:
+      source.customerRefundableCeilingCents,
+    customerPlatformFeeCents: source.customerPlatformFeeCents,
+    customerProcessingFeeCents: source.customerProcessingFeeCents,
+    totalPlatformFeeCents: source.totalPlatformFeeCents,
+    businessAbsorbedPlatformFeeCents:
+      source.businessAbsorbedPlatformFeeCents,
     requestedAmountCents: source.requestedAmountCents,
     successfulAmountCents: source.successfulAmountCents,
     currency: source.currency,

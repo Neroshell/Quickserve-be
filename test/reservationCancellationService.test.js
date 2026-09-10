@@ -2,8 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import {
     cancelHotelReservation,
+    classifyStripeRefundCreationError,
     getRemainingRefundableAmountCents,
     getReservationCapturedAmountCents,
+    getReservationRefundEconomics,
     reconcileStripeReservationRefund,
     ReservationCancellationError,
 } from "../src/services/reservationCancellationService.js"
@@ -175,6 +177,7 @@ function request(overrides = {}) {
         notes: "Guest changed plans.",
         clientIdempotencyKey: "client-operation-key-0001",
         now: new Date("2026-07-30T12:00:00.000Z"),
+        sendOwnerRefundFailure: async () => ({ created: true }),
         ...overrides,
     }
 }
@@ -222,6 +225,73 @@ test("captured and remaining amounts use integer cents and cumulative successful
         }),
         13001,
     )
+})
+
+test("refund economics deduct only customer-borne immutable online fees", () => {
+    const customerPaysAll = getReservationRefundEconomics({
+        reservation: hotelReservation({
+            amountPaidCents: 30000,
+            platformFeeCents: 1500,
+            customerPlatformFeeCents: 1500,
+            businessAbsorbedPlatformFeeCents: 0,
+            customerProcessingFeeCents: 300,
+        }),
+    })
+    assert.deepEqual(customerPaysAll, {
+        paymentChannel: "online",
+        customerPaidAmountCents: 30000,
+        totalPlatformFeeCents: 1500,
+        customerPlatformFeeCents: 1500,
+        businessAbsorbedPlatformFeeCents: 0,
+        customerProcessingFeeCents: 300,
+        customerRefundableCeilingCents: 28200,
+        successfulRefundedAmountCents: 0,
+        remainingRefundableAmountCents: 28200,
+    })
+
+    const hotelPaysAll = getReservationRefundEconomics({
+        reservation: hotelReservation({
+            amountPaidCents: 28500,
+            platformFeeCents: 1500,
+            customerPlatformFeeCents: 0,
+            businessAbsorbedPlatformFeeCents: 1500,
+            businessProcessingFeeCents: 300,
+        }),
+    })
+    assert.equal(hotelPaysAll.customerRefundableCeilingCents, 28500)
+    assert.equal(hotelPaysAll.businessAbsorbedPlatformFeeCents, 1500)
+
+    const split = getReservationRefundEconomics({
+        reservation: hotelReservation({
+            amountPaidCents: 29100,
+            platformFeeCents: 1500,
+            customerPlatformFeeCents: 600,
+            businessAbsorbedPlatformFeeCents: 900,
+        }),
+        successfulRefundedAmountCents: 10000,
+    })
+    assert.equal(split.customerRefundableCeilingCents, 28500)
+    assert.equal(split.remainingRefundableAmountCents, 18500)
+    assert.equal(split.businessAbsorbedPlatformFeeCents, 900)
+})
+
+test("offline refund economics never manufacture online fee deductions", () => {
+    const economics = getReservationRefundEconomics({
+        reservation: hotelReservation({
+            paymentChannel: "offline",
+            paidVia: "cash",
+            stripePaymentIntentId: null,
+            amountPaidCents: 30000,
+            platformFeeCents: 1500,
+            customerPlatformFeeCents: 1500,
+            customerProcessingFeeCents: 300,
+        }),
+    })
+
+    assert.equal(economics.paymentChannel, "offline")
+    assert.equal(economics.customerPlatformFeeCents, 0)
+    assert.equal(economics.customerProcessingFeeCents, 0)
+    assert.equal(economics.customerRefundableCeilingCents, 30000)
 })
 
 test("unpaid cancellation creates no refund record", async () => {
@@ -291,7 +361,7 @@ test("staff cannot bypass refund authority through the paid cancellation service
     assert.equal(stores.refunds.length, 0)
 })
 
-test("full refund uses the original PaymentIntent, Connect reversal flags, and provider idempotency", async () => {
+test("full refund uses the original PaymentIntent, retains Chillow fees, and preserves provider idempotency", async () => {
     const stores = createStores(hotelReservation())
     const calls = []
     const result = await cancelHotelReservation({
@@ -307,7 +377,7 @@ test("full refund uses the original PaymentIntent, Connect reversal flags, and p
     )
     assert.equal(calls[0].payload.amount, 30000)
     assert.equal(calls[0].payload.reverse_transfer, true)
-    assert.equal(calls[0].payload.refund_application_fee, true)
+    assert.equal(calls[0].payload.refund_application_fee, false)
     assert.match(calls[0].options.idempotencyKey, /^reservation-cancellation\//)
     assert.equal(result.refund.providerRefundId, "re_1")
     assert.equal(result.refund.connectedAccountId, "acct_hotel_1")
@@ -315,6 +385,148 @@ test("full refund uses the original PaymentIntent, Connect reversal flags, and p
     assert.equal(result.reservation.status, "cancelled")
     assert.equal(result.reservation.paymentStatus, "refunded")
     assert.equal(result.reservation.refundedAmountCents, 30000)
+})
+
+test("full refund ceiling follows customer, hotel, and split Chillow fee ownership", async () => {
+    for (const scenario of [
+        {
+            name: "customer-pays-all",
+            amountPaidCents: 30000,
+            totalFeeCents: 1500,
+            customerFeeCents: 1500,
+            businessFeeCents: 0,
+            expectedRefundCents: 28500,
+        },
+        {
+            name: "hotel-pays-all",
+            amountPaidCents: 28500,
+            totalFeeCents: 1500,
+            customerFeeCents: 0,
+            businessFeeCents: 1500,
+            expectedRefundCents: 28500,
+        },
+        {
+            name: "split",
+            amountPaidCents: 29100,
+            totalFeeCents: 1500,
+            customerFeeCents: 600,
+            businessFeeCents: 900,
+            expectedRefundCents: 28500,
+        },
+    ]) {
+        const stores = createStores(hotelReservation({
+            amountPaidCents: scenario.amountPaidCents,
+            platformFeeCents: scenario.totalFeeCents,
+            commissionAmountCents: scenario.totalFeeCents,
+            customerPlatformFeeCents: scenario.customerFeeCents,
+            businessAbsorbedPlatformFeeCents: scenario.businessFeeCents,
+        }))
+        const calls = []
+        const result = await cancelHotelReservation({
+            ...request({
+                clientIdempotencyKey:
+                    `fee-ownership-${scenario.name}-0001`,
+            }),
+            stripeClient: stripeSuccess(calls),
+            ...stores,
+        })
+
+        assert.equal(calls[0].payload.amount, scenario.expectedRefundCents)
+        assert.equal(calls[0].payload.refund_application_fee, false)
+        assert.equal(
+            result.refund.customerPlatformFeeCents,
+            scenario.customerFeeCents,
+        )
+        assert.equal(
+            result.refund.businessAbsorbedPlatformFeeCents,
+            scenario.businessFeeCents,
+        )
+        assert.equal(result.refund.totalPlatformFeeCents, scenario.totalFeeCents)
+        assert.equal(result.reservation.paymentStatus, "refunded")
+    }
+})
+
+test("customer processing fee is excluded while platform processing cost cannot reduce the refund", async () => {
+    const stores = createStores(hotelReservation({
+        amountPaidCents: 30000,
+        customerPlatformFeeCents: 500,
+        platformFeeCents: 1200,
+        businessAbsorbedPlatformFeeCents: 700,
+        customerProcessingFeeCents: 300,
+        businessProcessingFeeCents: 900,
+    }))
+    const calls = []
+    const result = await cancelHotelReservation({
+        ...request({
+            clientIdempotencyKey: "processing-fee-ownership-0001",
+        }),
+        stripeClient: stripeSuccess(calls),
+        ...stores,
+    })
+
+    assert.equal(calls[0].payload.amount, 29200)
+    assert.equal(result.refund.customerProcessingFeeCents, 300)
+    assert.equal(result.refund.customerRefundableCeilingCents, 29200)
+})
+
+test("historical reservation fee snapshot remains authoritative after current settings change", async () => {
+    const stores = createStores(hotelReservation({
+        amountPaidCents: 30000,
+        platformFeeCents: 1000,
+        customerPlatformFeeCents: 400,
+        businessAbsorbedPlatformFeeCents: 600,
+        platformFeeMode: "split",
+        customerPlatformFeePercent: 40,
+        commissionRateApplied: 2.5,
+    }))
+    const calls = []
+
+    await cancelHotelReservation({
+        ...request({
+            clientIdempotencyKey: "historical-fee-snapshot-0001",
+        }),
+        businessModel: {
+            async findOne() {
+                throw new Error("current business settings must not be read")
+            },
+        },
+        stripeClient: stripeSuccess(calls),
+        ...stores,
+    })
+
+    assert.equal(calls[0].payload.amount, 29600)
+})
+
+test("previous successful refunds reduce the ceiling and frontend fee tampering is ignored", async () => {
+    const stores = createStores(hotelReservation({
+        amountPaidCents: 30000,
+        platformFeeCents: 1000,
+        customerPlatformFeeCents: 400,
+        businessAbsorbedPlatformFeeCents: 600,
+        refundedAmountCents: 5000,
+    }))
+    stores.refunds.push({
+        _id: "prior-refund",
+        refundId: "RF-PRIOR",
+        businessId: "hotel-1",
+        reservationId: "reservation-1",
+        status: "succeeded",
+        successfulAmountCents: 5000,
+    })
+    const calls = []
+
+    await cancelHotelReservation({
+        ...request({
+            clientIdempotencyKey: "previous-refund-ceiling-0001",
+            customerPlatformFeeCents: 0,
+            customerProcessingFeeCents: 0,
+            customerRefundableCeilingCents: 30000,
+        }),
+        stripeClient: stripeSuccess(calls),
+        ...stores,
+    })
+
+    assert.equal(calls[0].payload.amount, 24600)
 })
 
 test("partial refund validates balance and persists net-retained state without changing the original paid amount", async () => {
@@ -371,6 +583,25 @@ test("partial refund validates balance and persists net-retained state without c
             ...stringAmountStores,
         }),
         (error) => error.code === "INVALID_REFUND_AMOUNT",
+    )
+
+    const feeCeilingStores = createStores(hotelReservation({
+        customerPlatformFeeCents: 1000,
+        platformFeeCents: 1000,
+    }))
+    await assert.rejects(
+        cancelHotelReservation({
+            ...request({
+                outcome: "partial_refund",
+                refundAmountCents: 29001,
+                clientIdempotencyKey: "fee-ceiling-over-refund-0001",
+            }),
+            stripeClient: stripeSuccess([]),
+            ...feeCeilingStores,
+        }),
+        (error) =>
+            error.code === "INVALID_REFUND_AMOUNT" &&
+            error.details?.remainingRefundableAmountCents === 29000,
     )
 })
 
@@ -433,15 +664,25 @@ test("webhook metadata and provider payment identifiers must match the stored te
 
 test("provider failure leaves the reservation confirmed, records failure, and releases the lock", async () => {
     const stores = createStores(hotelReservation())
+    const ownerNotifications = []
 
     await assert.rejects(
         cancelHotelReservation({
-            ...request(),
+            ...request({
+                sendOwnerRefundFailure: async ({ refund }) => {
+                    assert.equal(stores.refunds[0].status, "failed")
+                    assert.equal(stores.reservation.activeRefundId, null)
+                    ownerNotifications.push(refund.refundId)
+                    return { created: true }
+                },
+            }),
             stripeClient: {
                 refunds: {
                     async create() {
-                        const error = new Error("Provider unavailable")
-                        error.code = "api_connection_error"
+                        const error = new Error("Refund is not allowed")
+                        error.type = "StripeInvalidRequestError"
+                        error.code = "refund_not_allowed"
+                        error.statusCode = 400
                         throw error
                     },
                 },
@@ -459,8 +700,266 @@ test("provider failure leaves the reservation confirmed, records failure, and re
     assert.equal(stores.refunds[0].status, "failed")
     assert.equal(
         stores.refunds[0].failureCode,
-        "api_connection_error",
+        "refund_not_allowed",
     )
+    assert.deepEqual(ownerNotifications, [stores.refunds[0].refundId])
+})
+
+test("Stripe refund creation errors distinguish definitive responses from ambiguous outcomes", () => {
+    assert.equal(
+        classifyStripeRefundCreationError({
+            type: "StripeInvalidRequestError",
+            statusCode: 400,
+        }),
+        "definitive",
+    )
+    assert.equal(
+        classifyStripeRefundCreationError({
+            type: "StripeConnectionError",
+            code: "api_connection_error",
+        }),
+        "ambiguous",
+    )
+    assert.equal(
+        classifyStripeRefundCreationError({ code: "ETIMEDOUT" }),
+        "ambiguous",
+    )
+    assert.equal(
+        classifyStripeRefundCreationError({
+            type: "StripeAPIError",
+            statusCode: 500,
+        }),
+        "ambiguous",
+    )
+})
+
+test("connection and timeout outcomes stay pending, retain the lock, and emit no failure notification", async () => {
+    for (const [index, providerError] of [
+        Object.assign(new Error("Connection lost"), {
+            type: "StripeConnectionError",
+            code: "api_connection_error",
+        }),
+        Object.assign(new Error("Timed out"), { code: "ETIMEDOUT" }),
+    ].entries()) {
+        const stores = createStores(hotelReservation())
+        const ownerNotifications = []
+        await assert.rejects(
+            cancelHotelReservation({
+                ...request({
+                    clientIdempotencyKey: `ambiguous-refund-${index}-0001`,
+                    sendOwnerRefundFailure: async ({ refund }) => {
+                        ownerNotifications.push(refund.refundId)
+                        return { created: true }
+                    },
+                }),
+                stripeClient: {
+                    refunds: {
+                        async create() {
+                            throw providerError
+                        },
+                    },
+                },
+                ...stores,
+            }),
+            (error) =>
+                error.code === "REFUND_PROVIDER_RESULT_UNKNOWN" &&
+                error.status === 503 &&
+                error.details?.refundPending === true &&
+                /being verified/i.test(error.message),
+        )
+
+        assert.equal(stores.reservation.status, "confirmed")
+        assert.equal(stores.reservation.paymentStatus, "paid")
+        assert.equal(
+            stores.reservation.activeRefundId,
+            stores.refunds[0].refundId,
+        )
+        assert.equal(stores.refunds[0].status, "pending")
+        assert.equal(
+            stores.refunds[0].failureCode,
+            "provider_result_unknown",
+        )
+        assert.match(stores.refunds[0].failureMessage, /being verified/i)
+        assert.deepEqual(ownerNotifications, [])
+    }
+})
+
+test("an ambiguous refund safely reconciles from a later Stripe success webhook", async () => {
+    const stores = createStores(hotelReservation())
+    const ownerNotifications = []
+    const ambiguous = Object.assign(new Error("Connection lost"), {
+        type: "StripeConnectionError",
+    })
+    await assert.rejects(
+        cancelHotelReservation({
+            ...request({
+                sendOwnerRefundFailure: async ({ refund }) => {
+                    ownerNotifications.push(refund.refundId)
+                    return { created: true }
+                },
+            }),
+            stripeClient: {
+                refunds: { async create() { throw ambiguous } },
+            },
+            ...stores,
+        }),
+        (error) => error.code === "REFUND_PROVIDER_RESULT_UNKNOWN",
+    )
+    const initial = stores.refunds[0]
+
+    const reconciled = await reconcileStripeReservationRefund({
+        providerRefund: {
+            id: "re_ambiguous_success",
+            payment_intent: initial.providerPaymentId,
+            status: "succeeded",
+            metadata: {
+                quickServeRefundId: initial.refundId,
+                reservationId: String(initial.reservationId),
+                businessId: initial.businessId,
+            },
+        },
+        sendOwnerRefundFailure: async ({ refund }) => {
+            ownerNotifications.push(refund.refundId)
+            return { created: true }
+        },
+        ...stores,
+    })
+
+    assert.equal(reconciled.refund.status, "succeeded")
+    assert.equal(stores.reservation.status, "cancelled")
+    assert.equal(stores.reservation.paymentStatus, "refunded")
+    assert.equal(stores.reservation.activeRefundId, null)
+    assert.equal(stores.refunds.length, 1)
+    assert.deepEqual(ownerNotifications, [])
+})
+
+test("an ambiguous refund followed by duplicate failure webhooks emits one failure notification", async () => {
+    const stores = createStores(hotelReservation())
+    const ownerNotifications = []
+    const ambiguous = Object.assign(new Error("Connection lost"), {
+        code: "ECONNRESET",
+    })
+    await assert.rejects(
+        cancelHotelReservation({
+            ...request(),
+            stripeClient: {
+                refunds: { async create() { throw ambiguous } },
+            },
+            ...stores,
+        }),
+        (error) => error.code === "REFUND_PROVIDER_RESULT_UNKNOWN",
+    )
+    const initial = stores.refunds[0]
+    const providerRefund = {
+        id: "re_ambiguous_failed",
+        payment_intent: initial.providerPaymentId,
+        status: "failed",
+        failure_reason: "expired_or_canceled_card",
+        metadata: {
+            quickServeRefundId: initial.refundId,
+            reservationId: String(initial.reservationId),
+            businessId: initial.businessId,
+        },
+    }
+    const webhookInput = {
+        providerRefund,
+        sendOwnerRefundFailure: async ({ refund }) => {
+            ownerNotifications.push(refund.refundId)
+            return { created: true }
+        },
+        ...stores,
+    }
+
+    const first = await reconcileStripeReservationRefund(webhookInput)
+    const duplicate = await reconcileStripeReservationRefund(webhookInput)
+
+    assert.equal(first.refund.status, "failed")
+    assert.equal(duplicate.refund.status, "failed")
+    assert.equal(stores.reservation.status, "confirmed")
+    assert.equal(stores.reservation.activeRefundId, null)
+    assert.deepEqual(ownerNotifications, [initial.refundId])
+})
+
+test("retrying an ambiguous refund reuses the stored logical refund and Stripe idempotency key", async () => {
+    const stores = createStores(hotelReservation())
+    const calls = []
+    const stripeClient = {
+        refunds: {
+            async create(payload, options) {
+                calls.push({ payload, options })
+                if (calls.length === 1) {
+                    throw Object.assign(new Error("Connection lost"), {
+                        code: "api_connection_error",
+                    })
+                }
+                return {
+                    id: "re_recovered_same_attempt",
+                    payment_intent: payload.payment_intent,
+                    status: "succeeded",
+                    metadata: payload.metadata,
+                }
+            },
+        },
+    }
+    const input = { ...request(), stripeClient, ...stores }
+
+    await assert.rejects(
+        cancelHotelReservation(input),
+        (error) => error.code === "REFUND_PROVIDER_RESULT_UNKNOWN",
+    )
+    const initial = stores.refunds[0]
+    const retry = await cancelHotelReservation(input)
+
+    assert.equal(retry.refund.status, "succeeded")
+    assert.equal(calls.length, 2)
+    assert.equal(
+        calls[0].options.idempotencyKey,
+        calls[1].options.idempotencyKey,
+    )
+    assert.equal(calls[0].payload.metadata.quickServeRefundId, initial.refundId)
+    assert.equal(calls[1].payload.metadata.quickServeRefundId, initial.refundId)
+    assert.equal(stores.refunds.length, 1)
+})
+
+test("a different user retry cannot bypass an ambiguous refund lock", async () => {
+    const stores = createStores(hotelReservation())
+    let providerCalls = 0
+    const stripeClient = {
+        refunds: {
+            async create() {
+                providerCalls += 1
+                throw Object.assign(new Error("Connection lost"), {
+                    type: "StripeConnectionError",
+                })
+            },
+        },
+    }
+    await assert.rejects(
+        cancelHotelReservation({
+            ...request(),
+            stripeClient,
+            ...stores,
+        }),
+        (error) => error.code === "REFUND_PROVIDER_RESULT_UNKNOWN",
+    )
+    const initial = stores.refunds[0]
+
+    await assert.rejects(
+        cancelHotelReservation({
+            ...request({
+                user: actor("co_owner"),
+                clientIdempotencyKey: "different-user-refund-attempt-0002",
+            }),
+            stripeClient,
+            ...stores,
+        }),
+        (error) => error.code === "CONCURRENT_OPERATION",
+    )
+
+    assert.equal(providerCalls, 1)
+    assert.equal(stores.reservation.activeRefundId, initial.refundId)
+    assert.equal(stores.refunds[0].status, "pending")
+    assert.equal(stores.refunds[1].status, "cancelled")
 })
 
 test("a concurrent refund cannot acquire the reservation lock or call Stripe twice", async () => {

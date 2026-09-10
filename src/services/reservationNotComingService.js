@@ -22,6 +22,13 @@ async function publishRealtimeEvent(...args) {
   return publishEvent(...args);
 }
 
+async function createCancellationNotification(...args) {
+  const { notifyGuestReservationCancelled } = await import(
+    "./reservationNotificationService.js"
+  );
+  return notifyGuestReservationCancelled(...args);
+}
+
 function isTimeslotBusiness(business) {
   return resolveBusinessCapabilities(business).reservations.primaryMode === "timeslot";
 }
@@ -117,6 +124,7 @@ export async function cancelRestaurantReservationNotComing({
   reservationModel = Reservation,
   businessModel = Business,
   publish = publishRealtimeEvent,
+  notify = createCancellationNotification,
 } = {}) {
   const context = await resolveNotComingContext({
     token,
@@ -197,6 +205,15 @@ export async function cancelRestaurantReservationNotComing({
     );
   } catch (error) {
     console.error("[ReservationNotComing] SSE publish failed", {
+      reservationId: String(updated._id),
+      errorClass: error?.name || "Error",
+    });
+  }
+
+  try {
+    await notify({ reservation: updated, now });
+  } catch (error) {
+    console.error("[ReservationNotComing] Notification intent failed", {
       reservationId: String(updated._id),
       errorClass: error?.name || "Error",
     });

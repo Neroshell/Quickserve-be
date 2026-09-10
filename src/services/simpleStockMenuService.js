@@ -29,6 +29,7 @@ import {
     toMenuItemWithInventoryDTO,
 } from "./menuInventoryAvailabilityService.js"
 import { normalizeMenuFulfillmentConfiguration } from "./orderFulfillmentService.js"
+import { safelyNotifyInventoryStockTransitions } from "./inventoryNotificationIntegrationService.js"
 
 const SIMPLE_UNITS = new Set(SIMPLE_STOCK_UNIT_VALUES)
 
@@ -418,7 +419,9 @@ export async function adjustSimpleStockMenuItem({
     input,
     actor,
     idempotencyKey,
-}) {
+}, {
+    notifyInventoryTransitions = null,
+} = {}) {
     const tenantId = requiredText(businessId, "businessId")
     const itemId = requiredText(menuItemId, "menuItemId")
     const key = requiredText(idempotencyKey, "Idempotency-Key")
@@ -443,6 +446,15 @@ export async function adjustSimpleStockMenuItem({
         await records.menuItem.save({ session })
         return { ...movementResult, menuItem: records.menuItem }
     })
+    if (!result.replayed) {
+        await safelyNotifyInventoryStockTransitions({
+            businessId: tenantId,
+            movements: [result.movement],
+            inventoryItems: [result.item],
+        }, {
+            notify: notifyInventoryTransitions,
+        })
+    }
     await invalidateMenuMutation(tenantId)
     const [item] = await enrichMenuItemsWithInventory({ businessId: tenantId, menuItems: [result.menuItem] })
     return { ...result, item, menuItem: undefined }
@@ -487,7 +499,9 @@ export async function executeInventoryMovementWithSimpleStockProjection({
     actor,
     idempotencyKey,
     command,
-}) {
+}, {
+    notifyInventoryTransitions = null,
+} = {}) {
     const tenantId = requiredText(businessId, "businessId")
     const itemId = requiredText(inventoryItemId, "inventoryItemId", 100)
     if (typeof command !== "function") {
@@ -509,6 +523,15 @@ export async function executeInventoryMovementWithSimpleStockProjection({
         })
         return { movementResult, projectedMenuItems }
     })
+    if (!result.movementResult.replayed) {
+        await safelyNotifyInventoryStockTransitions({
+            businessId: tenantId,
+            movements: [result.movementResult.movement],
+            inventoryItems: [result.movementResult.item],
+        }, {
+            notify: notifyInventoryTransitions,
+        })
+    }
     if (result.projectedMenuItems > 0) await invalidateMenuMutation(tenantId)
     return result.movementResult
 }
@@ -620,7 +643,9 @@ export async function setMappedMenuManualAvailability({ businessId, menuItemId, 
 // Backward-compatible export for the Phase 2B controller boundary.
 export const setSimpleStockManualAvailability = setMappedMenuManualAvailability
 
-export async function setSimpleStockEnabled({ businessId, menuItemId, enabled, actor }) {
+export async function setSimpleStockEnabled({ businessId, menuItemId, enabled, actor }, {
+    notifyInventoryTransitions = null,
+} = {}) {
     const tenantId = requiredText(businessId, "businessId")
     if (typeof enabled !== "boolean") {
         throw new SimpleStockMenuError("enabled must be boolean", "INVALID_SIMPLE_STOCK_INPUT")
@@ -628,6 +653,7 @@ export async function setSimpleStockEnabled({ businessId, menuItemId, enabled, a
     const performedBy = normalizeActor(actor)
     const result = await withCanonicalInventoryTransaction(async (session) => {
         const records = await loadMappedRecords({ businessId: tenantId, menuItemId, session })
+        let movementResult = null
         if (!enabled) {
             if (records.mapping.status === MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED) {
                 throw new SimpleStockMenuError("Archived mapping cannot be disabled", "MAPPING_ARCHIVED", 409)
@@ -643,7 +669,7 @@ export async function setSimpleStockEnabled({ businessId, menuItemId, enabled, a
                 const legacyQuantity = nonNegativeInteger(records.menuItem.stockQuantity, "stockQuantity")
                 const delta = legacyQuantity - records.inventoryItem.onHandQuantity
                 if (delta !== 0) {
-                    await adjustInventory({
+                    movementResult = await adjustInventory({
                         businessId: tenantId,
                         inventoryItemId: records.inventoryItem.inventoryItemId,
                         input: {
@@ -674,10 +700,26 @@ export async function setSimpleStockEnabled({ businessId, menuItemId, enabled, a
         }
         await records.mapping.save({ session })
         await records.menuItem.save({ session })
-        return records.menuItem
+        return {
+            menuItem: records.menuItem,
+            inventoryItem: records.inventoryItem,
+            movementResult,
+        }
     })
+    if (result.movementResult && !result.movementResult.replayed) {
+        await safelyNotifyInventoryStockTransitions({
+            businessId: tenantId,
+            movements: [result.movementResult.movement],
+            inventoryItems: [result.inventoryItem],
+        }, {
+            notify: notifyInventoryTransitions,
+        })
+    }
     await invalidateMenuMutation(tenantId)
-    const [item] = await enrichMenuItemsWithInventory({ businessId: tenantId, menuItems: [result] })
+    const [item] = await enrichMenuItemsWithInventory({
+        businessId: tenantId,
+        menuItems: [result.menuItem],
+    })
     return item
 }
 

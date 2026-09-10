@@ -43,6 +43,13 @@ async function publishRealtimeEvent(...args) {
   return publishEvent(...args);
 }
 
+async function createArrivalNotification(...args) {
+  const { notifyGuestReservationArrived } = await import(
+    "./reservationNotificationService.js"
+  );
+  return notifyGuestReservationArrived(...args);
+}
+
 function plain(value) {
   return value?.toObject ? value.toObject() : { ...(value || {}) };
 }
@@ -373,6 +380,7 @@ export async function checkInRestaurantReservationArrival({
   reservationModel = Reservation,
   businessModel = Business,
   publish = publishRealtimeEvent,
+  notify = createArrivalNotification,
 } = {}) {
   const context = await resolveArrivalContext({
     token,
@@ -443,6 +451,15 @@ export async function checkInRestaurantReservationArrival({
     );
   } catch (error) {
     console.error("[ReservationArrival] SSE publish failed", {
+      reservationId: String(updated._id),
+      errorClass: error?.name || "Error",
+    });
+  }
+
+  try {
+    await notify({ reservation: updated, now });
+  } catch (error) {
+    console.error("[ReservationArrival] Notification intent failed", {
       reservationId: String(updated._id),
       errorClass: error?.name || "Error",
     });

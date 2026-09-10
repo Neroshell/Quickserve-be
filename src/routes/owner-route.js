@@ -64,8 +64,15 @@ import {
     reassignHotelRoom
 } from "../controllers/reservationController.js"
 import { cancelOwnerHotelReservation } from "../controllers/reservationCancellationController.js"
+import {
+    getNotifications,
+    getUnreadNotificationCount,
+    readAllNotifications,
+    readNotification,
+} from "../controllers/notificationController.js"
+import { notificationSseHandler } from "../utils/sseManager.js"
 
-import { requireAuth, requireManagementArea, requirePermission, requirePrimaryOwner } from "../middleware/authMiddleware.js"
+import { requireAuth, requireManagementArea, requirePermission, requirePrimaryOwner, requireRole } from "../middleware/authMiddleware.js"
 import { requireEntitlement } from "../middleware/subscriptionMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
@@ -85,6 +92,32 @@ import {
 
 const router = express.Router()
 router.use(requireAuth)
+
+const requireNotificationConsumer = requireRole("owner", "co_owner", "manager")
+
+// Persistent notification foundation. Tenant and recipient identity are
+// resolved exclusively from the authenticated session and current DB state.
+router.get(
+    "/notifications/events",
+    requireNotificationConsumer,
+    notificationSseHandler,
+)
+router.get("/notifications", requireNotificationConsumer, getNotifications)
+router.get(
+    "/notifications/unread-count",
+    requireNotificationConsumer,
+    getUnreadNotificationCount,
+)
+router.patch(
+    "/notifications/:notificationId/read",
+    requireNotificationConsumer,
+    readNotification,
+)
+router.post(
+    "/notifications/read-all",
+    requireNotificationConsumer,
+    readAllNotifications,
+)
 
 // ─── Branding ─────────────────────────────────────────────────────────────────
 
