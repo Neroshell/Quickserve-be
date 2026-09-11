@@ -32,8 +32,10 @@ import {
   getBusinessCurrency,
   getOrderItemsValidationError,
   isBusinessServable,
+  isOfflinePaymentMethodEnabled,
   isOrderTypeEnabled,
   isPaymentChannelEnabled,
+  isStaffOfflinePaymentMethod,
   normalizeOrderItems,
 } from "../utils/restaurantOrderValidation.js"
 
@@ -534,8 +536,26 @@ export async function createWaiterOrder(req, res) {
     if (!businessId) {
       return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
     }
+    if (!staffId) {
+      return res.status(403).json({ message: "Unauthorized: Missing staff identity in session" })
+    }
 
-    const { servicePointLabel, items, orderType, tipAmount, tipType, tipPercentage } = req.body
+    const {
+      servicePointLabel,
+      items,
+      orderType,
+      tipAmount,
+      tipType,
+      tipPercentage,
+      paymentMethod = null,
+    } = req.body
+
+    if (paymentMethod !== null && !isStaffOfflinePaymentMethod(paymentMethod)) {
+      return res.status(400).json({
+        code: "INVALID_STAFF_PAYMENT_METHOD",
+        message: "Payment method must be cash or pos_card.",
+      })
+    }
 
     if (!servicePointLabel || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: "servicePointLabel and items are required" })
@@ -585,6 +605,21 @@ export async function createWaiterOrder(req, res) {
       return res.status(403).json({
         success: false,
         message: "Offline ordering is disabled for this business.",
+      })
+    }
+    if (paymentMethod && (
+      business.billingStatus !== "active" ||
+      !business.defaultPaymentMethodId
+    )) {
+      return res.status(403).json({
+        code: "OFFLINE_BILLING_NOT_SETUP",
+        message: "Offline payment confirmation is unavailable until billing setup is complete.",
+      })
+    }
+    if (paymentMethod && !isOfflinePaymentMethodEnabled(business, paymentMethod)) {
+      return res.status(403).json({
+        code: "STAFF_PAYMENT_METHOD_DISABLED",
+        message: `${paymentMethod === "cash" ? "Cash" : "POS card"} payments are disabled for this business.`,
       })
     }
 
@@ -693,6 +728,7 @@ export async function createWaiterOrder(req, res) {
       total: finalTotal,
       tip,
       createdByStaffId: staffId,
+      paymentMethod,
     })
     const orderInput = {
       orderId,
@@ -719,8 +755,11 @@ export async function createWaiterOrder(req, res) {
       total: finalTotal,
       currency: getBusinessCurrency(business),
       paymentChannel: "offline",
-      paymentStatus: "unpaid",
-      paidVia: null,
+      paymentStatus: paymentMethod ? "paid" : "unpaid",
+      paidVia: paymentMethod,
+      paidAt: paymentMethod ? now : null,
+      paidByStaffId: paymentMethod ? staffId : null,
+      paidByName: paymentMethod ? (req.session?.user?.name || "Staff") : null,
       planApplied,
       commissionRateApplied,
       commissionAmountCents: finalCommissionAmountCents,
@@ -801,6 +840,13 @@ export async function createWaiterOrder(req, res) {
       orderId: saved.orderId,
       businessId: saved.businessId,
       status: saved.status,
+      paymentChannel: saved.paymentChannel,
+      paymentStatus: saved.paymentStatus,
+      paidVia: saved.paidVia,
+      paidAt: saved.paidAt || null,
+      orderSource: saved.orderSource,
+      createdBy: saved.createdBy,
+      createdByStaffId: saved.createdByStaffId,
       replayed,
     })
   } catch (err) {

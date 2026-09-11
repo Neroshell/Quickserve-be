@@ -105,12 +105,11 @@ export async function createCheckoutSession(req, res) {
             journeyId,
         } = req.body;
 
-        // --- Validation ---
-        const isWaiter = req.session?.user?.role === "waiter" || req.session?.user?.role === "owner" || req.session?.user?.role === "manager";
-
-        if (!isWaiter && !sessionId)
+        // This is the customer Stripe boundary. Ambient staff cookies do not
+        // authorize checkout or alter customer provenance.
+        if (!sessionId)
             return res.status(400).json({ message: "sessionId is required" });
-        if (!isWaiter && !tableSessionToken)
+        if (!tableSessionToken)
             return res.status(400).json({ message: "tableSessionToken is required" });
         if (!servicePointLabel || !Array.isArray(items) || items.length === 0)
             return res.status(400).json({ message: "servicePointLabel and items are required" });
@@ -124,39 +123,30 @@ export async function createCheckoutSession(req, res) {
         if (!allowedTypes.includes(finalOrderType))
             return res.status(400).json({ message: `Invalid orderType. Use: ${allowedTypes.join(", ")}` });
 
-        let businessIdToUse;
+        // --- Validate table session token ---
+        const ts = await GuestSession.findOne({ token: tableSessionToken });
+        if (!ts)
+            return res.status(403).json({ message: "Invalid or expired table session." });
+        if (ts.expiresAt.getTime() < Date.now())
+            return res.status(403).json({ message: "Session expired." });
+        if (ts.servicePointId !== servicePointLabel)
+            return res.status(403).json({ message: "Table session mismatch." });
 
-        if (!isWaiter) {
-            // --- Validate table session token ---
-            const ts = await GuestSession.findOne({ token: tableSessionToken });
-            if (!ts)
-                return res.status(403).json({ message: "Invalid or expired table session." });
-            if (ts.expiresAt.getTime() < Date.now())
-                return res.status(403).json({ message: "Session expired." });
-            if (ts.servicePointId !== servicePointLabel)
-                return res.status(403).json({ message: "Table session mismatch." });
-
-            // Bind session to first device ATOMICALLY
-            if (!ts.boundSessionId) {
-                const updatedTs = await GuestSession.findOneAndUpdate(
-                    { _id: ts._id, boundSessionId: null },
-                    { $set: { boundSessionId: sessionId } },
-                    { new: true }
-                );
-                if (!updatedTs) {
-                    return res.status(403).json({ message: "Table session was just claimed by another device." });
-                }
-                ts.boundSessionId = sessionId;
-            } else if (ts.boundSessionId !== sessionId) {
-                return res.status(403).json({ message: "Table session active on another device." });
+        // Bind session to first device ATOMICALLY
+        if (!ts.boundSessionId) {
+            const updatedTs = await GuestSession.findOneAndUpdate(
+                { _id: ts._id, boundSessionId: null },
+                { $set: { boundSessionId: sessionId } },
+                { new: true }
+            );
+            if (!updatedTs) {
+                return res.status(403).json({ message: "Table session was just claimed by another device." });
             }
-            businessIdToUse = ts.businessId;
-        } else {
-            businessIdToUse = req.session.user.businessId;
-            if (!businessIdToUse) {
-                return res.status(403).json({ message: "Unauthorized: Missing businessId in session" });
-            }
+            ts.boundSessionId = sessionId;
+        } else if (ts.boundSessionId !== sessionId) {
+            return res.status(403).json({ message: "Table session active on another device." });
         }
+        const businessIdToUse = ts.businessId;
 
         const business = await Business.findOne({
             $or: [{ businessId: businessIdToUse }, { businessId: businessIdToUse }],
@@ -432,6 +422,9 @@ export async function createCheckoutSession(req, res) {
                     currency: finalCurrency.toUpperCase(),
                     receiptEmail: receiptEmail || null,
                     journeyId: resolvedJourneyId,
+                    orderSource: "self",
+                    createdBy: "customer",
+                    createdByStaffId: null,
                     idempotencyKey: checkoutIdempotencyKey,
                     requestFingerprint,
                     status: "provider_pending",

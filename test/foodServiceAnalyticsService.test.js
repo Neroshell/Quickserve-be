@@ -301,11 +301,12 @@ test("food-service analytics returns the v2 overview, real comparison, tip cents
 })
 
 test("food-service item/category, type, and channel breakdowns use integer cents and actual item revenue only", async () => {
+    const models = createModels()
     const result = await getFoodServiceAnalytics({
         businessId,
         analyticsRange,
         financials,
-        ...createModels(),
+        ...models,
     })
 
     assert.deepEqual(result.topItems[0], {
@@ -369,6 +370,15 @@ test("food-service item/category, type, and channel breakdowns use integer cents
             revenuePercentage: 40,
         },
     ])
+
+    const facet = models.orderPipelines[0].find((stage) => stage.$facet).$facet
+    assert.equal(facet.channelCounts.at(-1).$group._id, "$orderSource")
+    assert.equal(facet.channelRevenue.at(-1).$group._id, "$orderSource")
+    const channelPipeline = JSON.stringify({
+        channelCounts: facet.channelCounts,
+        channelRevenue: facet.channelRevenue,
+    })
+    assert.doesNotMatch(channelPipeline, /paidVia|paymentChannel/)
 })
 
 test("ServicePoint performance excludes unpaid value from paid revenue while retaining paid and unpaid counts", async () => {

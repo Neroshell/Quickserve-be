@@ -63,6 +63,7 @@ import {
   isOfflinePaymentMethodEnabled,
   isOrderTypeEnabled,
   isPaymentChannelEnabled,
+  isStaffOfflinePaymentMethod,
   normalizeOrderItems,
 } from "../utils/restaurantOrderValidation.js"
 
@@ -152,12 +153,12 @@ export async function createOrder(req, res) {
     // always offline + unpaid; payment is confirmed later by staff (markPaid)
     // or, for online payments, exclusively by the Stripe webhook.
 
-    const isWaiter = req.session?.user?.role === "waiter" || req.session?.user?.role === "owner" || req.session?.user?.role === "manager"
-
-    if (!isWaiter && !sessionId) {
+    // This is the guest/customer boundary. Ambient staff cookies must never
+    // change the actor or tenant authority for an order created here.
+    if (!sessionId) {
       return res.status(400).json({ message: "sessionId is required" })
     }
-    if (!isWaiter && !tableSessionToken) {
+    if (!tableSessionToken) {
       return res.status(400).json({ message: "tableSessionToken is required" })
     }
     if (!servicePointLabel || !Array.isArray(items) || items.length === 0) {
@@ -177,49 +178,40 @@ export async function createOrder(req, res) {
       return res.status(400).json({ message: `Invalid orderType. Use: ${allowedTypes.join(", ")}` })
     }
 
-    let businessId;
-
-    if (!isWaiter) {
-      // Validate token
-      const ts = await GuestSession.findOne({ token: tableSessionToken })
-      if (!ts) {
-        return res.status(403).json({ message: "Invalid or expired table session. Please rescan the QR code." })
-      }
-
-      // Expiry check
-      if (ts.expiresAt.getTime() < Date.now()) {
-        return res.status(403).json({ message: "Session expired. Please rescan the QR code." })
-      }
-
-      // Table must match
-      if (ts.servicePointId !== servicePointLabel) {
-        return res.status(403).json({ message: "Table session mismatch. Please rescan the correct table QR." })
-      }
-
-      // Bind token to first device sessionId ATOMICALLY
-      if (!ts.boundSessionId) {
-        const updatedTs = await GuestSession.findOneAndUpdate(
-          { _id: ts._id, boundSessionId: null },
-          { $set: { boundSessionId: sessionId } },
-          { new: true }
-        )
-        if (!updatedTs) {
-          return res.status(403).json({ message: "This table session was just claimed by another device." })
-        }
-        ts.boundSessionId = sessionId
-      } else if (ts.boundSessionId !== sessionId) {
-        return res.status(403).json({ message: "This table session is already in use on another device." })
-      }
-
-      // STRICT SECURITY: derive businessId from the validated GuestSession.
-      // This prevents an attacker with a valid session at Restaurant A from injecting orders into Restaurant B.
-      businessId = ts.businessId
-    } else {
-      businessId = req.session.user.businessId
-      if (!businessId) {
-        return res.status(403).json({ message: "Unauthorized: Missing businessId in session" })
-      }
+    // Validate token
+    const ts = await GuestSession.findOne({ token: tableSessionToken })
+    if (!ts) {
+      return res.status(403).json({ message: "Invalid or expired table session. Please rescan the QR code." })
     }
+
+    // Expiry check
+    if (ts.expiresAt.getTime() < Date.now()) {
+      return res.status(403).json({ message: "Session expired. Please rescan the QR code." })
+    }
+
+    // Table must match
+    if (ts.servicePointId !== servicePointLabel) {
+      return res.status(403).json({ message: "Table session mismatch. Please rescan the correct table QR." })
+    }
+
+    // Bind token to first device sessionId ATOMICALLY
+    if (!ts.boundSessionId) {
+      const updatedTs = await GuestSession.findOneAndUpdate(
+        { _id: ts._id, boundSessionId: null },
+        { $set: { boundSessionId: sessionId } },
+        { new: true }
+      )
+      if (!updatedTs) {
+        return res.status(403).json({ message: "This table session was just claimed by another device." })
+      }
+      ts.boundSessionId = sessionId
+    } else if (ts.boundSessionId !== sessionId) {
+      return res.status(403).json({ message: "This table session is already in use on another device." })
+    }
+
+    // STRICT SECURITY: derive businessId from the validated GuestSession.
+    // This prevents an attacker with a valid session at Restaurant A from injecting orders into Restaurant B.
+    const businessId = ts.businessId
 
     // ✅ CRITICAL GATE: Business Open/Closed logic
     const business = await Business.findOne({ businessId }).lean()
@@ -404,7 +396,9 @@ export async function createOrder(req, res) {
       planAtOrder: planApplied,
       commissionRateAtOrder: commissionRateApplied,
       platformFeeRateAtOrder: commissionRateApplied,
-      orderSource: isWaiter ? "waitstaff" : "self",
+      orderSource: "self",
+      createdBy: "customer",
+      createdByStaffId: null,
       creationIdempotencyKey,
       creationRequestFingerprint,
     }
@@ -436,25 +430,14 @@ export async function createOrder(req, res) {
         const inventoryReservation = await reserveInventoryForSource({
           businessId,
           items: enrichedItems,
-          sourceType: isWaiter
-            ? INVENTORY_RESERVATION_SOURCE_TYPES.WAITSTAFF_ORDER
-            : INVENTORY_RESERVATION_SOURCE_TYPES.OFFLINE_ORDER,
+          sourceType: INVENTORY_RESERVATION_SOURCE_TYPES.OFFLINE_ORDER,
           sourceId: orderId,
           order: created,
           orderId,
           status: INVENTORY_RESERVATION_STATUSES.COMMITTED,
           idempotencyKey: `inventory:${creationIdempotencyKey}`,
           requestFingerprint: creationRequestFingerprint,
-          actor: (() => {
-            if (!isWaiter) return null
-            const staffId = req.session?.user?.staffId || req.session?.user?.id
-            if (!staffId) return null  // fall back to SYSTEM_INVENTORY_ACTOR in the service
-            return {
-              staffId,
-              role: req.session?.user?.role || "staff",
-              name: req.session?.user?.name || "Staff",
-            }
-          })(),
+          actor: null,
           session,
         })
         inventoryNotificationBatch = {
@@ -649,8 +632,7 @@ export async function markPaid(req, res) {
       return res.status(401).json({ message: "Unauthorized" })
     }
 
-    const ALLOWED_PAID_VIA = ["pos_card", "cash"]
-    if (!ALLOWED_PAID_VIA.includes(paidVia)) {
+    if (!isStaffOfflinePaymentMethod(paidVia)) {
       return res.status(400).json({ message: "Invalid paidVia method" })
     }
 

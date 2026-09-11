@@ -58,6 +58,12 @@ const PendingCheckoutSchema = new mongoose.Schema(
         currency: { type: String, default: "EUR" },
         receiptEmail: { type: String, default: null },
 
+        // Persist customer provenance across the verified webhook boundary.
+        // Defaults preserve compatibility with pre-existing pending records.
+        orderSource: { type: String, enum: ["self"], default: "self", immutable: true },
+        createdBy: { type: String, enum: ["customer"], default: "customer", immutable: true },
+        createdByStaffId: { type: String, default: null, immutable: true },
+
         // Durable request identity. New restaurant checkouts retain this record
         // through the Stripe/webhook retry window instead of deleting it as
         // soon as the first webhook arrives.

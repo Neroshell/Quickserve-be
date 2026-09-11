@@ -421,6 +421,9 @@ test("offline and Stripe orders preserve equivalent frozen fulfilment snapshots 
       businessId: "biz_phase5_parity",
       idempotencyKey: "checkout:phase5-online-checkout",
     }).lean()
+    assert.equal(pending.orderSource, "self")
+    assert.equal(pending.createdBy, "customer")
+    assert.equal(pending.createdByStaffId, null)
     assert.deepEqual(pending.items.map(semanticSnapshot), offlineOrder.items.map(semanticSnapshot))
 
     // The PendingCheckout, not the live MenuItem, remains authoritative.
@@ -436,6 +439,9 @@ test("offline and Stripe orders preserve equivalent frozen fulfilment snapshots 
     assert.equal(webhookResponse.statusCode, 200)
 
     const onlineOrder = await Order.findOne({ orderId: pending.orderId }).lean()
+    assert.equal(onlineOrder.orderSource, "self")
+    assert.equal(onlineOrder.createdBy, "customer")
+    assert.equal(onlineOrder.createdByStaffId, null)
     assert.deepEqual(onlineOrder.items.map(semanticSnapshot), offlineOrder.items.map(semanticSnapshot))
     assert.deepEqual(
       toOrderDTO(onlineOrder).customerProgress,

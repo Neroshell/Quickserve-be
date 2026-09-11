@@ -172,6 +172,11 @@ router.get("/", waiterOrders)
  *                       type: number
  *                     price:
  *                       type: number
+ *               paymentMethod:
+ *                 type: string
+ *                 nullable: true
+ *                 enum: [cash, pos_card]
+ *                 description: Optional staff-recorded offline settlement; omit to create an unpaid order.
  *     responses:
  *       201:
  *         description: Order created successfully

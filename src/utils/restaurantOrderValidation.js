@@ -12,6 +12,12 @@ const SERVABLE_BUSINESS_STATUSES = new Set([
   "draft",
 ]);
 
+export const STAFF_OFFLINE_PAYMENT_METHODS = Object.freeze(["cash", "pos_card"]);
+
+export function isStaffOfflinePaymentMethod(value) {
+  return STAFF_OFFLINE_PAYMENT_METHODS.includes(value);
+}
+
 function readBoolean(primary, fallback, defaultValue = true) {
   if (typeof primary === "boolean") return primary;
   if (typeof fallback === "boolean") return fallback;
@@ -86,6 +92,8 @@ export function isPaymentChannelEnabled(business, channel) {
 }
 
 export function isOfflinePaymentMethodEnabled(business, paidVia) {
+  if (!isStaffOfflinePaymentMethod(paidVia)) return false;
+
   if (paidVia === "cash") {
     return readBoolean(
       business?.paymentPreferences?.acceptCash,

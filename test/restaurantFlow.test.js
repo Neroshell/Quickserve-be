@@ -24,7 +24,7 @@ const [
   { getMenuItems },
   { kitchenOrders },
   { barOrders },
-  { waiterOrders },
+  { waiterOrders, createWaiterOrder },
   { reorderFromOrder },
   { requireAuth, requireRole },
   { sseHandler },
@@ -262,6 +262,30 @@ function installOnlineCheckoutMocks(t, options = {}) {
     plan,
     capture,
     stripeClient,
+  };
+}
+
+function createWaitstaffOrderRequest(overrides = {}) {
+  const headers = { "idempotency-key": "waitstaff-order-attempt-a" };
+  return {
+    body: {
+      businessId: "spoofed-business",
+      staffId: "spoofed-staff",
+      orderSource: "self",
+      createdBy: "customer",
+      paymentStatus: "paid",
+      servicePointLabel: "sp_table_a",
+      orderType: "dine-in",
+      items: [{ itemName: "Margherita Pizza", quantity: 1 }],
+      ...overrides,
+    },
+    params: {},
+    query: {},
+    headers,
+    get(name) {
+      return headers[String(name).toLowerCase()];
+    },
+    session: createStaffSession(),
   };
 }
 
@@ -586,6 +610,8 @@ test("Scenario A: public dine-in order derives tenant, menu pricing, snapshots, 
   assert.equal(stored.paidVia, null);
   assert.equal(stored.status, "placed");
   assert.equal(stored.orderSource, "self");
+  assert.equal(stored.createdBy, "customer");
+  assert.equal(stored.createdByStaffId, null);
   assert.ok(stored.estimatedReadyAt instanceof Date);
   assert.equal(res.body.orderId, stored.orderId);
   assert.equal(res.body.businessId, "business-a");
@@ -606,6 +632,171 @@ test("Scenario A: public dine-in order derives tenant, menu pricing, snapshots, 
     tipAmountCents: 0,
     currency: "EUR",
   });
+});
+
+test("customer Pay Later remains self/customer when a staff cookie coexists", async (t) => {
+  const { capture } = installOfflineOrderMocks(t);
+  const request = createPublicOrderRequest({
+    businessId: "spoofed-business",
+    orderSource: "waitstaff",
+    createdBy: "staff",
+    createdByStaffId: "spoofed-staff",
+  });
+  request.session = createStaffSession({
+    businessId: "different-staff-business",
+    staffId: "ambient-staff",
+  });
+
+  const response = createResponse();
+  await createOrder(request, response);
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(capture.orderCreates.length, 1);
+  assert.equal(capture.orderCreates[0].businessId, "business-a");
+  assert.equal(capture.orderCreates[0].orderSource, "self");
+  assert.equal(capture.orderCreates[0].createdBy, "customer");
+  assert.equal(capture.orderCreates[0].createdByStaffId, null);
+});
+
+test("waitstaff Send to Kitchen creates one authoritative unpaid staff order", async (t) => {
+  const { capture } = installOfflineOrderMocks(t);
+  const response = createResponse();
+
+  await createWaiterOrder(createWaitstaffOrderRequest(), response);
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(capture.orderCreates.length, 1);
+  const stored = capture.orderCreates[0];
+  assert.equal(stored.businessId, "business-a");
+  assert.equal(stored.orderSource, "waitstaff");
+  assert.equal(stored.createdBy, "staff");
+  assert.equal(stored.createdByStaffId, "staff-a");
+  assert.equal(stored.paymentChannel, "offline");
+  assert.equal(stored.paymentStatus, "unpaid");
+  assert.equal(stored.paidVia, null);
+  assert.equal(stored.paidAt, null);
+  assert.equal(stored.paidByStaffId, null);
+  assert.equal(stored.items[0].fulfillmentStation, "kitchen");
+  assert.equal(stored.items[0].fulfillmentStatus, "pending");
+});
+
+for (const paymentMethod of ["cash", "pos_card"]) {
+  test(`waitstaff payment-first ${paymentMethod} is atomic, attributed, and idempotent`, async (t) => {
+    const { capture } = installOfflineOrderMocks(t);
+    const request = createWaitstaffOrderRequest({ paymentMethod });
+
+    const firstResponse = createResponse();
+    await createWaiterOrder(request, firstResponse);
+    const replayResponse = createResponse();
+    await createWaiterOrder(request, replayResponse);
+
+    assert.equal(firstResponse.statusCode, 201);
+    assert.equal(replayResponse.statusCode, 200);
+    assert.equal(replayResponse.body.replayed, true);
+    assert.equal(capture.orderCreates.length, 1);
+    const stored = capture.orderCreates[0];
+    assert.equal(stored.orderSource, "waitstaff");
+    assert.equal(stored.createdBy, "staff");
+    assert.equal(stored.createdByStaffId, "staff-a");
+    assert.equal(stored.paymentChannel, "offline");
+    assert.equal(stored.paymentStatus, "paid");
+    assert.equal(stored.paidVia, paymentMethod);
+    assert.ok(stored.paidAt instanceof Date);
+    assert.equal(stored.paidByStaffId, "staff-a");
+    assert.equal(stored.paidByName, "Alex Waiter");
+    assert.equal(stored.items[0].fulfillmentStation, "kitchen");
+    assert.equal(stored.items[0].fulfillmentStatus, "pending");
+  });
+}
+
+test("waitstaff creation rejects unsupported settlement methods before persistence", async () => {
+  for (const paymentMethod of ["online_card", "stripe", "card", "crypto"]) {
+    const response = createResponse();
+    await createWaiterOrder(createWaitstaffOrderRequest({ paymentMethod }), response);
+    assert.equal(response.statusCode, 400, paymentMethod);
+    assert.equal(response.body.code, "INVALID_STAFF_PAYMENT_METHOD");
+  }
+});
+
+test("waitstaff payment-first enforces tenant payment preferences and billing readiness", async (t) => {
+  const business = createBusinessFixture({
+    paymentPreferences: {
+      acceptOnlinePayments: true,
+      acceptOfflinePayments: true,
+      acceptCash: false,
+      acceptPosCard: true,
+    },
+  });
+  const { capture } = installOfflineOrderMocks(t, { business });
+
+  const disabledCashResponse = createResponse();
+  await createWaiterOrder(
+    createWaitstaffOrderRequest({ paymentMethod: "cash" }),
+    disabledCashResponse,
+  );
+  assert.equal(disabledCashResponse.statusCode, 403);
+  assert.equal(disabledCashResponse.body.code, "STAFF_PAYMENT_METHOD_DISABLED");
+
+  business.paymentPreferences.acceptCash = true;
+  business.billingStatus = "past_due";
+  const billingResponse = createResponse();
+  await createWaiterOrder(
+    createWaitstaffOrderRequest({ paymentMethod: "cash" }),
+    billingResponse,
+  );
+  assert.equal(billingResponse.statusCode, 403);
+  assert.equal(billingResponse.body.code, "OFFLINE_BILLING_NOT_SETUP");
+  assert.equal(capture.orderCreates.length, 0);
+});
+
+test("waitstaff order authority ignores spoofed actor, tenant, provenance, and payment state", async (t) => {
+  const { capture } = installOfflineOrderMocks(t);
+  const request = createWaitstaffOrderRequest({
+    businessId: "business-b",
+    staffId: "business-b-staff",
+    orderSource: "self",
+    createdBy: "customer",
+    createdByStaffId: "business-b-staff",
+    paymentStatus: "paid",
+    paidVia: "cash",
+  });
+  const response = createResponse();
+
+  await createWaiterOrder(request, response);
+
+  assert.equal(response.statusCode, 201);
+  const stored = capture.orderCreates[0];
+  assert.equal(stored.businessId, "business-a");
+  assert.equal(stored.createdByStaffId, "staff-a");
+  assert.equal(stored.orderSource, "waitstaff");
+  assert.equal(stored.createdBy, "staff");
+  assert.equal(stored.paymentStatus, "unpaid");
+  assert.equal(stored.paidVia, null);
+  assert.ok(capture.menuQueries.every((query) => query.businessId === "business-a"));
+});
+
+test("waitstaff order rejects a cross-business ServicePoint", async (t) => {
+  const { capture } = installOfflineOrderMocks(t, { servicePoint: null });
+  const response = createResponse();
+
+  await createWaiterOrder(createWaitstaffOrderRequest(), response);
+
+  assert.equal(response.statusCode, 403);
+  assert.equal(capture.orderCreates.length, 0);
+  assert.equal(capture.servicePointQueries[0].businessId, "business-a");
+});
+
+test("waitstaff order rejects a cross-business MenuItem", async (t) => {
+  const { capture } = installOfflineOrderMocks(t, {
+    menuItems: [createMenuItemFixture({ businessId: "business-b" })],
+  });
+  const response = createResponse();
+
+  await createWaiterOrder(createWaitstaffOrderRequest(), response);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(capture.orderCreates.length, 0);
+  assert.ok(capture.menuQueries.every((query) => query.businessId === "business-a"));
 });
 
 test("takeout preserves the order type while keeping the current ServicePoint association rule", async (t) => {
@@ -1363,6 +1554,9 @@ test("Scenario B: online checkout ignores client price/currency and persists the
   assert.equal(pending.stripePaymentIntentId, "pi_restaurant_flow");
   assert.equal(pending.stripeConnectedAccountId, "acct_business_a");
   assert.equal(pending.commissionAmountCents, 75);
+  assert.equal(pending.orderSource, "self");
+  assert.equal(pending.createdBy, "customer");
+  assert.equal(pending.createdByStaffId, null);
   assert.equal(pending.saveCount, 2);
 
   assert.equal(stripeConfig.line_items[0].price_data.unit_amount, 1250);
@@ -1384,6 +1578,40 @@ test("Scenario B: online checkout ignores client price/currency and persists the
   assert.ok(Number.isSafeInteger(stripeConfig.expires_at));
   assert.ok(stripeConfig.expires_at >= Math.floor(Date.now() / 1000) + 30 * 60);
   assert.match(capture.stripeOptions[0].idempotencyKey, /^inventory-checkout:/);
+});
+
+test("customer Stripe checkout remains self/customer when a staff cookie coexists", async (t) => {
+  const { capture, stripeClient } = installOnlineCheckoutMocks(t);
+  const request = createPublicOrderRequest({
+    businessId: "spoofed-business",
+    orderSource: "waitstaff",
+    createdBy: "staff",
+    createdByStaffId: "spoofed-staff",
+  });
+  request.session = createStaffSession({
+    businessId: "different-staff-business",
+    staffId: "ambient-staff",
+  });
+  const response = createResponse();
+
+  await createCheckoutSession(withStripeClient(request, stripeClient), response);
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(capture.pendingCreates.length, 1);
+  assert.equal(capture.pendingCreates[0].businessId, "business-a");
+  assert.equal(capture.pendingCreates[0].orderSource, "self");
+  assert.equal(capture.pendingCreates[0].createdBy, "customer");
+  assert.equal(capture.pendingCreates[0].createdByStaffId, null);
+});
+
+test("creation provenance is immutable in Order and PendingCheckout schemas", () => {
+  for (const path of ["orderSource", "createdBy", "createdByStaffId"]) {
+    assert.equal(Order.schema.path(path).options.immutable, true, `Order.${path}`);
+    assert.equal(PendingCheckout.schema.path(path).options.immutable, true, `PendingCheckout.${path}`);
+  }
+  assert.equal(PendingCheckout.schema.path("orderSource").options.default, "self");
+  assert.equal(PendingCheckout.schema.path("createdBy").options.default, "customer");
+  assert.equal(PendingCheckout.schema.path("createdByStaffId").options.default, null);
 });
 
 test("online checkout rejects unavailable items, disabled online payments, and invalid quantities before Stripe", async (t) => {

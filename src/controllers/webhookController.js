@@ -71,6 +71,16 @@ const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 export const PAID_CHECKOUT_FULFILLMENT_STATE_MISSING =
     "PAID_CHECKOUT_FULFILLMENT_STATE_MISSING";
 
+function getCustomerCheckoutProvenance(pending) {
+    // Pre-field PendingCheckout records are customer checkouts by definition.
+    // Unexpected values are not propagated into immutable Order provenance.
+    return {
+        orderSource: pending?.orderSource === "self" ? pending.orderSource : "self",
+        createdBy: pending?.createdBy === "customer" ? pending.createdBy : "customer",
+        createdByStaffId: null,
+    };
+}
+
 async function dispatchPaidOrderReceipt({ dispatcher, order, email }) {
     if (order.receiptEmail !== email) {
         order.receiptEmail = email;
@@ -271,6 +281,7 @@ async function processCanonicalInventoryCheckout({
         crmProcessingStatus: customerEmail ? "pending" : null,
         crmProcessingRetryable: true,
         journeyId: pending.journeyId || null,
+        ...getCustomerCheckoutProvenance(pending),
     };
 
     const finalize = req.app?.locals?.finalizePaidOrderWithInventory ||
@@ -1331,6 +1342,7 @@ export async function handleStripeWebhook(req, res) {
                 crmProcessingStatus: customerEmail ? "pending" : null,
                 crmProcessingRetryable: true,
                 journeyId: pending.journeyId || null,
+                ...getCustomerCheckoutProvenance(pending),
             });
 
             await invalidateSetupProgress(businessId);

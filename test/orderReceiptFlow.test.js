@@ -514,6 +514,9 @@ test("paid food-order webhook creates one paid order and sends exactly one recei
   assert.equal(storedOrder.paymentStatus, "paid");
   assert.equal(storedOrder.paymentChannel, "online");
   assert.equal(storedOrder.paidVia, "online_card");
+  assert.equal(storedOrder.orderSource, "self");
+  assert.equal(storedOrder.createdBy, "customer");
+  assert.equal(storedOrder.createdByStaffId, null);
   assert.equal(storedOrder.receiptEmail, "customer@example.com");
   assert.equal(storedOrder.receiptSent, true);
   assert.ok(storedOrder.receiptSentAt instanceof Date);

@@ -236,9 +236,9 @@ const OrderSchema = new mongoose.Schema(
     crmProcessingEnqueueError: { type: String, default: null, maxlength: 200 },
 
     // Order creation metadata
-    orderSource: { type: String, enum: ["self", "waitstaff"], default: "self", index: true },
-    createdBy: { type: String, enum: ["customer", "staff"], default: "customer" },
-    createdByStaffId: { type: String, default: null, index: true },
+    orderSource: { type: String, enum: ["self", "waitstaff"], default: "self", index: true, immutable: true },
+    createdBy: { type: String, enum: ["customer", "staff"], default: "customer", immutable: true },
+    createdByStaffId: { type: String, default: null, index: true, immutable: true },
     creationIdempotencyKey: { type: String, default: null, trim: true, maxlength: 200 },
     creationRequestFingerprint: {
       type: String,
