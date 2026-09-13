@@ -10,6 +10,8 @@
     "test:capabilities": "node --test test/businessCapabilityService.test.js",
     "test:pricing": "node --test test/pricingService.test.js test/hotelPricingEmail.test.js",
     "test:hotel-flow": "node --test test/hotelReservationFlow.test.js",
+    "test:property-profile": "node --test test/propertyProfile.test.js",
+    "test:hotel-service-points": "node --test test/hotelServicePoints.test.js test/hotelRoomTypes.test.js",
     "test:phase1": "node --test test/phase1SetupProgress.test.js",
     "test:order-receipt": "node --test test/orderReceiptFlow.test.js",
     "test:owner-orders": "node --test test/ownerOrdersPagination.test.js",
@@ -47,7 +49,6 @@
     "migrate:collections": "node scripts/migrate-collection-names.js",
     "migrate:collections:rollback": "node scripts/rollback-collection-names.js",
     "modules:backfill": "node scripts/backfill-business-modules.js",
-    "backfill:hotel-room-types": "node scripts/backfill-hotel-room-types.js",
     "plan:seed": "npm run seed",
     "setup:payment-plans": "npm run seed && npm run billing:bootstrap",
     "setup:db": "npm run setup:payment-plans"

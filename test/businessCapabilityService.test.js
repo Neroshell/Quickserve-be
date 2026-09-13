@@ -26,6 +26,7 @@ test("restaurant capabilities expose the canonical owner navigation", () => {
     assert.equal(capabilities.reservations.primaryMode, "timeslot")
     assert.equal(capabilities.servicePoints.defaultType, "table")
     assert.equal(capabilities.terminology.servicePoint.singular, "Service Point")
+    assert.equal(capabilities.settings.sections.includes("propertyProfile"), false)
     assert.deepEqual(Object.keys(capabilities.terminology), ["servicePoint"])
     assert.equal("servicePointTypes" in capabilities.terminology, false)
     assert.deepEqual(
@@ -68,6 +69,16 @@ test("food service extends a hotel without replacing the hotel shell", () => {
             { id: "foodService", items: ["orders", "menu", "inventory"] },
         ]
     )
+    assert.deepEqual(capabilities.settings.sections, [
+        "business",
+        "propertyProfile",
+        "operations",
+        "lodging",
+        "preferences",
+        "foodService",
+        "teamAccess",
+        "security",
+    ])
 })
 
 test("hotel-only navigation keeps transactions under hotel operations", () => {
@@ -81,6 +92,15 @@ test("hotel-only navigation keeps transactions under hotel operations", () => {
         label: "Hotel Operations",
         items: ["reservations", "transactions", "servicePoints"],
     })
+    assert.deepEqual(capabilities.settings.sections, [
+        "business",
+        "propertyProfile",
+        "operations",
+        "lodging",
+        "preferences",
+        "teamAccess",
+        "security",
+    ])
 })
 
 test("business identity modules cannot be removed", () => {

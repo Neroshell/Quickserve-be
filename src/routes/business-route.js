@@ -1,9 +1,10 @@
 import express from "express"
-import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory, addHotelRoomType, removeHotelRoomType } from "../controllers/businessController.js"
+import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory, addHotelRoomType, updateHotelRoomType, removeHotelRoomType } from "../controllers/businessController.js"
 
 import { requireManagementArea, requirePermissionForAuthenticatedManager } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
+import { getPropertyProfile, updatePropertyProfileSection } from "../controllers/propertyProfileController.js"
 
 const router = express.Router()
 
@@ -68,6 +69,12 @@ router.patch("/settings", requireBusinessIdentityOwner, updateSettings)
  * business identity or its required Lodging module.
  */
 router.patch("/settings/modules", requireBusinessIdentityOwner, updateOwnerBusinessModules)
+
+// Property Profile is a hotel-only, owner/co-owner business-settings surface.
+// Controllers derive the tenant from the authenticated session and deliberately
+// keep Room Types and physical Service Points outside this resource.
+router.get("/property-profile", requireBusinessIdentityOwner, getPropertyProfile)
+router.patch("/property-profile/:section", requireBusinessIdentityOwner, updatePropertyProfileSection)
 
 /**
  * @openapi
@@ -221,6 +228,7 @@ router.delete("/categories", requireMenuConfiguration, removeCategory)
  *       - Business Settings
  */
 router.post("/room-types", requireServicePointOwner, addHotelRoomType)
+router.patch("/room-types", requireServicePointOwner, updateHotelRoomType)
 router.delete("/room-types", requireServicePointOwner, removeHotelRoomType)
 
 export default router

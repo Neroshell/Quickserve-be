@@ -100,6 +100,21 @@ const ServicePointSchema = new mongoose.Schema(
         viewType: { type: String, trim: true },
         amenities: [{ type: String, trim: true }],
         images: [{ type: String, trim: true }],
+
+        // Durable owner-create idempotency. Hidden from normal reads so
+        // management responses never expose request-internal metadata.
+        creationIdempotencyKey: {
+            type: String,
+            default: null,
+            trim: true,
+            maxlength: 200,
+            select: false,
+        },
+        creationRequestFingerprint: {
+            type: String,
+            default: null,
+            select: false,
+        },
     },
     { timestamps: true }
 )
@@ -107,6 +122,13 @@ const ServicePointSchema = new mongoose.Schema(
 // Compound index: fast lookup of a service point within a business
 ServicePointSchema.index({ businessId: 1, servicePointId: 1 })
 ServicePointSchema.index({ businessId: 1, isActive: 1 })
+ServicePointSchema.index(
+    { businessId: 1, creationIdempotencyKey: 1 },
+    {
+        unique: true,
+        partialFilterExpression: { creationIdempotencyKey: { $type: "string" } },
+    }
+)
 ServicePointSchema.index({
     businessId: 1,
     servicePointType: 1,

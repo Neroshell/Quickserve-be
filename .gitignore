@@ -103,11 +103,13 @@ test/inventoryPhase4.integration.test.js
 est/inventoryTransaction.integration.test.js
 !test/ownerInventoryReadService.test.js
 test/hotelRoomTypes.test.js
+!test/hotelServicePoints.test.js
 test/responseCache.test.js
 test/stage1ResponseCaching.test.js
 test/stage2PublicBusinessCaching.test.js
 test/sessionTouchThrottling.test.js
 !test/aiAnalystWorkerLock.test.js
+!test/propertyProfile.test.js
 test/phoneNumber.test.js
 test/googlePlacesService.test.js
 test/ownerOrdersPagination.test.js

@@ -2,6 +2,7 @@ import ServicePoint, {
     generateServicePointId,
     normalizeRoomType,
 } from "../models/ServicePoint.js"
+import crypto from "crypto"
 import Business from "../models/Business.js"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 import {
@@ -13,7 +14,7 @@ import {
 const PUBLIC_SERVICE_POINT_SOURCE_FIELDS = new Set([
     "label", "servicePointType", "roomType", "capacity", "pricePerNight",
     "currency", "description", "fullDescription", "amenities", "images", "beds",
-    "bedType", "bedConfiguration", "viewType", "maxGuests",
+    "bedType", "bedConfiguration", "viewType", "maxGuests", "isActive", "reservable",
 ])
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -93,13 +94,62 @@ function normalizeBedConfiguration(value) {
     return { value: normalized }
 }
 
+function normalizeStringArray(value, field, { maxItems = 50, maxLength = 2048 } = {}) {
+    if (!Array.isArray(value)) return { error: `${field} must be an array` }
+    if (value.length > maxItems) return { error: `${field} must not contain more than ${maxItems} items` }
+
+    const normalized = []
+    const seen = new Set()
+    for (const entry of value) {
+        if (typeof entry !== "string") return { error: `${field} entries must be strings` }
+        const text = entry.trim()
+        if (!text) continue
+        if (text.length > maxLength) return { error: `${field} entries must not exceed ${maxLength} characters` }
+        const key = text.toLowerCase()
+        if (!seen.has(key)) {
+            seen.add(key)
+            normalized.push(text)
+        }
+    }
+    return { value: normalized }
+}
+
+function getCreationIdempotencyKey(req) {
+    const supplied = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"]
+    if (supplied === undefined || supplied === null || supplied === "") return { value: null }
+    if (typeof supplied !== "string") return { error: "Idempotency-Key must be a string" }
+    const value = supplied.trim()
+    if (!value || value.length > 200) return { error: "Idempotency-Key must contain between 1 and 200 characters" }
+    return { value }
+}
+
+function createRequestFingerprint(value) {
+    return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex")
+}
+
+function toPublicServicePoint(servicePoint) {
+    const value = typeof servicePoint?.toObject === "function"
+        ? servicePoint.toObject()
+        : { ...servicePoint }
+    delete value.creationIdempotencyKey
+    delete value.creationRequestFingerprint
+    return value
+}
+
+function findManagedRoomType(business, requestedRoomType) {
+    if (requestedRoomType === null) return null
+    const requestedKey = requestedRoomType.toLowerCase()
+    return business.hotelRoomTypes?.find(
+        roomType => roomType.isDefault !== true &&
+            normalizeRoomType(roomType.name)?.toLowerCase() === requestedKey
+    ) || undefined
+}
+
 function resolveManagedRoomType(business, requestedRoomType, currentRoomType = null) {
     if (requestedRoomType === null) return null
 
     const requestedKey = requestedRoomType.toLowerCase()
-    const configured = business.hotelRoomTypes?.find(
-        roomType => normalizeRoomType(roomType.name)?.toLowerCase() === requestedKey
-    )
+    const configured = findManagedRoomType(business, requestedRoomType)
     if (configured && configured.active !== false) return configured.name
     if (normalizeRoomType(currentRoomType)?.toLowerCase() === requestedKey) {
         return currentRoomType
@@ -170,8 +220,12 @@ export async function getServicePoint(req, res) {
  * Body: { label, code?, capacity? }
  */
 export async function createServicePoint(req, res) {
+    let resolvedBusinessId = null
+    let resolvedIdempotencyKey = null
+    let resolvedRequestFingerprint = null
     try {
         const businessId = resolveOwnerBusinessId(req)
+        resolvedBusinessId = businessId
         if (!businessId) {
             return res.status(401).json({ error: "Unauthorized" })
         }
@@ -190,16 +244,34 @@ export async function createServicePoint(req, res) {
             viewType,
             maxGuests,
             roomType,
+            isActive,
+            reservable,
             servicePointType: requestedServicePointType,
         } = req.body
 
         if (typeof label !== "string" || !label.trim()) {
             return res.status(400).json({ error: "label is required" })
         }
+        if (label.trim().length > 80) {
+            return res.status(400).json({ error: "label must not exceed 80 characters" })
+        }
 
         if (typeof code !== "string" || !code.trim()) {
             return res.status(400).json({ error: "code is required" })
         }
+        if (code.trim().length > 20) {
+            return res.status(400).json({ error: "code must not exceed 20 characters" })
+        }
+        if (isActive !== undefined && typeof isActive !== "boolean") {
+            return res.status(400).json({ error: "isActive must be a boolean" })
+        }
+        if (reservable !== undefined && typeof reservable !== "boolean") {
+            return res.status(400).json({ error: "reservable must be a boolean" })
+        }
+
+        const idempotency = getCreationIdempotencyKey(req)
+        if (idempotency.error) return res.status(400).json({ error: idempotency.error })
+        resolvedIdempotencyKey = idempotency.value
 
         // Fetch the business to validate the requested ServicePoint capability.
         const business = await Business.findOne({ businessId }).lean()
@@ -227,27 +299,15 @@ export async function createServicePoint(req, res) {
             })
         }
         let resolvedRoomType = null
+        let managedRoomType = null
         if (servicePointType === "room" && normalizedRoomType !== null) {
-            resolvedRoomType = resolveManagedRoomType(business, normalizedRoomType)
-            if (resolvedRoomType === undefined) {
+            managedRoomType = findManagedRoomType(business, normalizedRoomType)
+            if (!managedRoomType || managedRoomType.active === false) {
                 return res.status(400).json({
                     error: "roomType must be an active configured hotel room type",
                 })
             }
-        }
-
-        // Generate a unique stable ID (retry on collision)
-        let servicePointId
-        for (let i = 0; i < 10; i++) {
-            const candidate = generateServicePointId()
-            const exists = await ServicePoint.findOne({ servicePointId: candidate })
-            if (!exists) {
-                servicePointId = candidate
-                break
-            }
-        }
-        if (!servicePointId) {
-            return res.status(500).json({ error: "Failed to generate service point ID" })
+            resolvedRoomType = managedRoomType.name
         }
 
         const parsedCapacity = capacity !== undefined
@@ -274,6 +334,12 @@ export async function createServicePoint(req, res) {
         const parsedDescription = description !== undefined
             ? normalizeOptionalText(description, "description")
             : { value: undefined }
+        const parsedAmenities = amenities !== undefined
+            ? normalizeStringArray(amenities, "amenities", { maxItems: 50, maxLength: 80 })
+            : { value: undefined }
+        const parsedImages = images !== undefined
+            ? normalizeStringArray(images, "images", { maxItems: 10, maxLength: 2048 })
+            : { value: undefined }
 
         const validationError = [
             parsedCapacity,
@@ -284,40 +350,102 @@ export async function createServicePoint(req, res) {
             parsedBedType,
             parsedViewType,
             parsedDescription,
+            parsedAmenities,
+            parsedImages,
         ].find(result => result.error)?.error
         if (validationError) {
             return res.status(400).json({ error: validationError })
         }
 
-        const resolvedCapacity = servicePointType === "room" && parsedMaxGuests.value != null
+        const inheritedMaxGuests = managedRoomType?.maxGuests ?? undefined
+        const finalMaxGuests = parsedMaxGuests.value !== undefined
             ? parsedMaxGuests.value
+            : inheritedMaxGuests
+        const resolvedCapacity = servicePointType === "room" && finalMaxGuests != null
+            ? finalMaxGuests
             : capacity !== undefined && capacity !== null && capacity !== ""
                 ? parsedCapacity.value
                 : null
 
-        const resolvedBedConfiguration = parsedBedConfiguration.value
+        const inheritedBedConfiguration = Array.isArray(managedRoomType?.bedConfiguration)
+            ? managedRoomType.bedConfiguration.map(entry => ({
+                bedType: entry.bedType,
+                count: Number(entry.count),
+            }))
+            : undefined
+        const resolvedBedConfiguration = parsedBedConfiguration.value !== undefined
+            ? parsedBedConfiguration.value
+            : inheritedBedConfiguration
         const resolvedBeds = resolvedBedConfiguration !== undefined
             ? resolvedBedConfiguration.reduce((sum, entry) => sum + entry.count, 0)
             : parsedBeds.value
 
-        const sp = await ServicePoint.create({
-            servicePointId,
-            businessId,
+        const finalDescription = parsedDescription.value !== undefined
+            ? parsedDescription.value
+            : managedRoomType?.description || undefined
+        const finalViewType = parsedViewType.value !== undefined
+            ? parsedViewType.value
+            : managedRoomType?.viewType || undefined
+        const finalAmenities = parsedAmenities.value !== undefined
+            ? parsedAmenities.value
+            : Array.from(managedRoomType?.amenities || [])
+        const finalImages = parsedImages.value !== undefined
+            ? parsedImages.value
+            : Array.from(managedRoomType?.images || [])
+
+        const createValues = {
             label: label.trim(),
-            code: code?.trim() || "",
+            code: code.trim(),
             servicePointType,
             roomType: servicePointType === "room" ? resolvedRoomType : null,
             capacity: resolvedCapacity,
-            isActive: true,
+            isActive: isActive ?? true,
+            reservable: reservable ?? true,
             pricePerNight: parsedPrice.value,
-            fullDescription: parsedDescription.value,
-            amenities: Array.isArray(amenities) ? amenities : undefined,
-            images: Array.isArray(images) ? images : undefined,
+            fullDescription: finalDescription,
+            amenities: finalAmenities,
+            images: finalImages,
             beds: resolvedBeds,
             bedType: parsedBedType.value,
             bedConfiguration: resolvedBedConfiguration,
-            viewType: parsedViewType.value,
-            maxGuests: parsedMaxGuests.value,
+            viewType: finalViewType,
+            maxGuests: finalMaxGuests,
+        }
+
+        resolvedRequestFingerprint = createRequestFingerprint(createValues)
+        if (resolvedIdempotencyKey) {
+            const existing = await ServicePoint.findOne({
+                businessId,
+                creationIdempotencyKey: resolvedIdempotencyKey,
+            }).select("+creationIdempotencyKey +creationRequestFingerprint")
+            if (existing) {
+                if (existing.creationRequestFingerprint !== resolvedRequestFingerprint) {
+                    return res.status(409).json({ error: "Idempotency-Key was already used for another service point" })
+                }
+                return res.status(200).json(toPublicServicePoint(existing))
+            }
+        }
+
+        // Generate a unique stable ID (retry on collision).
+        let servicePointId
+        for (let i = 0; i < 10; i++) {
+            const candidate = generateServicePointId()
+            const exists = await ServicePoint.findOne({ servicePointId: candidate })
+            if (!exists) {
+                servicePointId = candidate
+                break
+            }
+        }
+        if (!servicePointId) {
+            return res.status(500).json({ error: "Failed to generate service point ID" })
+        }
+
+        const sp = await ServicePoint.create({
+            servicePointId,
+            businessId,
+            ...createValues,
+            creationIdempotencyKey: resolvedIdempotencyKey,
+            creationRequestFingerprint: resolvedRequestFingerprint,
         })
 
         await Promise.all([
@@ -325,8 +453,23 @@ export async function createServicePoint(req, res) {
             invalidatePublicBusinessRoute(business.countryCode, business.slug),
         ])
 
-        return res.status(201).json(sp)
+        return res.status(201).json(toPublicServicePoint(sp))
     } catch (err) {
+        if (
+            err?.code === 11000 &&
+            resolvedBusinessId &&
+            resolvedIdempotencyKey &&
+            resolvedRequestFingerprint
+        ) {
+            const existing = await ServicePoint.findOne({
+                businessId: resolvedBusinessId,
+                creationIdempotencyKey: resolvedIdempotencyKey,
+            }).select("+creationIdempotencyKey +creationRequestFingerprint")
+            if (existing?.creationRequestFingerprint === resolvedRequestFingerprint) {
+                return res.status(200).json(toPublicServicePoint(existing))
+            }
+            return res.status(409).json({ error: "Idempotency-Key was already used for another service point" })
+        }
         console.error("[createServicePoint]", err)
         return res.status(500).json({ error: "Failed to create service point" })
     }
@@ -361,17 +504,29 @@ export async function updateServicePoint(req, res) {
             viewType,
             maxGuests,
             roomType,
+            isActive,
+            reservable,
             servicePointType: requestedServicePointType,
         } = req.body
 
         const updates = {}
         if (label !== undefined) {
             if (typeof label !== "string" || !label.trim()) return res.status(400).json({ error: "label cannot be empty" })
+            if (label.trim().length > 80) return res.status(400).json({ error: "label must not exceed 80 characters" })
             updates.label = label.trim()
         }
         if (code !== undefined) {
             if (typeof code !== "string" || !code.trim()) return res.status(400).json({ error: "code cannot be empty" })
+            if (code.trim().length > 20) return res.status(400).json({ error: "code must not exceed 20 characters" })
             updates.code = code.trim()
+        }
+        if (isActive !== undefined) {
+            if (typeof isActive !== "boolean") return res.status(400).json({ error: "isActive must be a boolean" })
+            updates.isActive = isActive
+        }
+        if (reservable !== undefined) {
+            if (typeof reservable !== "boolean") return res.status(400).json({ error: "reservable must be a boolean" })
+            updates.reservable = reservable
         }
         if (capacity !== undefined) {
             const parsed = parseNumericField(capacity, "capacity", { min: 1, integer: true })
@@ -388,11 +543,15 @@ export async function updateServicePoint(req, res) {
             if (parsed.error) return res.status(400).json({ error: parsed.error })
             updates.fullDescription = parsed.value || ""
         }
-        if (amenities !== undefined && Array.isArray(amenities)) {
-            updates.amenities = amenities
+        if (amenities !== undefined) {
+            const parsed = normalizeStringArray(amenities, "amenities", { maxItems: 50, maxLength: 80 })
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.amenities = parsed.value
         }
-        if (images !== undefined && Array.isArray(images)) {
-            updates.images = images
+        if (images !== undefined) {
+            const parsed = normalizeStringArray(images, "images", { maxItems: 10, maxLength: 2048 })
+            if (parsed.error) return res.status(400).json({ error: parsed.error })
+            updates.images = parsed.value
         }
         if (bedConfiguration !== undefined) {
             const parsed = normalizeBedConfiguration(bedConfiguration)

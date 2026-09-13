@@ -11,6 +11,7 @@ import { uploadToCloudinary, deleteFromCloudinary } from "../utils/uploadToCloud
 import { requireAnyPermission, requireAuth, requireManagementArea, requirePermission } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
+import { uploadPropertyPhoto } from "../controllers/propertyProfileController.js"
 
 const router = express.Router()
 
@@ -107,6 +108,13 @@ router.post(
     return res.status(500).json({ error: err.message || "Upload failed" })
   }
   },
+)
+
+router.post(
+  "/property-photo",
+  requireManagementArea(MANAGEMENT_ACCESS_AREAS.BUSINESS_SETTINGS),
+  uploadSingleImage,
+  uploadPropertyPhoto,
 )
 
 /**

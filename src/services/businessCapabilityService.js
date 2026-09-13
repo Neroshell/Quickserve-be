@@ -174,9 +174,11 @@ export function resolveBusinessCapabilities(business) {
         settings: {
             sections: [
                 "business",
+                ...(hasLodging ? ["propertyProfile"] : []),
                 "operations",
                 ...(hasLodging ? ["lodging"] : []),
-                ...(hasFoodService ? ["preferences", "foodService"] : []),
+                "preferences",
+                ...(hasFoodService ? ["foodService"] : []),
                 "teamAccess",
                 "security",
             ],

@@ -4,12 +4,16 @@ import {
     getDefaultBusinessModules,
     validateBusinessModulesForType,
 } from "../services/businessCapabilityService.js"
-import { DEFAULT_HOTEL_ROOM_TYPES } from "../constants/hotelConstants.js"
 import {
     DEFAULT_ORDER_START_ASSISTANCE_DELAY_MINUTES,
     MAX_ORDER_START_ASSISTANCE_DELAY_MINUTES,
     MIN_ORDER_START_ASSISTANCE_DELAY_MINUTES,
 } from "../utils/customerOrderTiming.js"
+import {
+    PROPERTY_ACCOMMODATION_TYPES,
+    PROPERTY_FACILITY_IDS,
+    PROPERTY_LANGUAGE_IDS,
+} from "../constants/propertyProfileCatalog.js"
 
 const OperatingDaySchema = new mongoose.Schema({
     enabled: { type: Boolean, default: true },
@@ -70,11 +74,65 @@ const HotelSettingsSchema = new mongoose.Schema({
         default: "11:00",
         match: [/^([01]\d|2[0-3]):[0-5]\d$/, "Check-out time must be HH:mm"]
     },
+    checkInUntil: {
+        type: String,
+        default: "22:00",
+        match: [/^([01]\d|2[0-3]):[0-5]\d$/, "Check-in until must be HH:mm"]
+    },
+    checkOutFrom: {
+        type: String,
+        default: "07:00",
+        match: [/^([01]\d|2[0-3]):[0-5]\d$/, "Check-out from must be HH:mm"]
+    },
     onlineBookingConfirmationMode: {
         type: String,
         enum: ["instant", "confirmation_required"],
         default: "instant"
     }
+}, { _id: false })
+
+const PropertyPhotoSchema = new mongoose.Schema({
+    url: { type: String, required: true, trim: true, maxlength: 2048 },
+    publicId: { type: String, required: true, trim: true, maxlength: 500 },
+}, { timestamps: true })
+
+const PropertyParkingSchema = new mongoose.Schema({
+    available: { type: Boolean, default: null },
+    cost: { type: String, enum: ["free", "paid", null], default: null },
+    reservation: { type: String, enum: ["required", "not_required", null], default: null },
+    location: { type: String, enum: ["onsite", "offsite", null], default: null },
+    access: { type: String, enum: ["private", "public", null], default: null },
+}, { _id: false })
+
+const PropertyProfileSchema = new mongoose.Schema({
+    accommodationType: {
+        type: String,
+        enum: [...PROPERTY_ACCOMMODATION_TYPES.map(type => type.id), null],
+        default: null,
+    },
+    description: { type: String, default: "", trim: true, maxlength: 3000 },
+    starRating: { type: Number, min: 1, max: 5, default: null },
+    city: { type: String, default: "", trim: true, maxlength: 120 },
+    region: { type: String, default: "", trim: true, maxlength: 120 },
+    postalCode: { type: String, default: "", trim: true, maxlength: 32 },
+    photos: { type: [PropertyPhotoSchema], default: [] },
+    facilityIds: {
+        type: [{ type: String, enum: PROPERTY_FACILITY_IDS }],
+        default: [],
+    },
+    parking: { type: PropertyParkingSchema, default: () => ({}) },
+    breakfastOffered: { type: Boolean, default: null },
+    languages: {
+        type: [{ type: String, enum: PROPERTY_LANGUAGE_IDS }],
+        default: [],
+    },
+    childrenAllowed: { type: Boolean, default: null },
+    petsPolicy: {
+        type: String,
+        enum: ["allowed", "on_request", "not_allowed", null],
+        default: null,
+    },
+    websiteUrl: { type: String, default: "", trim: true, maxlength: 2048 },
 }, { _id: false })
 
 const BillingLifecycleClaimSchema = new mongoose.Schema({
@@ -96,7 +154,22 @@ const HotelRoomTypeSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true, maxlength: 80 },
     sortOrder: { type: Number, default: 0 },
     active: { type: Boolean, default: true },
-    isDefault: { type: Boolean, default: false }
+    isDefault: { type: Boolean, default: false },
+    description: { type: String, default: "", trim: true, maxlength: 500 },
+    roomSize: { type: Number, default: null, min: 0 },
+    roomSizeUnit: {
+        type: String,
+        enum: ["m2", "ft2"],
+        default: "m2",
+    },
+    maxGuests: { type: Number, default: null, min: 1 },
+    bedConfiguration: [{
+        bedType: { type: String, trim: true, maxlength: 80 },
+        count: { type: Number, min: 1 },
+    }],
+    viewType: { type: String, default: "", trim: true, maxlength: 80 },
+    amenities: [{ type: String, trim: true, maxlength: 80 }],
+    images: [{ type: String, trim: true, maxlength: 2048 }],
 }, { _id: false })
 
 const BusinessSchema = new mongoose.Schema({
@@ -162,7 +235,7 @@ const BusinessSchema = new mongoose.Schema({
         type: [HotelRoomTypeSchema],
         default: function defaultHotelRoomTypes() {
             if (this.businessType !== "hotel") return undefined
-            return DEFAULT_HOTEL_ROOM_TYPES.map((type) => ({ ...type }))
+            return []
         }
     },
     // QuickServe MVP Billing & Plan Fields
@@ -295,6 +368,12 @@ const BusinessSchema = new mongoose.Schema({
     paymentPreferences: { type: PaymentPreferencesSchema, default: () => ({}) },
     tablePreferences: { type: TablePreferencesSchema, default: () => ({}) },
     hotelSettings: { type: HotelSettingsSchema, default: () => ({}) },
+    propertyProfile: {
+        type: PropertyProfileSchema,
+        default: function defaultPropertyProfile() {
+            return this.businessType === "hotel" ? {} : undefined
+        },
+    },
     
     // Post-signup Onboarding Tracking
     // Note: onboardingCompleted represents 'required operational setup complete'. 

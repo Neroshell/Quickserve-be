@@ -1,13 +1,15 @@
-export const DEFAULT_HOTEL_ROOM_TYPES = [
-    { name: "Standard", sortOrder: 1, active: true, isDefault: true },
-    { name: "Superior", sortOrder: 2, active: true, isDefault: true },
-    { name: "Deluxe", sortOrder: 3, active: true, isDefault: true },
-    { name: "Executive", sortOrder: 4, active: true, isDefault: true },
-    { name: "Junior Suite", sortOrder: 5, active: true, isDefault: true },
-    { name: "Suite", sortOrder: 6, active: true, isDefault: true },
-    { name: "Villa", sortOrder: 7, active: true, isDefault: true },
-    { name: "Apartment", sortOrder: 8, active: true, isDefault: true },
-]
+// Suggestions for owners creating a Room Type. These are not persisted as
+// configured Room Types until an owner explicitly chooses and saves one.
+export const HOTEL_ROOM_TYPE_NAME_SUGGESTIONS = Object.freeze([
+    "Standard",
+    "Superior",
+    "Deluxe",
+    "Executive",
+    "Junior Suite",
+    "Suite",
+    "Villa",
+    "Apartment",
+])
 
 export const HOTEL_PAYMENT_WINDOW_MINUTES = 30;
 

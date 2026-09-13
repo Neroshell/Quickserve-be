@@ -173,12 +173,15 @@ export async function getTableSessionsOverview(req, res) {
 
         const servicePoints = await ServicePoint.find(
             { businessId, servicePointId: { $in: tableIds } },
-            "servicePointId label"
+            "servicePointId label servicePointType"
         ).lean()
 
         const labelMap = {}
         for (const sp of servicePoints) {
-            labelMap[sp.servicePointId] = sp.label
+            labelMap[sp.servicePointId] = {
+                label: sp.label,
+                servicePointType: sp.servicePointType,
+            }
         }
 
         const activeSessionsNow = sessions.reduce((acc, curr) => acc + curr.activeDevices, 0)
@@ -186,13 +189,24 @@ export async function getTableSessionsOverview(req, res) {
 
         const tables = sessions.map(s => ({
             servicePointLabel: s._id,
-            label: labelMap[s._id] || s._id,
+            label: labelMap[s._id]?.label || s._id,
+            servicePointType: labelMap[s._id]?.servicePointType || null,
             activeDevices: s.activeDevices
         }))
+        const activeRoomConnections = tables.filter(
+            item => item.servicePointType === "room"
+        )
 
         return res.json({
             activeSessionsNow,
             activeTablesNow,
+            activeServicePointsNow: tables.length,
+            activeGuestDevicesNow: activeSessionsNow,
+            activeRoomsNow: activeRoomConnections.length,
+            activeRoomDevicesNow: activeRoomConnections.reduce(
+                (sum, item) => sum + item.activeDevices,
+                0
+            ),
             tables
         })
     } catch (err) {
