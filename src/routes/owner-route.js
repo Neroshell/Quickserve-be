@@ -31,15 +31,10 @@ import {
 import { getOwnerFeedbackAnalytics } from "../controllers/feedbackController.js"
 import { getCoOwnerAccess, getTeam, inviteCoOwner, removeCoOwner, updateCoOwnerAccess } from "../controllers/teamController.js"
 import {
-    // Staff Management (new unified API)
     getStaff,
     createStaff,
     deleteStaff,
-    updateManagerPermissions,
-    // Legacy waiter routes (backward compat)
-    getWaiters,
-    createWaiter,
-    deleteWaiter
+    updateManagerPermissions
 } from "../controllers/staffController.js"
 import {
     listServicePoints,
@@ -569,66 +564,6 @@ router.patch("/team/co-owner/:staffId/access", requirePrimaryOwner, updateCoOwne
  */
 router.delete("/team/co-owner/:staffId", requirePrimaryOwner, removeCoOwner)
 
-// ─── Legacy Waitstaff routes (backward compat — do NOT remove) ────────────────
-
-/**
- * @openapi
- * /owner/staff:
- *   get:
- *     summary: Retrieve legacy waitstaff list (Backward Compatibility)
- *     tags:
- *       - Owner Staff Management (Legacy)
- *     responses:
- *       200:
- *         description: List of waiters
- */
-router.get("/staff", requirePermission(PERMISSIONS.STAFF_VIEW), getWaiters)
-
-/**
- * @openapi
- * /owner/staff:
- *   post:
- *     summary: Create legacy waiter account (Backward Compatibility)
- *     tags:
- *       - Owner Staff Management (Legacy)
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - name
- *               - email
- *             properties:
- *               name:
- *                 type: string
- *               email:
- *                 type: string
- *     responses:
- *       201:
- *         description: Waiter created successfully
- */
-router.post("/staff", requirePermission(PERMISSIONS.STAFF_MANAGE), createWaiter)
-
-/**
- * @openapi
- * /owner/staff/{id}:
- *   delete:
- *     summary: Delete legacy waiter account (Backward Compatibility)
- *     tags:
- *       - Owner Staff Management (Legacy)
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Waiter deleted successfully
- */
-router.delete("/staff/:id", requirePermission(PERMISSIONS.STAFF_MANAGE), deleteWaiter)
 
 // ─── Service Point Management ─────────────────────────────────────────────────
 

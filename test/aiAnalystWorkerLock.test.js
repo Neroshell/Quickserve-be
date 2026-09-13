@@ -1,5 +1,6 @@
-import { describe, it, mock, beforeEach } from "node:test"
+import { after, describe, it, mock, beforeEach } from "node:test"
 import assert from "node:assert/strict"
+import { redisPub, redisSub } from "../src/config/redisClient.js"
 
 import {
     AI_ANALYST_LOCK_DURATION,
@@ -7,6 +8,11 @@ import {
     createWorkerRuntime,
 } from "../src/workers/workerRuntime.js"
 import { QUEUE_NAMES } from "../src/queues/index.js"
+
+after(() => {
+    redisPub?.disconnect()
+    redisSub?.disconnect()
+})
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

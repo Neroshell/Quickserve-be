@@ -150,12 +150,20 @@ test("module catalog is the canonical source for admin defaults", () => {
 })
 
 test("backend capability consumers load without syntax or import errors", async () => {
-    await Promise.all([
-        import("../src/controllers/authController.js"),
-        import("../src/controllers/businessController.js"),
-        import("../src/controllers/onboardingController.js"),
-        import("../src/controllers/publicController.js"),
-        import("../src/controllers/servicePointController.js"),
-        import("../src/routes/admin-route.js"),
-    ])
+    const existingRedisUrl = process.env.REDIS_URL
+    process.env.REDIS_URL = ""
+
+    try {
+        await Promise.all([
+            import("../src/controllers/authController.js"),
+            import("../src/controllers/businessController.js"),
+            import("../src/controllers/onboardingController.js"),
+            import("../src/controllers/publicController.js"),
+            import("../src/controllers/servicePointController.js"),
+            import("../src/routes/admin-route.js"),
+        ])
+    } finally {
+        if (existingRedisUrl === undefined) delete process.env.REDIS_URL
+        else process.env.REDIS_URL = existingRedisUrl
+    }
 })

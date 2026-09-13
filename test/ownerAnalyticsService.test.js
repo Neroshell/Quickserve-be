@@ -350,10 +350,39 @@ test("overall insufficient evidence overrides generated health labels", () => {
 test("weekly analyst snapshot binds feedback evidence to the requested period", async () => {
     const feedbackPipelines = []
     let requestedFoodRange = null
+    let requestedInventoryInput = null
+    const inventory = {
+        stockHealthAsOf: {
+            asOf: "2026-08-17T12:00:00.000Z",
+            periodAligned: false,
+        },
+        current: {
+            totalMovementCount: 0,
+            countsByType: {},
+            ingredientShortages: {
+                eventCount: 0,
+                affectedItemCount: 0,
+            },
+        },
+        previous: {
+            totalMovementCount: 0,
+            countsByType: {},
+            ingredientShortages: {
+                eventCount: 0,
+                affectedItemCount: 0,
+            },
+        },
+        comparison: {},
+        tracking: {
+            asOf: "2026-08-17T12:00:00.000Z",
+            periodAligned: false,
+        },
+    }
     const snapshot = await generateWeeklySnapshot({
         businessId: "biz_feedback",
         periodStart: "2026-08-10",
         periodEnd: "2026-08-16",
+        now: new Date("2026-08-17T12:00:00.000Z"),
         businessModel: {
             findOne: () => ({
                 lean: async () => ({
@@ -395,20 +424,47 @@ test("weekly analyst snapshot binds feedback evidence to the requested period", 
                 },
             }
         },
+        inventoryAnalystSummary: async (input) => {
+            requestedInventoryInput = input
+            return inventory
+        },
     })
 
-    assert.deepEqual(snapshot.feedback, {
-        reviewCount: 0,
-        averageRating: null,
-        csatPercent: null,
-        negativeThemes: [],
-    })
-    assert.equal(feedbackPipelines.length, 2)
+    assert.equal(snapshot.feedback.current.reviewCount, 0)
+    assert.equal(snapshot.feedback.current.averageRating, null)
+    assert.equal(snapshot.feedback.current.csatPercent, null)
+    assert.deepEqual(snapshot.feedback.current.orderTypeBreakdown, [])
+    assert.equal(snapshot.feedback.previous.reviewCount, 0)
+    assert.equal(snapshot.feedback.comparison.reviewCountDelta, 0)
+    assert.equal(feedbackPipelines.length, 3)
+    assert.deepEqual(snapshot.inventory, inventory)
+    assert.equal(requestedInventoryInput.businessId, "biz_feedback")
+    assert.equal(requestedInventoryInput.analyticsRange, requestedFoodRange)
+    assert.equal(requestedInventoryInput.periodAligned, false)
+    assert.equal(
+        requestedInventoryInput.asOf.toISOString(),
+        "2026-08-17T12:00:00.000Z",
+    )
     assert.deepEqual(feedbackPipelines[0][0].$match, {
         businessId: "biz_feedback",
         createdAt: {
             $gte: requestedFoodRange.startUtc,
             $lt: requestedFoodRange.endUtcExclusive,
         },
+    })
+    assert.deepEqual(feedbackPipelines[1][0].$match, {
+        businessId: "biz_feedback",
+        createdAt: {
+            $gte: requestedFoodRange.comparison.startUtc,
+            $lt: requestedFoodRange.comparison.endUtcExclusive,
+        },
+    })
+    assert.deepEqual(feedbackPipelines[2][0].$match, {
+        businessId: "biz_feedback",
+        createdAt: {
+            $gte: requestedFoodRange.startUtc,
+            $lt: requestedFoodRange.endUtcExclusive,
+        },
+        orderType: { $in: ["dine-in", "takeout", "delivery"] },
     })
 })

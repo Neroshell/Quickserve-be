@@ -322,7 +322,6 @@ test("no active source or script imports the abandoned Waiter model", async () =
         ...await findJavaScriptFiles(join(repositoryRoot, "src")),
         ...await findJavaScriptFiles(join(repositoryRoot, "scripts")),
         join(repositoryRoot, "server.js"),
-        join(repositoryRoot, "test-create-manager.js"),
     ]
     const importPattern = /(?:from\s+|import\s*\()\s*["'][^"']*models[/\\]Waiter\.js["']/
     const offenders = []

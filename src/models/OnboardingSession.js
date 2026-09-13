@@ -30,8 +30,7 @@ const OnboardingSessionSchema = new mongoose.Schema({
         type: String, 
         required: true, 
         lowercase: true, 
-        trim: true,
-        index: true
+        trim: true
     },
     ownerName: { type: String, required: true },
     passwordHash: { type: String, required: true },

@@ -1234,7 +1234,6 @@ export async function getBillingOverview(req, res) {
  */
 export async function createSetupIntent(req, res) {
     try {
-        console.log("STRIPE KEY EXISTS:", !!process.env.STRIPE_SECRET_KEY)
         const businessId = resolveBusinessId(req)
         if (!businessId) return res.status(401).json({ message: "Unauthorized" })
 
@@ -1530,13 +1529,7 @@ export async function updatePlan(req, res) {
                 const existingItems = subscription.items?.data || []
                 const items = buildSubscriptionUpdateItems(existingItems, targetPlan)
 
-                console.log("[updatePlan] Existing subscription items:",
-                    existingItems.map(i => ({ id: i.id, priceId: i.price.id, usageType: i.price.recurring?.usage_type })))
-                console.log("[updatePlan] Target plan prices: base=", targetPlan.stripeBasePriceId, "metered=", targetPlan.stripeMeteredPriceId)
-                console.log("[updatePlan] Items to send to Stripe:", JSON.stringify(items, null, 2))
-
                 if (items.length === 0) {
-                    console.log("[updatePlan] No item changes needed — subscription already has target prices")
                     // No item changes, just update metadata
                     const updated = await stripe.subscriptions.update(stripeSubscriptionId, {
                         proration_behavior: 'create_prorations',

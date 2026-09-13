@@ -1,7 +1,8 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
+import { redisPub, redisSub } from "../src/config/redisClient.js";
 import {
     closeWorkerRuntime,
     createWorkerRuntime,
@@ -15,6 +16,11 @@ import {
     QUEUE_NAMES,
     RESERVATION_JOB_OPTIONS,
 } from "../src/queues/index.js";
+
+after(() => {
+    redisPub?.disconnect();
+    redisSub?.disconnect();
+});
 
 class FakeWorker extends EventEmitter {
     constructor(queueName, processor, options) {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import test from "node:test"
+import test, { after } from "node:test"
+import { redisPub, redisSub } from "../src/config/redisClient.js"
 import Business from "../src/models/Business.js"
 import Reservation from "../src/models/Reservation.js"
 import {
@@ -10,6 +11,11 @@ import {
 } from "../src/controllers/reservationController.js"
 import { applyReservationPaymentConfirmation } from "../src/services/reservationPaymentConfirmationService.js"
 import { buildRestaurantTodayOperations } from "../src/services/restaurantReservationOperationsService.js"
+
+after(() => {
+    redisPub?.disconnect()
+    redisSub?.disconnect()
+})
 
 function response() {
     return {

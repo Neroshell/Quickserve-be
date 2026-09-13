@@ -80,7 +80,6 @@ export async function getStaff(req, res) {
             return {
                 _id: s._id.toString(),
                 staffId: s.staffId,
-                staffId: s.staffId,   // backward compat
                 role: s.role,
                 name: s.name,
                 email: s.email,
@@ -91,7 +90,6 @@ export async function getStaff(req, res) {
                 presenceStatus: presenceData.status,
                 lastSeenAt: presenceData.lastSeenAt,
                 businessId: s.businessId,
-                businessId: s.businessId, // legacy alias
                 createdAt: s.createdAt,
                 updatedAt: s.updatedAt
             };
@@ -198,9 +196,7 @@ export async function createStaff(req, res) {
 
         const staff = await Staff.create({
             businessId,
-            businessId: businessId, // legacy alias required by old waiters collection indexes
             staffId,
-            staffId: staffId, // populate staffId for backward compat
             role,
             permissions: normalizedPermissions,
             name,
@@ -224,7 +220,6 @@ export async function createStaff(req, res) {
 
         return res.status(201).json({
             staffId: staff.staffId,
-            staffId: staff.staffId,
             role: staff.role,
             ...(staff.role === "manager" ? { permissions: staff.permissions || [] } : {}),
             name: staff.name,
@@ -232,7 +227,6 @@ export async function createStaff(req, res) {
             accountStatus: staff.accountStatus,
             presenceStatus: staff.presenceStatus,
             businessId: staff.businessId,
-            businessId: staff.businessId, // legacy alias
             createdAt: staff.createdAt
         })
     } catch (err) {
@@ -344,37 +338,4 @@ export async function updateManagerPermissions(req, res) {
         console.error("[updateManagerPermissions]", err)
         return res.status(500).json({ error: "Failed to update Manager permissions" })
     }
-}
-
-// ─── Legacy exports (backward compat — keep /owner/staff working) ───────────
-
-/**
- * @deprecated Use getStaff instead. Kept for backward compat.
- */
-export async function getWaiters(req, res) {
-    return getStaff(req, res)
-}
-
-/**
- * @deprecated Use createStaff instead. Kept for backward compat.
- * Accepts the old { staffId, name, email } shape and maps to new schema.
- */
-export async function createWaiter(req, res) {
-    // Map old staffId field → staffId for the new flow
-    if (req.body.staffId && !req.body.staffId) {
-        req.body.staffId = req.body.staffId
-    }
-    // Default role to "waiter" for legacy callers
-    if (!req.body.role) {
-        req.body.role = "waiter"
-    }
-    return createStaff(req, res)
-}
-
-/**
- * @deprecated Use deleteStaff instead. Kept for backward compat.
- */
-export async function deleteWaiter(req, res) {
-    req.params.staffId = req.params.id
-    return deleteStaff(req, res)
 }

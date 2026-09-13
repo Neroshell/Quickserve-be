@@ -16,15 +16,8 @@ export async function calculateOnlineCommission(totalInCents, planSlug) {
   const rate = Number.isFinite(onlineRate) && onlineRate > 0
     ? onlineRate
     : (Number.isFinite(fallbackRate) ? fallbackRate : 0);
-  const sourceField = Number.isFinite(onlineRate) && onlineRate > 0
-    ? "commissionPercentage"
-    : "offlineCommissionRate";
   
   const commissionAmountCents = Math.round(totalInCents * (rate / 100));
-
-  console.log(
-    `[platformFee] Online Stripe commission resolved — plan="${planDoc?.slug || planSlug}", sourceField="${sourceField}", rate=${rate}%, total=${totalInCents}c, quickServeFee=${commissionAmountCents}c`
-  );
 
   return {
     commissionAmountCents,
@@ -47,10 +40,6 @@ export async function calculateOfflineCommission(totalInCents, planSlug) {
   const rate = planDoc?.offlineCommissionRate ?? 0;
 
   const commissionAmountCents = Math.round(totalInCents * (rate / 100));
-
-  console.log(
-    `[platformFee] Offline commission resolved — plan="${planDoc?.slug || planSlug}", sourceField="offlineCommissionRate", rate=${rate}%, total=${totalInCents}c, quickServeCommission=${commissionAmountCents}c`
-  );
 
   return {
     commissionAmountCents,

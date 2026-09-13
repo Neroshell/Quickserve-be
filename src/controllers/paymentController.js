@@ -549,7 +549,6 @@ export async function createCheckoutSession(req, res) {
             throw wrapped;
         }
 
-        console.log(`[checkout] Stripe session created sessionId=${stripeSession.id}`);
         const linked = await persistStripeCheckoutLink({
             businessId: businessIdToUse,
             pendingCheckoutId: pending._id,

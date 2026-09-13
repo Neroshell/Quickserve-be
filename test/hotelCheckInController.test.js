@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import Reservation from "../src/models/Reservation.js";
 import {
   checkInHotelReservation,
-  getHotelPaymentExpiresAt,
-  HOTEL_PAYMENT_WINDOW_MINUTES,
   updateReservationStatus,
 } from "../src/controllers/reservationController.js";
+import {
+  getHotelPaymentExpiresAt,
+  HOTEL_PAYMENT_WINDOW_MINUTES,
+} from "../src/constants/hotelConstants.js";
 import { getHotelCheckInWindow } from "../src/services/hotelCheckInService.js";
 import { hashCheckInCode } from "../src/utils/checkInCode.js";
 
