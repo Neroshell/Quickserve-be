@@ -47,6 +47,9 @@ const PendingCheckoutSchema = new mongoose.Schema(
         displayLabel: { type: String, default: "" },      // human-friendly â€” e.g. "Table 10"
         orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in" },
         sessionId: { type: String, required: true },
+        // New customer checkouts always set this. Null remains valid only so a
+        // pre-remediation checkout can still complete as historical/read-only.
+        guestSessionId: { type: String, default: null, immutable: true },
         journeyId: { type: String, default: null },
         items: { type: [PendingItemSchema], required: true },
         subtotal: { type: Number, default: 0 },

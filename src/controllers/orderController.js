@@ -53,6 +53,7 @@ import {
 } from "../services/orderFulfillmentService.js"
 import { publishOrderRealtime } from "../services/orderRealtimeService.js"
 import { safelyNotifyInventoryStockTransitions } from "../services/inventoryNotificationIntegrationService.js"
+import { resolveCurrentCustomerVisit } from "../services/customerOrderAccessService.js"
 // Restaurant-flow defect safeguards for direct/offline orders:
 // validate and normalize the cart, enforce business ordering/payment settings,
 // and derive currency from the business instead of accepting client values.
@@ -139,6 +140,43 @@ export async function listOrders(req, res) {
     console.error("List orders error:", err)
     return res.status(500).json({ message: "Server error" })
 
+  }
+}
+
+/**
+ * Current/live orders are visit-scoped. Unlike listOrders (the approved
+ * device history endpoint), this read requires an active, device-bound
+ * GuestSession and never falls back to the persistent device identity.
+ */
+export async function listCurrentOrders(req, res) {
+  try {
+    const businessId = resolveBusinessId(req)
+    const sessionId = req.query.sessionId
+
+    if (!businessId) {
+      return res.status(400).json({ message: "businessId is required" })
+    }
+
+    const access = await resolveCurrentCustomerVisit({ req, businessId, sessionId })
+    if (!access.guestSession) {
+      return res.status(access.statusCode).json({ message: access.message })
+    }
+
+    const filter = {
+      businessId,
+      guestSessionId: access.guestSessionId,
+      servicePointLabel: access.guestSession.servicePointId,
+    }
+    const [orders, business] = await Promise.all([
+      Order.find(filter).sort({ createdAt: -1 }).lean(),
+      Business.findOne({ businessId }).lean(),
+    ])
+    const customerProgressOptions = getCustomerProgressOptionsForBusiness(business)
+
+    return res.json(orders.map((order) => toOrderDTO(order, { customerProgressOptions })))
+  } catch (err) {
+    console.error("List current orders error:", err)
+    return res.status(500).json({ message: "Server error" })
   }
 }
 
@@ -349,6 +387,7 @@ export async function createOrder(req, res) {
       servicePointLabel,
       orderType: finalOrderType,
       sessionId,
+      guestSessionId: String(ts._id),
       items: enrichedItems.map(({ menuItemId, quantity, notes, allergies }) => ({
         menuItemId: String(menuItemId),
         quantity,
@@ -368,6 +407,7 @@ export async function createOrder(req, res) {
       displayLabel,
       orderType: finalOrderType,
       sessionId,
+      guestSessionId: String(ts._id),
       items: enrichedItems,
       status: "placed",
       estimatedPrepMinutes: estimate.estimatedPrepMinutes,
@@ -515,13 +555,31 @@ export async function getOrderById(req, res) {
     const order = await Order.findOne({ orderId, businessId }).lean()
     if (!order) return res.status(404).json({ message: "Order not found" })
 
-    // Authorization: staff of this business, or the customer device that placed
-    // the order (matched by its unguessable sessionId). Prevents IDOR on orderId.
+    // Staff authorization remains tenant/permission based. Customer reads have
+    // two deliberately separate modes: historical read-only device history,
+    // and current/live GuestSession ownership.
     const isStaff = !!req.session?.user?.businessId && req.session.user.businessId === order.businessId
     const requesterSessionId = req.query.sessionId || req.body?.sessionId
-    const isOwnerDevice = !!requesterSessionId && !!order.sessionId && requesterSessionId === order.sessionId
-    if (!isStaff && !isOwnerDevice) {
-      return res.status(403).json({ message: "Forbidden" })
+    if (!isStaff) {
+      if (req.query.scope === "current") {
+        const access = await resolveCurrentCustomerVisit({
+          req,
+          businessId,
+          sessionId: requesterSessionId,
+          servicePointId: order.servicePointLabel,
+        })
+        if (!access.guestSession) {
+          return res.status(access.statusCode).json({ message: access.message })
+        }
+        if (!order.guestSessionId || order.guestSessionId !== access.guestSessionId) {
+          return res.status(403).json({ message: "Forbidden" })
+        }
+      } else {
+        const isOwnerDevice = !!requesterSessionId && !!order.sessionId && requesterSessionId === order.sessionId
+        if (!isOwnerDevice) {
+          return res.status(403).json({ message: "Forbidden" })
+        }
+      }
     }
 
     // Hydrate display name (fallback for legacy orders missing displayLabel)

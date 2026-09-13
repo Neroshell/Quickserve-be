@@ -144,7 +144,11 @@ const OrderSchema = new mongoose.Schema(
     servicePointLabel: { type: String, required: true, index: true }, // internal servicePointId â€” for routing/lookups only
     displayLabel: { type: String, default: "" }, // human-friendly display label, e.g. "Table 12"
     orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in", index: true },
+    // Persistent device identity supports same-business historical Order History.
     sessionId: { type: String, index: true },
+    // Canonical live-visit ownership. Null preserves legacy/staff-created orders
+    // as history/operations records without granting current customer authority.
+    guestSessionId: { type: String, default: null, immutable: true },
     journeyId: { type: String, default: null },
     status: { type: String, enum: ["placed", "in_progress", "ready", "completed", "cancelled"], default: "placed", index: true },
     items: { type: [OrderItemSchema], required: true },

@@ -333,6 +333,7 @@ test("online checkout preserves journey through webhook, CRM identification, and
   assert.equal(checkoutResponse.statusCode, 201)
   assert.equal(checkoutResponse.body.journeyId, JOURNEY_ID)
   assert.equal(pending.journeyId, JOURNEY_ID)
+  assert.equal(pending.guestSessionId, "mongo-guest-session-a")
   assert.equal(pending.stripeSessionId, "cs_online_journey")
   assert.equal(pending.stripeExpiresAt.toISOString(), new Date(stripeExpiresAt * 1000).toISOString())
   assert.equal(
@@ -425,6 +426,7 @@ test("online checkout preserves journey through webhook, CRM identification, and
 
   const order = orderRef.current
   assert.equal(order.journeyId, JOURNEY_ID)
+  assert.equal(order.guestSessionId, "mongo-guest-session-a")
   assert.equal(journey.orderCount, 1)
   assert.deepEqual(journey.placedOrderIds, [order.orderId])
   assert.equal(journey.paidOrderCount, 1)

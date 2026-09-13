@@ -73,6 +73,9 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
   try {
     const businessId = req.body.businessId
     const servicePointId = req.body.servicePointId
+    const deviceSessionId = typeof req.body.sessionId === "string"
+      ? req.body.sessionId.trim()
+      : ""
 
     if (!businessId || !servicePointId) {
       return res.status(400).json({ error: "Missing businessId or servicePointId" })
@@ -118,7 +121,9 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       servicePointId,   // stores servicePointId — backward compat field name
       token,
       expiresAt,
-      boundSessionId: null,
+      // Bind at issuance so current reads and live streams can prove both the
+      // visit credential and continuity with the device-history identity.
+      boundSessionId: deviceSessionId || null,
     })
 
     // Start / resolve canonical CustomerJourney
@@ -127,7 +132,7 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       servicePointId: canonicalJourneyServicePointId,
       orderType: "dine-in",
       tableSessionToken: token,
-      sessionId: req.body.sessionId || null,
+      sessionId: deviceSessionId || null,
       journeyId: req.body.journeyId || null,
     })
 

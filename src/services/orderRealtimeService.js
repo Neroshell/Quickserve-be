@@ -20,23 +20,32 @@ export async function publishOrderRealtime(event, order, { action, customerNotif
   const customerPayloadExtra = customerNotification
     ? { ...payloadExtra, customerNotification }
     : payloadExtra
+  const visitScope = {
+    businessId: order.businessId,
+    servicePointId: order.servicePointLabel,
+    guestSessionId: order.guestSessionId || null,
+    orderId: order.orderId,
+  }
   const kitchenItems = staffDTO.items.filter((item) => item.fulfillmentStation === "kitchen")
   const barItems = staffDTO.items.filter((item) => item.fulfillmentStation === "bar")
 
   if (kitchenItems.length > 0) {
     await publishEvent(event, order.businessId, ["kitchen"], {
       order: { ...staffDTO, items: kitchenItems, stationStatus: deriveStationStatus(kitchenItems) },
+      ...visitScope,
       ...payloadExtra,
     })
   }
   if (barItems.length > 0) {
     await publishEvent(event, order.businessId, ["bar"], {
       order: { ...staffDTO, items: barItems, stationStatus: deriveStationStatus(barItems) },
+      ...visitScope,
       ...payloadExtra,
     })
   }
   await publishEvent(event, order.businessId, ["waiter", "table", "anon"], {
     order: customerDTO,
+    ...visitScope,
     ...customerPayloadExtra,
   })
 }

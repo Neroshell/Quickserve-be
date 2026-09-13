@@ -340,6 +340,7 @@ export async function createCheckoutSession(req, res) {
             servicePointLabel,
             orderType: finalOrderType,
             sessionId,
+            guestSessionId: String(ts._id),
             journeyId: resolvedJourneyId,
             receiptEmail: receiptEmail || null,
             items: enrichedItems.map(({ menuItemId, quantity, notes, allergies }) => ({
@@ -412,6 +413,7 @@ export async function createCheckoutSession(req, res) {
                     displayLabel,
                     orderType: finalOrderType,
                     sessionId,
+                    guestSessionId: String(ts._id),
                     items: enrichedItems,
                     subtotal,
                     taxAmount,

@@ -1,6 +1,6 @@
 import express from "express"
 import rateLimit from "express-rate-limit"
-import { listOrders, createOrder, getOrderById, updateOrderStatus, deleteOrdersBySession, markPaid, sendReceipt, saveReceiptEmail, reconcileComplete } from "../controllers/orderController.js"
+import { listOrders, listCurrentOrders, createOrder, getOrderById, updateOrderStatus, deleteOrdersBySession, markPaid, sendReceipt, saveReceiptEmail, reconcileComplete } from "../controllers/orderController.js"
 import { reorderFromOrder } from "../controllers/reorderController.js"
 import { requireAuth, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
@@ -10,7 +10,7 @@ const router = express.Router()
 // Limit receipt emails to curb spam/abuse of the email provider.
 const receiptLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: 20,
+  max: 5,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Too many receipt requests. Please try again shortly." },
@@ -100,6 +100,10 @@ router.post("/", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MAN
  *         description: Orders session deleted
  */
 router.delete("/session", requireAuth, requireRole("owner", "co_owner", "admin", "manager"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), deleteOrdersBySession)
+
+// GuestSession-authoritative live visit orders. Keep this before /:orderId so
+// "current" is never interpreted as an order identifier.
+router.get("/current", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW), listCurrentOrders)
 
 /**
  * @openapi

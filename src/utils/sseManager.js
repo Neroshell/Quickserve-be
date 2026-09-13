@@ -20,7 +20,6 @@
 import { randomUUID } from "node:crypto"
 import { redisPub, REDIS_CHANNEL } from "../config/redisClient.js"
 import Business from "../models/Business.js"
-import GuestSession from "../models/GuestSession.js"
 import Staff from "../models/Staff.js"
 import { resolveCurrentCoOwner, resolveCurrentManager } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
@@ -29,6 +28,10 @@ import {
     resolveManagementAccess,
 } from "../constants/managementAccess.js"
 import { resolveNotificationAccessContext } from "../services/notificationReadService.js"
+import {
+    isCurrentCustomerVisitStillActive,
+    resolveCurrentCustomerVisit,
+} from "../services/customerOrderAccessService.js"
 
 // Which SSE channel(s) a given authenticated staff role is allowed to subscribe to.
 // The channel is derived from the session role — NOT the client-supplied query —
@@ -260,6 +263,7 @@ export async function sseHandler(req, res) {
     let role = req.query.role || "anon"
     const businessId = req.query.businessId || req.query.businessId
     const token = req.query.token
+    const deviceSessionId = req.query.sessionId
     let managerPermission = null
     let managerIdentity = null
     let coOwnerArea = null
@@ -271,17 +275,20 @@ export async function sseHandler(req, res) {
 
     // ── Authentication & Authorization ─────────────────────────────────────────
     let clientTableId = null
+    let clientGuestSessionId = null
     if (role === "table" || role === "anon" || role === "customer") {
-        if (!token) {
-            return res.status(401).end("Missing session token")
+        const access = await resolveCurrentCustomerVisit({
+            req,
+            businessId,
+            sessionId: deviceSessionId,
+        })
+        if (!access.guestSession) {
+            return res.status(access.statusCode).end(access.message)
         }
-        const ts = await GuestSession.findOne({ token, businessId }).lean()
-        if (!ts || ts.expiresAt < new Date()) {
-            return res.status(403).end("Invalid or expired table session")
-        }
-        // Per-table isolation: this customer stream only receives events for its
-        // own table (see broadcastLocal). Staff streams stay business-wide.
-        clientTableId = ts.servicePointId || null
+        // Customer streams are pinned to one canonical visit and ServicePoint.
+        // Device identity alone never selects or broadens live events.
+        clientTableId = access.guestSession.servicePointId || null
+        clientGuestSessionId = access.guestSessionId
     } else {
         // Staff roles (waiter, kitchen, bartender, owner, etc.)
         if (!req.session || !req.session.user) {
@@ -353,6 +360,9 @@ export async function sseHandler(req, res) {
         role,
         businessId,
         servicePointId: clientTableId,
+        guestSessionId: clientGuestSessionId,
+        deviceSessionId: deviceSessionId || null,
+        guestSessionToken: clientGuestSessionId ? token : null,
         managerPermission,
         managerIdentity,
         coOwnerArea,
@@ -369,6 +379,22 @@ export async function sseHandler(req, res) {
     // Keep-alive ping every 25 s (prevents idle disconnects through proxies/load balancers)
     const keepAlive = setInterval(async () => {
         try {
+            if (CUSTOMER_ROLES.has(client.role)) {
+                const stillAllowed = await isCurrentCustomerVisitStillActive({
+                    guestSessionId: client.guestSessionId,
+                    token: client.guestSessionToken,
+                    businessId: client.businessId,
+                    servicePointId: client.servicePointId,
+                    sessionId: client.deviceSessionId,
+                })
+                if (!clients.has(client)) return
+                if (!stillAllowed) {
+                    res.end()
+                    clearInterval(keepAlive)
+                    removeClient(client)
+                    return
+                }
+            }
             if (client.managerPermission) {
                 const currentManager = client.coOwnerArea
                     ? await findCurrentCoOwnerForClient(client)
@@ -488,8 +514,15 @@ export async function broadcastLocal(msg) {
     // identity used to scope customer streams below. Waiter calls use only the
     // canonical servicePointId; the order fallback remains unchanged.
     const msgTableId =
+        payload?.servicePointId ||
+        payload?.order?.servicePointId ||
         payload?.order?.servicePointLabel ||
         payload?.call?.servicePointId ||
+        null
+    const msgGuestSessionId =
+        payload?.guestSessionId ||
+        payload?.order?.guestSessionId ||
+        payload?.call?.guestSessionId ||
         null
 
     let matched = 0
@@ -567,12 +600,12 @@ export async function broadcastLocal(msg) {
             }
         }
 
-        // Per-table isolation for customer streams: a diner only receives events
-        // for their own table. Staff channels (kitchen/bar/waitstaff/owner) are
-        // business-wide and skip this. Falls open if either side lacks a servicePointId
-        // (e.g. a non-table-specific event) so nothing legitimate is dropped.
-        if (CUSTOMER_ROLES.has(client.role) && msgTableId && client.servicePointId && msgTableId !== client.servicePointId) {
-            continue
+        // Customer delivery fails closed unless both the canonical GuestSession
+        // visit and ServicePoint match. Historical/device identity is never used
+        // for live fan-out, including later visits at the same ServicePoint.
+        if (CUSTOMER_ROLES.has(client.role)) {
+            if (!msgGuestSessionId || msgGuestSessionId !== client.guestSessionId) continue
+            if (!msgTableId || msgTableId !== client.servicePointId) continue
         }
 
         try {

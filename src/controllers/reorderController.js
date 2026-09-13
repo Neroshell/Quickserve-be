@@ -1,5 +1,6 @@
 import Order from "../models/order.js"
 import MenuItem from "../models/menuItem.js"
+import { resolveCurrentCustomerVisit } from "../services/customerOrderAccessService.js"
 
 /**
  * POST /orders/:orderId/reorder
@@ -15,7 +16,7 @@ import MenuItem from "../models/menuItem.js"
 export async function reorderFromOrder(req, res) {
   try {
     const { orderId } = req.params
-    const { businessId, sessionId } = req.body
+    const { businessId, sessionId, servicePointId } = req.body
     const sessionBusinessId = req.session?.user?.businessId
     const isSameTenantStaff = Boolean(sessionBusinessId && sessionBusinessId === businessId)
 
@@ -29,6 +30,24 @@ export async function reorderFromOrder(req, res) {
 
     if (!isSameTenantStaff && !sessionId) {
       return res.status(400).json({ error: "sessionId is required" })
+    }
+
+    // Reading the source order uses historical device ownership below. Copying
+    // it into a new cart is a separately authorized action and therefore also
+    // requires a valid current visit; the historical order itself stays inert.
+    if (!isSameTenantStaff) {
+      if (!servicePointId) {
+        return res.status(400).json({ error: "servicePointId is required" })
+      }
+      const access = await resolveCurrentCustomerVisit({
+        req,
+        businessId,
+        sessionId,
+        servicePointId,
+      })
+      if (!access.guestSession) {
+        return res.status(access.statusCode).json({ error: access.message })
+      }
     }
 
     // Staff may use only their authenticated tenant. Customer devices must

@@ -296,11 +296,11 @@ function withStripeClient(req, stripeClient) {
   };
 }
 
-function createSseClientRequest({ role, businessId, session, token }) {
+function createSseClientRequest({ role, businessId, session, token, sessionId = "device-a" }) {
   const closeHandlers = [];
   return {
     req: {
-      query: { role, businessId, token },
+      query: { role, businessId, token, sessionId: token ? sessionId : undefined },
       session,
       on(event, callback) {
         if (event === "close") closeHandlers.push(callback);
@@ -494,6 +494,7 @@ test("valid active ServicePoint creates a tenant-bound guest session", async (t)
       body: {
         businessId: "business-a",
         servicePointId: "sp_table_a",
+        sessionId: "device-a",
       },
     },
     res,
@@ -504,7 +505,7 @@ test("valid active ServicePoint creates a tenant-bound guest session", async (t)
   assert.equal(created.businessId, "business-a");
   assert.equal(created.servicePointId, "sp_table_a");
   assert.ok(created.expiresAt > new Date());
-  assert.equal(created.boundSessionId, null);
+  assert.equal(created.boundSessionId, "device-a");
 });
 
 test("guest-session bootstrap rejects inactive businesses, disabled ServicePoints, and tenant manipulation", async (t) => {
@@ -588,6 +589,7 @@ test("Scenario A: public dine-in order derives tenant, menu pricing, snapshots, 
   const stored = capture.orderCreates[0];
   assert.equal(stored.businessId, "business-a");
   assert.equal(stored.servicePointLabel, "sp_table_a");
+  assert.equal(stored.guestSessionId, "mongo-guest-session-a");
   assert.equal(stored.displayLabel, "Table 7");
   assert.equal(stored.orderType, "dine-in");
   assert.equal(stored.items[0].quantity, 2);
@@ -669,6 +671,7 @@ test("waitstaff Send to Kitchen creates one authoritative unpaid staff order", a
   const stored = capture.orderCreates[0];
   assert.equal(stored.businessId, "business-a");
   assert.equal(stored.orderSource, "waitstaff");
+  assert.equal(stored.guestSessionId, undefined);
   assert.equal(stored.createdBy, "staff");
   assert.equal(stored.createdByStaffId, "staff-a");
   assert.equal(stored.paymentChannel, "offline");
@@ -981,7 +984,10 @@ test("Scenario C: mixed order events split kitchen/bar items, preserve waiter vi
     category: "beverages",
     type: "drinks",
   });
-  installOfflineOrderMocks(t, { menuItems: [food, drink] });
+  installOfflineOrderMocks(t, {
+    menuItems: [food, drink],
+    guestSession: createGuestSessionFixture({ boundSessionId: "device-a" }),
+  });
   t.mock.method(console, "log", () => {});
 
   const clients = [
@@ -1070,6 +1076,11 @@ test("Scenario C: mixed order events split kitchen/bar items, preserve waiter vi
     );
     assert.equal(customer.length, 1);
     assert.equal(customer[0].order.items.length, 2);
+    assert.equal(customer[0].businessId, "business-a");
+    assert.equal(customer[0].servicePointId, "sp_table_a");
+    assert.equal(customer[0].guestSessionId, "mongo-guest-session-a");
+    assert.equal(customer[0].orderId, res.body.orderId);
+    assert.doesNotMatch(JSON.stringify(customer[0]), /table-token-a/);
     assert.equal(otherTenant.length, 0);
   } finally {
     clients.forEach((client) => client.request.close());
@@ -1542,6 +1553,7 @@ test("Scenario B: online checkout ignores client price/currency and persists the
   const pending = capture.pendingCreates[0];
   const stripeConfig = capture.stripeConfigs[0];
   assert.equal(pending.businessId, "business-a");
+  assert.equal(pending.guestSessionId, "mongo-guest-session-a");
   assert.equal(pending.servicePointLabel, "sp_table_a");
   assert.equal(pending.displayLabel, "Table 7");
   assert.equal(pending.items[0].lineTotal, 25);
@@ -1604,7 +1616,7 @@ test("customer Stripe checkout remains self/customer when a staff cookie coexist
   assert.equal(capture.pendingCreates[0].createdByStaffId, null);
 });
 
-test("creation provenance is immutable in Order and PendingCheckout schemas", () => {
+test("creation provenance and current visit ownership are immutable in Order and PendingCheckout schemas", () => {
   for (const path of ["orderSource", "createdBy", "createdByStaffId"]) {
     assert.equal(Order.schema.path(path).options.immutable, true, `Order.${path}`);
     assert.equal(PendingCheckout.schema.path(path).options.immutable, true, `PendingCheckout.${path}`);
@@ -1612,6 +1624,8 @@ test("creation provenance is immutable in Order and PendingCheckout schemas", ()
   assert.equal(PendingCheckout.schema.path("orderSource").options.default, "self");
   assert.equal(PendingCheckout.schema.path("createdBy").options.default, "customer");
   assert.equal(PendingCheckout.schema.path("createdByStaffId").options.default, null);
+  assert.equal(Order.schema.path("guestSessionId").options.immutable, true);
+  assert.equal(PendingCheckout.schema.path("guestSessionId").options.immutable, true);
 });
 
 test("online checkout rejects unavailable items, disabled online payments, and invalid quantities before Stripe", async (t) => {
@@ -1782,6 +1796,9 @@ test("another device or business cannot read an order by public order ID", async
 test("order-again data uses current tenant menu price and rejects another guest session", async (t) => {
   const original = createOrderDocument().toObject();
   const live = createMenuItemFixture({ price: 14 });
+  t.mock.method(GuestSession, "findOne", () => mockQuery(createGuestSessionFixture({
+    boundSessionId: "device-a",
+  })));
   t.mock.method(Order, "findOne", (query) => {
     if (query.sessionId !== original.sessionId) return mockQuery(null);
     return mockQuery(original);
@@ -1792,7 +1809,11 @@ test("order-again data uses current tenant menu price and rejects another guest 
   await reorderFromOrder(
     {
       params: { orderId: original.orderId },
-      body: { businessId: "business-a" },
+      body: {
+        businessId: "business-a",
+        servicePointId: "sp_table_a",
+        tableSessionToken: "table-token-a",
+      },
       session: {},
     },
     missingSessionRes,
@@ -1803,17 +1824,31 @@ test("order-again data uses current tenant menu price and rejects another guest 
   await reorderFromOrder(
     {
       params: { orderId: original.orderId },
-      body: { businessId: "business-a", sessionId: "device-b" },
+      body: {
+        businessId: "business-a",
+        sessionId: "device-b",
+        servicePointId: "sp_table_a",
+        tableSessionToken: "table-token-a",
+      },
+      headers: { "x-table-session-token": "table-token-a" },
+      get(name) { return this.headers[name.toLowerCase()]; },
     },
     deniedRes,
   );
-  assert.equal(deniedRes.statusCode, 404);
+  assert.equal(deniedRes.statusCode, 403);
 
   const allowedRes = createResponse();
   await reorderFromOrder(
     {
       params: { orderId: original.orderId },
-      body: { businessId: "business-a", sessionId: "device-a" },
+      body: {
+        businessId: "business-a",
+        sessionId: "device-a",
+        servicePointId: "sp_table_a",
+        tableSessionToken: "table-token-a",
+      },
+      headers: { "x-table-session-token": "table-token-a" },
+      get(name) { return this.headers[name.toLowerCase()]; },
     },
     allowedRes,
   );
