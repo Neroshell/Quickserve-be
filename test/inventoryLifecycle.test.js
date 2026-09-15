@@ -849,7 +849,7 @@ test("lifecycle and cascade routes reuse canonical inventory/menu permissions", 
     for (const method of ["get", "delete"]) {
         assert.match(
             routes,
-            new RegExp(`router\\.${method}\\(\\s*"\\/inventory\\/simple-stock\\/menu-items\\/:menuItemId(?:\\/removal-preview)?",\\s*requirePermission\\(PERMISSIONS\\.MENU_MANAGE\\),\\s*requirePermission\\(PERMISSIONS\\.INVENTORY_MANAGE\\)`),
+            new RegExp(`router\\.${method}\\(\\s*"\\/inventory\\/simple-stock\\/menu-items\\/:menuItemId(?:\\/removal-preview)?",\\s*requireBusinessModule\\("foodService"\\),\\s*requirePermission\\(PERMISSIONS\\.MENU_MANAGE\\),\\s*requirePermission\\(PERMISSIONS\\.INVENTORY_MANAGE\\)`),
         )
     }
 })

@@ -1,6 +1,6 @@
 import mongoose from "mongoose"
 
-import { MAX_INVENTORY_QUANTITY } from "../constants/inventory.js"
+import { INVENTORY_ITEM_DOMAINS, MAX_INVENTORY_QUANTITY } from "../constants/inventory.js"
 import {
     MAX_INGREDIENT_RECIPE_COMPONENTS,
     MENU_INVENTORY_MAPPING_STATUSES,
@@ -144,6 +144,43 @@ function submittedQuantity(value) {
     return normalized
 }
 
+function assertFoodServiceInventoryItem(inventoryItem) {
+    const domain = inventoryItem?.domain || INVENTORY_ITEM_DOMAINS.FOOD_SERVICE
+    if (domain !== INVENTORY_ITEM_DOMAINS.FOOD_SERVICE) {
+        throw mappingError(
+            "Menu recipes can use only Food Service inventory items",
+            "INVENTORY_ITEM_NOT_FOOD_SERVICE",
+            409,
+        )
+    }
+}
+
+export async function assertInventoryItemRecipeDomainChange({
+    businessId,
+    inventoryItemId,
+    domain,
+}, { MenuInventoryRecipeModel = MenuInventoryRecipe } = {}) {
+    if (domain === INVENTORY_ITEM_DOMAINS.FOOD_SERVICE) return
+    const linked = await MenuInventoryRecipeModel.exists({
+        businessId,
+        status: { $nin: [
+            MENU_INVENTORY_MAPPING_STATUSES.ARCHIVED,
+            MENU_INVENTORY_MAPPING_STATUSES.ORPHANED,
+        ] },
+        $or: [
+            { "components.inventoryItemId": inventoryItemId },
+            { "ingredientComponents.inventoryItemId": inventoryItemId },
+        ],
+    })
+    if (linked) {
+        throw mappingError(
+            "Remove this item from its menu relationship before changing it to a hotel inventory domain",
+            "INVENTORY_ITEM_HAS_MENU_RELATIONSHIP",
+            409,
+        )
+    }
+}
+
 export async function validateSimpleMenuInventoryRelationship({
     businessId,
     menuItemId,
@@ -189,6 +226,7 @@ export async function validateSimpleMenuInventoryRelationship({
     if (requireActiveInventoryItem && inventoryItem.isActive === false) {
         throw mappingError("Inventory item is inactive", "INVENTORY_ITEM_INACTIVE", 409)
     }
+    assertFoodServiceInventoryItem(inventoryItem)
 
     const normalizedQuantity = normalizeInventoryQuantity({
         quantity: component.quantity,
@@ -290,6 +328,7 @@ export async function validateIngredientRecipeRelationship({
                 409,
             )
         }
+        assertFoodServiceInventoryItem(inventoryItem)
         const normalized = normalizeInventoryQuantity({
             quantity: component.quantity,
             unit: component.unit,

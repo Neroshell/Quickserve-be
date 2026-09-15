@@ -1,7 +1,7 @@
 import express from "express"
-import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory, addHotelRoomType, updateHotelRoomType, removeHotelRoomType } from "../controllers/businessController.js"
+import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory, addHotelRoomType, updateHotelRoomType, removeHotelRoomType, getHotelRoomTypeSupplyTemplate, updateHotelRoomTypeSupplyTemplate } from "../controllers/businessController.js"
 
-import { requireManagementArea, requirePermissionForAuthenticatedManager } from "../middleware/authMiddleware.js"
+import { requireManagementArea, requirePermission, requirePermissionForAuthenticatedManager } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
 import { getPropertyProfile, updatePropertyProfileSection } from "../controllers/propertyProfileController.js"
@@ -230,5 +230,17 @@ router.delete("/categories", requireMenuConfiguration, removeCategory)
 router.post("/room-types", requireServicePointOwner, addHotelRoomType)
 router.patch("/room-types", requireServicePointOwner, updateHotelRoomType)
 router.delete("/room-types", requireServicePointOwner, removeHotelRoomType)
+router.get(
+    "/room-types/supply-template",
+    requirePermission(PERMISSIONS.SERVICE_POINTS_VIEW),
+    requirePermission(PERMISSIONS.INVENTORY_VIEW),
+    getHotelRoomTypeSupplyTemplate,
+)
+router.patch(
+    "/room-types/supply-template",
+    requirePermission(PERMISSIONS.SERVICE_POINTS_MANAGE),
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    updateHotelRoomTypeSupplyTemplate,
+)
 
 export default router

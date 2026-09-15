@@ -117,6 +117,7 @@ export async function getPublicBusinessConfig(req, res) {
       phoneNumber: business.phoneNumber,
       address: business.address,
       country: business.country,
+      countryCode: business.countryCode, 
       currency: business.currency,
       timezone: business.timezone,
       language: business.language,

@@ -19,6 +19,7 @@ import {
 } from "../services/ownerInventoryReadService.js"
 import { migrateLegacyMenuItemToSimpleStock } from "../services/simpleStockMigrationService.js"
 import {
+    assertInventoryItemRecipeDomainChange,
     readIngredientRecipe,
     readIngredientRecipesPage,
     removeIngredientRecipe,
@@ -37,6 +38,13 @@ import {
     setSimpleStockEnabled,
     updateSimpleStockThreshold,
 } from "../services/simpleStockMenuService.js"
+import Business from "../models/Business.js"
+import {
+    assertInventoryDomainAllowedForBusiness,
+    resolveInventoryReadDomainsForBusiness,
+} from "../services/inventoryDomainService.js"
+import { recordRoomUsage } from "../services/inventoryRoomUsageService.js"
+import { readRoomUsageContext } from "../services/hotelRoomSupplyTemplateService.js"
 
 function getOwnerBusinessId(req) {
     return req.session?.user?.businessId || null
@@ -124,11 +132,36 @@ function requireTenant(req, res) {
     return businessId
 }
 
+async function loadOwnerBusiness(businessId) {
+    const business = await Business.findOne({ businessId }).lean()
+    if (!business) {
+        const error = new Error("Business not found")
+        error.code = "BUSINESS_NOT_FOUND"
+        error.statusCode = 404
+        throw error
+    }
+    return business
+}
+
+async function readEnabledInventoryItem({ businessId, inventoryItemId, business = null }) {
+    const [resolvedBusiness, item] = await Promise.all([
+        business ? Promise.resolve(business) : loadOwnerBusiness(businessId),
+        readInventoryItem({ businessId, inventoryItemId }),
+    ])
+    assertInventoryDomainAllowedForBusiness(resolvedBusiness, item.domain)
+    return item
+}
+
 export async function getInventoryOverview(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
-        return res.json(await readInventoryOverview({ businessId }))
+        const business = await loadOwnerBusiness(businessId)
+        const domains = resolveInventoryReadDomainsForBusiness(business, req.query.domain)
+        return res.json(await readInventoryOverview({
+            businessId,
+            domain: domains.join(","),
+        }))
     } catch (error) {
         return handleInventoryError(res, error, "overview")
     }
@@ -138,10 +171,13 @@ export async function listInventoryItems(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
+        const business = await loadOwnerBusiness(businessId)
+        const domains = resolveInventoryReadDomainsForBusiness(business, req.query.domain)
         return res.json(await readInventoryItemsPage({
             businessId,
             active: req.query.active,
             category: req.query.category,
+            domain: domains.join(","),
             search: req.query.search,
             stockStatus: req.query.stockStatus,
             cursor: req.query.cursor,
@@ -156,7 +192,7 @@ export async function getInventoryItem(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
-        return res.json(await readInventoryItem({
+        return res.json(await readEnabledInventoryItem({
             businessId,
             inventoryItemId: req.params.inventoryItemId,
         }))
@@ -170,6 +206,10 @@ export async function createOwnerInventoryItem(req, res) {
     if (!businessId) return
     try {
         const { allowCategoryVariant = false, ...input } = req.body || {}
+        const business = await loadOwnerBusiness(businessId)
+        input.domain = assertInventoryDomainAllowedForBusiness(business, input.domain, {
+            useBusinessDefault: true,
+        })
         const item = await createInventoryItem({
             businessId,
             input,
@@ -186,6 +226,20 @@ export async function updateOwnerInventoryItem(req, res) {
     if (!businessId) return
     try {
         const { allowCategoryVariant = false, ...input } = req.body || {}
+        const business = await loadOwnerBusiness(businessId)
+        await readEnabledInventoryItem({
+            businessId,
+            inventoryItemId: req.params.inventoryItemId,
+            business,
+        })
+        if (input.domain !== undefined) {
+            input.domain = assertInventoryDomainAllowedForBusiness(business, input.domain)
+            await assertInventoryItemRecipeDomainChange({
+                businessId,
+                inventoryItemId: req.params.inventoryItemId,
+                domain: input.domain,
+            })
+        }
         const item = await executeInventoryMetadataUpdateWithSimpleStockProjection({
             businessId,
             inventoryItemId: req.params.inventoryItemId,
@@ -203,6 +257,10 @@ export async function deleteOwnerInventoryItem(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
+        await readEnabledInventoryItem({
+            businessId,
+            inventoryItemId: req.params.inventoryItemId,
+        })
         return res.json(await removeInventoryItemFromWorkspace({
             businessId,
             inventoryItemId: req.params.inventoryItemId,
@@ -217,6 +275,10 @@ async function runMovementCommand(req, res, command, operation) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
+        await readEnabledInventoryItem({
+            businessId,
+            inventoryItemId: req.params.inventoryItemId,
+        })
         const result = await executeInventoryMovementWithSimpleStockProjection({
             businessId,
             inventoryItemId: req.params.inventoryItemId,
@@ -247,6 +309,12 @@ export async function listInventoryMovements(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
+        if (req.query.inventoryItemId) {
+            await readEnabledInventoryItem({
+                businessId,
+                inventoryItemId: req.query.inventoryItemId,
+            })
+        }
         return res.json(await readInventoryMovementsPage({
             businessId,
             inventoryItemId: req.query.inventoryItemId,
@@ -258,6 +326,37 @@ export async function listInventoryMovements(req, res) {
         }))
     } catch (error) {
         return handleInventoryError(res, error, "list-movements")
+    }
+}
+
+export async function recordOwnerRoomUsage(req, res) {
+    const businessId = requireTenant(req, res)
+    if (!businessId) return
+    try {
+        const result = await recordRoomUsage({
+            businessId,
+            servicePointId: req.body?.servicePointId,
+            items: req.body?.items,
+            note: req.body?.note,
+            actor: getInventoryActor(req),
+            idempotencyKey: getIdempotencyKey(req),
+        })
+        return res.status(result.replayed ? 200 : 201).json(result)
+    } catch (error) {
+        return handleInventoryError(res, error, "room-usage")
+    }
+}
+
+export async function getOwnerRoomUsageContext(req, res) {
+    const businessId = requireTenant(req, res)
+    if (!businessId) return
+    try {
+        return res.json(await readRoomUsageContext({
+            businessId,
+            servicePointId: req.query?.servicePointId,
+        }))
+    } catch (error) {
+        return handleInventoryError(res, error, "room-usage-context")
     }
 }
 

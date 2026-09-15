@@ -111,6 +111,8 @@ test/stage2PublicBusinessCaching.test.js
 test/sessionTouchThrottling.test.js
 !test/aiAnalystWorkerLock.test.js
 !test/propertyProfile.test.js
+!test/hotelOperationalInventoryPhase1.test.js
+!test/hotelOperationalInventoryPhase2.test.js
 test/phoneNumber.test.js
 test/googlePlacesService.test.js
 test/ownerOrdersPagination.test.js

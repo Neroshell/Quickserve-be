@@ -2,6 +2,7 @@ import crypto from "node:crypto"
 import mongoose from "mongoose"
 import {
     INVENTORY_DIMENSIONS,
+    INVENTORY_ITEM_DOMAIN_VALUES,
     INVENTORY_TRACKING_UNITS,
     MAX_INVENTORY_QUANTITY,
 } from "../constants/inventory.js"
@@ -65,6 +66,13 @@ const InventoryItemSchema = new mongoose.Schema({
         default: null,
         trim: true,
         maxlength: 80,
+    },
+    // Optional for backward compatibility. Legacy records are read as
+    // food_service without requiring a production rewrite.
+    domain: {
+        type: String,
+        enum: INVENTORY_ITEM_DOMAIN_VALUES,
+        default: undefined,
     },
     trackingUnit: {
         type: String,
@@ -154,6 +162,7 @@ InventoryItemSchema.index(
 )
 InventoryItemSchema.index({ businessId: 1, deletedAt: 1, isActive: 1, name: 1, _id: 1 })
 InventoryItemSchema.index({ businessId: 1, deletedAt: 1, category: 1, isActive: 1, name: 1, _id: 1 })
+InventoryItemSchema.index({ businessId: 1, deletedAt: 1, domain: 1, isActive: 1, name: 1, _id: 1 })
 InventoryItemSchema.index({ businessId: 1, updatedAt: -1, _id: -1 })
 
 InventoryItemSchema.pre("validate", function () {

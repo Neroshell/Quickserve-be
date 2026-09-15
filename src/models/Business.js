@@ -14,6 +14,10 @@ import {
     PROPERTY_FACILITY_IDS,
     PROPERTY_LANGUAGE_IDS,
 } from "../constants/propertyProfileCatalog.js"
+import {
+    INVENTORY_UNIT_VALUES,
+    MAX_INVENTORY_QUANTITY,
+} from "../constants/inventory.js"
 
 const OperatingDaySchema = new mongoose.Schema({
     enabled: { type: Boolean, default: true },
@@ -150,6 +154,28 @@ const BillingLifecycleClaimSchema = new mongoose.Schema({
     providerMessageId: { type: String, default: null },
 }, { _id: false })
 
+const HotelRoomTypeSupplyTemplateItemSchema = new mongoose.Schema({
+    inventoryItemId: { type: String, required: true, trim: true, maxlength: 100 },
+    quantity: {
+        type: Number,
+        required: true,
+        validate: {
+            validator(value) {
+                return Number.isFinite(value) && value > 0 && value <= MAX_INVENTORY_QUANTITY
+            },
+            message: "Room supply template quantity must be positive",
+        },
+    },
+    unit: { type: String, required: true, enum: INVENTORY_UNIT_VALUES },
+    canonicalQuantity: {
+        type: Number,
+        required: true,
+        min: 1,
+        max: MAX_INVENTORY_QUANTITY,
+        validate: Number.isSafeInteger,
+    },
+}, { _id: false })
+
 const HotelRoomTypeSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true, maxlength: 80 },
     sortOrder: { type: Number, default: 0 },
@@ -170,6 +196,10 @@ const HotelRoomTypeSchema = new mongoose.Schema({
     viewType: { type: String, default: "", trim: true, maxlength: 80 },
     amenities: [{ type: String, trim: true, maxlength: 80 }],
     images: [{ type: String, trim: true, maxlength: 2048 }],
+    standardSupplyTemplate: {
+        type: [HotelRoomTypeSupplyTemplateItemSchema],
+        default: [],
+    },
 }, { _id: false })
 
 const BusinessSchema = new mongoose.Schema({

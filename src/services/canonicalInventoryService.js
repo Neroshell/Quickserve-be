@@ -2,6 +2,7 @@ import crypto from "node:crypto"
 import mongoose from "mongoose"
 import {
     INVENTORY_ADJUSTMENT_REASONS,
+    INVENTORY_ITEM_DOMAINS,
     INVENTORY_MOVEMENT_TYPES,
     INVENTORY_WASTE_REASONS,
     MAX_INVENTORY_QUANTITY,
@@ -12,9 +13,11 @@ import {
     getInventoryTrackingUnitDefinition,
     normalizeInventoryQuantity,
 } from "./inventoryUomService.js"
+import { normalizeInventoryItemDomain } from "./inventoryDomainService.js"
 
 const ITEM_CREATE_FIELDS = new Set([
     "name",
+    "domain",
     "category",
     "trackingUnit",
     "lowStockThreshold",
@@ -83,6 +86,7 @@ export function toInventoryItemDTO(value) {
     return {
         inventoryItemId: item.inventoryItemId,
         name: item.name,
+        domain: item.domain || INVENTORY_ITEM_DOMAINS.FOOD_SERVICE,
         category: item.category ?? null,
         trackingUnit: item.trackingUnit,
         baseUnitDimension: item.baseUnitDimension,
@@ -104,7 +108,7 @@ export function toInventoryMovementDTO(value) {
     const movement = toPlain(value)
     if (!movement) return null
 
-    return {
+    const dto = {
         movementId: movement.movementId,
         inventoryItemId: movement.inventoryItemId,
         type: movement.type,
@@ -133,6 +137,9 @@ export function toInventoryMovementDTO(value) {
         costCurrency: movement.costCurrency ?? null,
         createdAt: movement.createdAt ?? null,
     }
+    if (movement.servicePointId) dto.servicePointId = movement.servicePointId
+    if (movement.operationId) dto.operationId = movement.operationId
+    return dto
 }
 
 function normalizeRequiredText(value, field, maxLength) {
@@ -413,6 +420,7 @@ function normalizeItemCreateInput(input) {
 
     return {
         name,
+        domain: normalizeInventoryItemDomain(input.domain),
         normalizedName,
         category,
         normalizedCategory,
@@ -576,6 +584,7 @@ export async function updateInventoryItem({
     }
 
     if (input.name !== undefined) item.name = requestedName
+    if (input.domain !== undefined) item.domain = normalizeInventoryItemDomain(input.domain)
     if (input.category !== undefined) item.category = requestedCategory
     if (input.lowStockThreshold !== undefined) {
         item.lowStockThreshold = normalizeNonNegativeSafeInteger(
@@ -619,11 +628,11 @@ export async function updateInventoryItem({
     return toInventoryItemDTO(item)
 }
 
-function normalizeIdempotencyKey(value) {
+export function normalizeInventoryIdempotencyKey(value) {
     return normalizeRequiredText(value, "Idempotency-Key", 200)
 }
 
-function normalizeActor(actor) {
+export function normalizeInventoryActor(actor) {
     if (!actor || typeof actor !== "object") {
         throw domainError("Authenticated actor is required", "INVENTORY_ACTOR_REQUIRED", 401)
     }
@@ -634,7 +643,7 @@ function normalizeActor(actor) {
     }
 }
 
-function fingerprint(payload) {
+export function buildInventoryRequestFingerprint(payload) {
     return crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex")
 }
 
@@ -731,7 +740,7 @@ function normalizeMovementOperation({ operation, input, item, actor }) {
         quantityDeltaReserved: 0,
         unitCostMinor: movementCost.unitCostMinor ?? null,
         costCurrency: movementCost.costCurrency ?? null,
-        requestFingerprint: fingerprint(fingerprintPayload),
+        requestFingerprint: buildInventoryRequestFingerprint(fingerprintPayload),
     }
 }
 
@@ -794,8 +803,8 @@ async function executeMovement({
 } = {}) {
     const tenantId = normalizeRequiredText(businessId, "businessId", 200)
     const itemId = normalizeRequiredText(inventoryItemId, "inventoryItemId", 100)
-    const key = normalizeIdempotencyKey(idempotencyKey)
-    const performedBy = normalizeActor(actor)
+    const key = normalizeInventoryIdempotencyKey(idempotencyKey)
+    const performedBy = normalizeInventoryActor(actor)
 
     const applyWithinTransaction = async (session) => {
         const item = await InventoryItemModel.findOne(

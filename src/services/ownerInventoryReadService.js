@@ -1,8 +1,13 @@
 import crypto from "node:crypto"
 import mongoose from "mongoose"
-import { INVENTORY_MOVEMENT_TYPE_VALUES } from "../constants/inventory.js"
+import {
+    INVENTORY_ITEM_DOMAINS,
+    INVENTORY_ITEM_DOMAIN_VALUES,
+    INVENTORY_MOVEMENT_TYPE_VALUES,
+} from "../constants/inventory.js"
 import InventoryItem from "../models/InventoryItem.js"
 import InventoryMovement from "../models/InventoryMovement.js"
+import ServicePoint from "../models/ServicePoint.js"
 import {
     toInventoryItemDTO,
     toInventoryMovementDTO,
@@ -18,6 +23,7 @@ export const OWNER_INVENTORY_STOCK_STATUSES = Object.freeze({
 })
 
 const MOVEMENT_TYPE_SET = new Set(INVENTORY_MOVEMENT_TYPE_VALUES)
+const INVENTORY_DOMAIN_SET = new Set(INVENTORY_ITEM_DOMAIN_VALUES)
 
 export class OwnerInventoryReadError extends Error {
     constructor(message, { code = "INVALID_INVENTORY_QUERY", statusCode = 400 } = {}) {
@@ -117,13 +123,74 @@ function normalizeStockStatusFilter(value) {
     throw new OwnerInventoryReadError("stockStatus must be all, low_stock, or out_of_stock")
 }
 
-export async function readInventoryOverview({ businessId }, {
+function normalizeDomainFilter(value) {
+    const raw = normalizeOptionalFilterText(value, "domain", 500)
+    if (!raw || raw === "all") return []
+    const domains = [...new Set(raw.split(",").map((entry) => entry.trim()).filter(Boolean))]
+    if (domains.length === 0 || domains.some((domain) => !INVENTORY_DOMAIN_SET.has(domain))) {
+        throw new OwnerInventoryReadError("Invalid inventory domain")
+    }
+    return domains
+}
+
+function inventoryDomainCondition(domains) {
+    if (domains.length === 0) return null
+    const domainConditions = [{ domain: { $in: domains } }]
+    if (domains.includes(INVENTORY_ITEM_DOMAINS.FOOD_SERVICE)) {
+        domainConditions.push({ domain: { $exists: false } }, { domain: null })
+    }
+    return { $or: domainConditions }
+}
+
+export async function readInventoryOverview({ businessId, domain }, {
     InventoryItemModel = InventoryItem,
     InventoryMovementModel = InventoryMovement,
 } = {}) {
+    const normalizedDomains = normalizeDomainFilter(domain)
+    const domainCondition = inventoryDomainCondition(normalizedDomains)
+    const itemMatch = {
+        businessId,
+        isActive: true,
+        deletedAt: null,
+        ...(domainCondition || {}),
+    }
+    const movementPipeline = [
+        { $match: { businessId } },
+        {
+            $lookup: {
+                from: InventoryItemModel.collection?.name || "inventoryitems",
+                let: { movementInventoryItemId: "$inventoryItemId" },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: {
+                                $and: [
+                                    { $eq: ["$businessId", businessId] },
+                                    { $eq: ["$inventoryItemId", "$$movementInventoryItemId"] },
+                                ],
+                            },
+                        },
+                    },
+                    ...(domainCondition ? [{ $match: domainCondition }] : []),
+                    { $limit: 1 },
+                ],
+                as: "inventoryItem",
+            },
+        },
+        { $match: { "inventoryItem.0": { $exists: true } } },
+        { $sort: { createdAt: -1, _id: -1 } },
+        { $limit: 10 },
+        { $project: { inventoryItem: 0 } },
+    ]
+    const recentMovementsQuery = domainCondition
+        ? InventoryMovementModel.aggregate(movementPipeline)
+        : InventoryMovementModel.find({ businessId })
+            .sort({ createdAt: -1, _id: -1 })
+            .limit(10)
+            .lean()
     const [summaryRows, recentMovements] = await Promise.all([
         InventoryItemModel.aggregate([
-            { $match: { businessId, isActive: true, deletedAt: null } },
+            { $match: itemMatch },
             {
                 $project: {
                     availableQuantity: { $subtract: ["$onHandQuantity", "$reservedQuantity"] },
@@ -150,10 +217,7 @@ export async function readInventoryOverview({ businessId }, {
                 },
             },
         ]),
-        InventoryMovementModel.find({ businessId })
-            .sort({ createdAt: -1, _id: -1 })
-            .limit(10)
-            .lean(),
+        recentMovementsQuery,
     ])
 
     const summary = summaryRows[0] || {
@@ -175,6 +239,7 @@ export async function readInventoryItemsPage({
     businessId,
     active,
     category,
+    domain,
     search,
     stockStatus,
     cursor,
@@ -182,12 +247,14 @@ export async function readInventoryItemsPage({
 }, { InventoryItemModel = InventoryItem } = {}) {
     const normalizedActive = normalizeActiveFilter(active)
     const normalizedCategory = normalizeOptionalFilterText(category, "category", 80)
+    const normalizedDomains = normalizeDomainFilter(domain)
     const normalizedSearch = normalizeOptionalFilterText(search, "search", 120)
     const normalizedStockStatus = normalizeStockStatusFilter(stockStatus)
     const pageLimit = normalizeLimit(limit)
     const filterKey = queryFingerprint({
         active: normalizedActive,
         category: normalizedCategory.toLowerCase(),
+        domains: normalizedDomains,
         search: normalizedSearch.toLowerCase(),
         stockStatus: normalizedStockStatus,
     })
@@ -202,6 +269,9 @@ export async function readInventoryItemsPage({
         conditions.push({
             category: { $regex: new RegExp(`^${escapeRegex(normalizedCategory)}$`, "i") },
         })
+    }
+    if (normalizedDomains.length > 0) {
+        conditions.push(inventoryDomainCondition(normalizedDomains))
     }
     if (normalizedSearch) {
         conditions.push({
@@ -309,7 +379,10 @@ export async function readInventoryMovementsPage({
     to,
     cursor,
     limit,
-}, { InventoryMovementModel = InventoryMovement } = {}) {
+}, {
+    InventoryMovementModel = InventoryMovement,
+    ServicePointModel = ServicePoint,
+} = {}) {
     const normalizedItemId = normalizeOptionalFilterText(
         inventoryItemId,
         "inventoryItemId",
@@ -361,9 +434,35 @@ export async function readInventoryMovementsPage({
     const hasNextPage = rows.length > pageLimit
     const pageRows = rows.slice(0, pageLimit)
     const last = pageRows.at(-1)
+    const movementDtos = pageRows.map(toInventoryMovementDTO)
+    const servicePointIds = [...new Set(movementDtos
+        .map((movement) => movement.servicePointId)
+        .filter(Boolean))]
+    const servicePoints = servicePointIds.length > 0
+        ? await ServicePointModel.find({
+            businessId,
+            servicePointId: { $in: servicePointIds },
+        }).lean()
+        : []
+    const servicePointById = new Map(servicePoints.map((servicePoint) => [
+        servicePoint.servicePointId,
+        servicePoint,
+    ]))
 
     return {
-        movements: pageRows.map(toInventoryMovementDTO),
+        movements: movementDtos.map((movement) => {
+            const servicePoint = movement.servicePointId
+                ? servicePointById.get(movement.servicePointId)
+                : null
+            return servicePoint ? {
+                ...movement,
+                servicePoint: {
+                    servicePointId: servicePoint.servicePointId,
+                    label: servicePoint.label,
+                    roomType: servicePoint.roomType ?? null,
+                },
+            } : movement
+        }),
         pagination: {
             limit: pageLimit,
             hasNextPage,

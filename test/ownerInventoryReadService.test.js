@@ -165,6 +165,46 @@ test("owner inventory stock filters use canonical available quantity", async () 
     )
 })
 
+test("inventory domain filters are tenant scoped and keep legacy food items visible", async () => {
+    const captures = []
+    const InventoryItemModel = {
+        find(filter) {
+            const capture = { filter }
+            captures.push(capture)
+            return queryReturning([], capture)
+        },
+    }
+
+    await readInventoryItemsPage({
+        businessId: "biz_alpha",
+        domain: "linen,guest_supplies",
+    }, { InventoryItemModel })
+    assert.equal(captures[0].filter.businessId, "biz_alpha")
+    assert.deepEqual(captures[0].filter.$and, [{
+        $or: [{ domain: { $in: ["linen", "guest_supplies"] } }],
+    }])
+
+    await readInventoryItemsPage({
+        businessId: "biz_alpha",
+        domain: "food_service",
+    }, { InventoryItemModel })
+    assert.deepEqual(captures[1].filter.$and, [{
+        $or: [
+            { domain: { $in: ["food_service"] } },
+            { domain: { $exists: false } },
+            { domain: null },
+        ],
+    }])
+
+    await assert.rejects(
+        readInventoryItemsPage({
+            businessId: "biz_alpha",
+            domain: "minibar",
+        }, { InventoryItemModel }),
+        (error) => error instanceof OwnerInventoryReadError && /domain/.test(error.message),
+    )
+})
+
 test("single item lookup cannot return another tenant's inventory", async () => {
     const filters = []
     const InventoryItemModel = {
@@ -218,6 +258,52 @@ test("movement history applies tenant, item, type, date, and stable sorting", as
     assert.equal(page.movements[0].availableAfter, 20)
     assert.equal(page.movements[0]._id, undefined)
     assert.equal(page.movements[0].idempotencyKey, undefined)
+})
+
+test("Room Usage movement history hydrates room context through a tenant-scoped ServicePoint read", async () => {
+    const movementCapture = {}
+    let servicePointFilter = null
+    const roomMovement = {
+        ...MOVEMENT,
+        type: "CONSUME",
+        sourceType: "room_usage",
+        servicePointId: "sp_room_401",
+        operationId: "iru_operation",
+        quantityDeltaOnHand: -2,
+        onHandBefore: 20,
+        onHandAfter: 18,
+    }
+    const InventoryMovementModel = {
+        find(filter) {
+            movementCapture.filter = filter
+            return queryReturning([roomMovement], movementCapture)
+        },
+    }
+    const ServicePointModel = {
+        find(filter) {
+            servicePointFilter = filter
+            return {
+                async lean() {
+                    return [{ servicePointId: "sp_room_401", label: "Room 401", roomType: "Deluxe King" }]
+                },
+            }
+        },
+    }
+
+    const page = await readInventoryMovementsPage({
+        businessId: "biz_alpha",
+        inventoryItemId: "inv_a",
+    }, { InventoryMovementModel, ServicePointModel })
+
+    assert.deepEqual(servicePointFilter, {
+        businessId: "biz_alpha",
+        servicePointId: { $in: ["sp_room_401"] },
+    })
+    assert.deepEqual(page.movements[0].servicePoint, {
+        servicePointId: "sp_room_401",
+        label: "Room 401",
+        roomType: "Deluxe King",
+    })
 })
 
 test("inventory overview returns derived counts and recent immutable movements", async () => {

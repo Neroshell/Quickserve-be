@@ -109,10 +109,15 @@ function buildNavigation(shell, modules) {
         groups.push({
             id: "foodService",
             label: "Food Service",
-            items: ["orders", "menu", "inventory"],
+            items: ["orders", "menu"],
         })
     }
-    groups.push(...HOTEL_NAVIGATION_COMMON.map((group) => ({ ...group, items: [...group.items] })))
+    groups.push(...HOTEL_NAVIGATION_COMMON.map((group) => ({
+        ...group,
+        items: group.id === "management"
+            ? ["inventory", ...group.items]
+            : [...group.items],
+    })))
     return groups
 }
 
@@ -186,6 +191,12 @@ export function resolveBusinessCapabilities(business) {
         analytics: {
             sections: [
                 ...(hasLodging ? ["lodging"] : []),
+                ...(hasFoodService ? ["foodService"] : []),
+            ],
+        },
+        inventory: {
+            contexts: [
+                ...(hasLodging ? ["hotelOperations"] : []),
                 ...(hasFoodService ? ["foodService"] : []),
             ],
         },

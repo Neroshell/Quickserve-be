@@ -4,6 +4,27 @@ export const INVENTORY_DIMENSIONS = Object.freeze({
     COUNT: "count",
 })
 
+export const INVENTORY_ITEM_DOMAINS = Object.freeze({
+    FOOD_SERVICE: "food_service",
+    HOUSEKEEPING: "housekeeping",
+    GUEST_SUPPLIES: "guest_supplies",
+    CLEANING: "cleaning",
+    LINEN: "linen",
+    GENERAL: "general",
+})
+
+export const INVENTORY_ITEM_DOMAIN_VALUES = Object.freeze(
+    Object.values(INVENTORY_ITEM_DOMAINS),
+)
+
+export const HOTEL_OPERATIONAL_INVENTORY_DOMAINS = Object.freeze([
+    INVENTORY_ITEM_DOMAINS.HOUSEKEEPING,
+    INVENTORY_ITEM_DOMAINS.GUEST_SUPPLIES,
+    INVENTORY_ITEM_DOMAINS.CLEANING,
+    INVENTORY_ITEM_DOMAINS.LINEN,
+    INVENTORY_ITEM_DOMAINS.GENERAL,
+])
+
 export const INVENTORY_UNIT_DEFINITIONS = Object.freeze({
     g: Object.freeze({
         code: "g",

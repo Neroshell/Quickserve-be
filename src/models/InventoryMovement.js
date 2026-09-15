@@ -60,6 +60,10 @@ const InventoryMovementSchema = new mongoose.Schema({
     reservedAfter: { type: Number, required: true, validate: isSafeNonNegativeInteger },
     sourceType: { type: String, required: true, trim: true, maxlength: 80 },
     sourceId: { type: String, default: null, trim: true, maxlength: 200 },
+    // Optional operational context. Room usage stores immutable room identity,
+    // never the mutable room label.
+    servicePointId: { type: String, default: null, trim: true, maxlength: 100 },
+    operationId: { type: String, default: null, trim: true, maxlength: 100 },
     reasonCode: { type: String, default: null, trim: true, maxlength: 100 },
     note: { type: String, default: null, trim: true, maxlength: 1000 },
     performedBy: { type: PerformedBySchema, required: true },
@@ -127,6 +131,8 @@ InventoryMovementSchema.index({
 })
 InventoryMovementSchema.index({ businessId: 1, createdAt: -1, _id: -1 })
 InventoryMovementSchema.index({ businessId: 1, sourceType: 1, sourceId: 1 })
+InventoryMovementSchema.index({ businessId: 1, servicePointId: 1, createdAt: -1 })
+InventoryMovementSchema.index({ businessId: 1, operationId: 1 })
 
 const DELTA_RULES_BY_MOVEMENT_TYPE = Object.freeze({
     RECEIVE: { onHand: 1, reserved: 0 },
@@ -164,7 +170,7 @@ InventoryMovementSchema.pre("validate", function () {
         )
     }
     const validUnreservedConsumption = this.type === "CONSUME" &&
-        this.sourceType === "inventory_sidecar" &&
+        ["inventory_sidecar", "room_usage"].includes(this.sourceType) &&
         this.quantityDeltaReserved === 0
     if (this.quantityDeltaReserved !== expectedReservedDelta && !validUnreservedConsumption) {
         this.invalidate(
@@ -189,19 +195,25 @@ InventoryMovementSchema.pre("validate", function () {
     }
 
     if (this.type === "CONSUME") {
-        if (
-            !this.inventoryReservationId ||
-            !this.orderId ||
-            !this.fulfillmentStation ||
-            !this.fulfillmentAction ||
-            !Array.isArray(this.orderLineIds) ||
-            this.orderLineIds.length === 0 ||
-            !Array.isArray(this.allocationIds) ||
-            this.allocationIds.length === 0
-        ) {
+        const validRoomUsage = this.sourceType === "room_usage" &&
+            Boolean(this.servicePointId) &&
+            Boolean(this.operationId) &&
+            this.sourceId === this.operationId &&
+            this.quantityDeltaReserved === 0
+        const validOrderConsumption = Boolean(
+            this.inventoryReservationId &&
+            this.orderId &&
+            this.fulfillmentStation &&
+            this.fulfillmentAction &&
+            Array.isArray(this.orderLineIds) &&
+            this.orderLineIds.length > 0 &&
+            Array.isArray(this.allocationIds) &&
+            this.allocationIds.length > 0
+        )
+        if (!validRoomUsage && !validOrderConsumption) {
             this.invalidate(
                 "inventoryReservationId",
-                "CONSUME movements require reservation, order, allocation, line, station, and action metadata",
+                "CONSUME movements require canonical order-allocation or Room Usage metadata",
             )
         }
     }

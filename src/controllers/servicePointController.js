@@ -174,6 +174,16 @@ export async function listServicePoints(req, res) {
         const filter = { businessId }
         if (req.query.active === "true") filter.isActive = true
         if (req.query.active === "false") filter.isActive = false
+        if (req.query.servicePointType) {
+            const business = await Business.findOne({ businessId }).lean()
+            const servicePointType = business
+                ? resolveAllowedServicePointType(business, req.query.servicePointType)
+                : null
+            if (!servicePointType) {
+                return res.status(400).json({ error: "servicePointType is not enabled for this business" })
+            }
+            filter.servicePointType = servicePointType
+        }
 
         const servicePoints = await ServicePoint.find(filter)
             .sort({ createdAt: -1 })

@@ -66,8 +66,12 @@ test("food service extends a hotel without replacing the hotel shell", () => {
                 id: "hotelOperations",
                 items: ["reservations", "transactions", "servicePoints"],
             },
-            { id: "foodService", items: ["orders", "menu", "inventory"] },
+            { id: "foodService", items: ["orders", "menu"] },
         ]
+    )
+    assert.deepEqual(
+        capabilities.navigation.groups.find(({ id }) => id === "management")?.items,
+        ["inventory", "staff"],
     )
     assert.deepEqual(capabilities.settings.sections, [
         "business",
@@ -92,6 +96,10 @@ test("hotel-only navigation keeps transactions under hotel operations", () => {
         label: "Hotel Operations",
         items: ["reservations", "transactions", "servicePoints"],
     })
+    assert.deepEqual(
+        capabilities.navigation.groups.find(({ id }) => id === "management")?.items,
+        ["inventory", "staff"],
+    )
     assert.deepEqual(capabilities.settings.sections, [
         "business",
         "propertyProfile",

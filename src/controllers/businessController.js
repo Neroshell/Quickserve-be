@@ -26,6 +26,10 @@ import {
 import { PERMISSIONS } from "../constants/permissions.js"
 import { MANAGEMENT_ACCESS_AREAS, resolveManagementAccess } from "../constants/managementAccess.js"
 import { HOTEL_ROOM_TYPE_NAME_SUGGESTIONS } from "../constants/hotelConstants.js"
+import {
+    readRoomTypeSupplyTemplate,
+    updateRoomTypeSupplyTemplate,
+} from "../services/hotelRoomSupplyTemplateService.js"
 
 function generateBusinessId() {
     return `biz_${crypto.randomBytes(7).toString("hex")}`
@@ -962,6 +966,60 @@ export async function updateHotelRoomType(req, res) {
         return res.status(200).json({ roomType })
     } catch (err) {
         console.error("Update hotel room type error:", err)
+        return res.status(500).json({ message: "Server error" })
+    }
+}
+
+export async function getHotelRoomTypeSupplyTemplate(req, res) {
+    try {
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+        const result = await readRoomTypeSupplyTemplate({
+            businessId,
+            roomTypeName: req.query?.roomTypeName,
+        })
+        return res.json(result)
+    } catch (error) {
+        if (Number.isInteger(error?.statusCode)) {
+            return res.status(error.statusCode).json({
+                message: error.message,
+                code: error.code || "ROOM_SUPPLY_TEMPLATE_ERROR",
+            })
+        }
+        console.error("Get hotel room type supply template error:", error)
+        return res.status(500).json({ message: "Server error" })
+    }
+}
+
+export async function updateHotelRoomTypeSupplyTemplate(req, res) {
+    try {
+        const businessId = req.session?.user?.businessId
+        if (!businessId) {
+            return res.status(401).json({ message: "Unauthorized" })
+        }
+        const result = await updateRoomTypeSupplyTemplate({
+            businessId,
+            roomTypeName: req.body?.roomTypeName,
+            items: req.body?.items,
+        })
+        await invalidateBusinessConfiguration(businessId)
+        return res.json(result)
+    } catch (error) {
+        if (Number.isInteger(error?.statusCode)) {
+            return res.status(error.statusCode).json({
+                message: error.message,
+                code: error.code || "ROOM_SUPPLY_TEMPLATE_ERROR",
+            })
+        }
+        if (error?.name === "ValidationError") {
+            return res.status(400).json({
+                message: "Room supply template validation failed",
+                code: "ROOM_SUPPLY_TEMPLATE_VALIDATION_FAILED",
+            })
+        }
+        console.error("Update hotel room type supply template error:", error)
         return res.status(500).json({ message: "Server error" })
     }
 }

@@ -22,6 +22,8 @@ import {
     migrateOwnerMenuItemToSimpleStock,
     reconcileOwnerSimpleStock,
     receiveOwnerInventory,
+    recordOwnerRoomUsage,
+    getOwnerRoomUsageContext,
     putOwnerInventoryRecipe,
     updateOwnerInventoryItem,
     updateOwnerSimpleStockSettings,
@@ -69,6 +71,7 @@ import { notificationSseHandler } from "../utils/sseManager.js"
 
 import { requireAuth, requireManagementArea, requirePermission, requirePrimaryOwner, requireRole } from "../middleware/authMiddleware.js"
 import { requireEntitlement } from "../middleware/subscriptionMiddleware.js"
+import { requireBusinessModule } from "../middleware/businessCapabilityMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
 import { connectAccount, getStripeStatus, getStripeDashboardLink, getPayoutSummary } from "../controllers/stripeConnectController.js"
@@ -300,32 +303,47 @@ router.get(
     requirePermission(PERMISSIONS.INVENTORY_VIEW),
     listInventoryMovements,
 )
+router.post(
+    "/inventory/room-usage",
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    recordOwnerRoomUsage,
+)
+router.get(
+    "/inventory/room-usage/context",
+    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    getOwnerRoomUsageContext,
+)
 router.get(
     "/inventory/recipes",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_VIEW),
     requirePermission(PERMISSIONS.INVENTORY_VIEW),
     listOwnerInventoryRecipes,
 )
 router.get(
     "/inventory/recipes/:menuItemId",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_VIEW),
     requirePermission(PERMISSIONS.INVENTORY_VIEW),
     getOwnerInventoryRecipe,
 )
 router.put(
     "/inventory/recipes/:menuItemId",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_RECIPE_MANAGE),
     putOwnerInventoryRecipe,
 )
 router.delete(
     "/inventory/recipes/:menuItemId",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_RECIPE_MANAGE),
     deleteOwnerInventoryRecipe,
 )
 router.post(
     "/inventory/simple-stock/menu-items",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_ADJUST),
@@ -333,30 +351,35 @@ router.post(
 )
 router.get(
     "/inventory/simple-stock/menu-items/:menuItemId/removal-preview",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_MANAGE),
     getOwnerSimpleStockMenuRemovalPreview,
 )
 router.delete(
     "/inventory/simple-stock/menu-items/:menuItemId",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_MANAGE),
     deleteOwnerSimpleStockMenuAndInventory,
 )
 router.post(
     "/inventory/simple-stock/menu-items/:menuItemId/adjust",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_ADJUST),
     adjustOwnerSimpleStockMenuItem,
 )
 router.patch(
     "/inventory/simple-stock/menu-items/:menuItemId/settings",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_MANAGE),
     updateOwnerSimpleStockSettings,
 )
 router.post(
     "/inventory/simple-stock/menu-items/:menuItemId/migrate",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_ADJUST),
@@ -364,18 +387,21 @@ router.post(
 )
 router.get(
     "/inventory/simple-stock/drift",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_VIEW),
     requirePermission(PERMISSIONS.INVENTORY_VIEW),
     getOwnerSimpleStockDrift,
 )
 router.post(
     "/inventory/simple-stock/reconcile",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_MANAGE),
     reconcileOwnerSimpleStock,
 )
 router.post(
     "/inventory/simple-stock/menu-items/:menuItemId/rollback",
+    requireBusinessModule("foodService"),
     requirePermission(PERMISSIONS.MENU_MANAGE),
     requirePermission(PERMISSIONS.INVENTORY_MANAGE),
     rollbackOwnerSimpleStock,
