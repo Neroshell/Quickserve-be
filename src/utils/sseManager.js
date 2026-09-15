@@ -65,6 +65,7 @@ const MANAGER_SSE_PERMISSIONS_BY_CHANNEL = {
     owner: new Set([
         PERMISSIONS.DASHBOARD_VIEW,
         PERMISSIONS.ORDERS_VIEW,
+        PERMISSIONS.SERVICE_POINTS_VIEW,
         PERMISSIONS.STAFF_VIEW,
     ]),
     reservations: new Set([PERMISSIONS.RESERVATIONS_VIEW]),
@@ -73,10 +74,12 @@ const MANAGER_SSE_PERMISSIONS_BY_CHANNEL = {
 const MANAGER_ACCESS_REVOKED_EVENT = "__manager_access_revoked"
 const MANAGEMENT_ACCESS_REVOKED_EVENT = "__management_access_revoked"
 export const NOTIFICATION_CHANGED_EVENT = "notification_changed"
+export const SERVICE_POINTS_CHANGED_EVENT = "service_points_changed"
 
 function managerPermissionAllowsEvent(permission, event) {
     if (permission === PERMISSIONS.DASHBOARD_VIEW) return true
     if (permission === PERMISSIONS.ORDERS_VIEW) return event.startsWith("order_")
+    if (permission === PERMISSIONS.SERVICE_POINTS_VIEW) return event === SERVICE_POINTS_CHANGED_EVENT
     if (permission === PERMISSIONS.STAFF_VIEW) return event.startsWith("staff_")
     if (permission === PERMISSIONS.RESERVATIONS_VIEW) return event.startsWith("reservation_")
     return false
@@ -671,6 +674,32 @@ export async function publishEvent(event, businessId, targets, payload, internal
     } catch (err) {
         console.error("[RealtimeBus] ❌ Redis PUBLISH failed; local clients were still updated:", err.message)
         // Local clients were already updated before the cross-instance publish.
+    }
+}
+
+/**
+ * Publish a content-free Service Points invalidation signal. The business ID
+ * remains in the canonical realtime envelope; clients must refetch the
+ * authoritative tenant-scoped HTTP resources instead of applying payload data.
+ */
+export async function publishServicePointsChanged({
+    businessId,
+    scope = "activity",
+    publish = publishEvent,
+}) {
+    if (!businessId) return
+    const safeScope = scope === "configuration" ? "configuration" : "activity"
+
+    try {
+        await publish(
+            SERVICE_POINTS_CHANGED_EVENT,
+            businessId,
+            ["owner"],
+            { invalidated: true, scope: safeScope },
+        )
+    } catch (error) {
+        // MongoDB remains authoritative. Clients recover on reconnect/focus.
+        console.error("[ServicePoints] Realtime invalidation failed:", error.message)
     }
 }
 

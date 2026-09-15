@@ -347,6 +347,65 @@ test("Manager SSE delivery fails closed after permission removal or account disa
     }
 })
 
+test("Service Point SSE invalidations remain permission- and tenant-scoped", async (t) => {
+    mockManagerLookup(t, () => managerRecord({
+        permissions: [PERMISSIONS.SERVICE_POINTS_VIEW],
+    }))
+
+    let closeHandler = null
+    const writes = []
+    const req = {
+        ...managerSession(),
+        query: {
+            role: "owner",
+            businessId: "biz_alpha",
+            permission: PERMISSIONS.SERVICE_POINTS_VIEW,
+        },
+        on(event, handler) {
+            if (event === "close") closeHandler = handler
+        },
+    }
+    const res = {
+        ended: false,
+        setHeader() {},
+        flushHeaders() {},
+        write(data) {
+            writes.push(data)
+        },
+        end() {
+            this.ended = true
+        },
+        status() {
+            return this
+        },
+    }
+
+    await sseHandler(req, res)
+    const initialWrites = writes.length
+
+    try {
+        await broadcastLocal({
+            event: "service_points_changed",
+            businessId: "biz_other",
+            targets: ["owner"],
+            payload: { invalidated: true, scope: "activity" },
+        })
+        assert.equal(writes.length, initialWrites)
+
+        await broadcastLocal({
+            event: "service_points_changed",
+            businessId: "biz_alpha",
+            targets: ["owner"],
+            payload: { invalidated: true, scope: "activity" },
+        })
+        assert.equal(writes.length, initialWrites + 1)
+        assert.match(writes.at(-1), /event: service_points_changed/)
+        assert.match(writes.at(-1), /"scope":"activity"/)
+    } finally {
+        closeHandler?.()
+    }
+})
+
 test("Primary Owner permission bypass does not query Staff", async (t) => {
     let lookupCount = 0
     t.mock.method(Staff, "findOne", () => {

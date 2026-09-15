@@ -158,7 +158,8 @@ export async function getTableSessionsOverview(req, res) {
             {
                 $group: {
                     _id: "$servicePointId",
-                    activeDevices: { $sum: 1 }
+                    activeDevices: { $sum: 1 },
+                    nextExpiresAt: { $min: "$expiresAt" }
                 }
             },
             {
@@ -186,6 +187,12 @@ export async function getTableSessionsOverview(req, res) {
 
         const activeSessionsNow = sessions.reduce((acc, curr) => acc + curr.activeDevices, 0)
         const activeTablesNow = sessions.length
+        const nextActivityExpiryAt = sessions.reduce((earliest, session) => {
+            if (!session.nextExpiresAt) return earliest
+            const candidate = new Date(session.nextExpiresAt)
+            if (Number.isNaN(candidate.getTime())) return earliest
+            return !earliest || candidate < earliest ? candidate : earliest
+        }, null)
 
         const tables = sessions.map(s => ({
             servicePointLabel: s._id,
@@ -207,6 +214,7 @@ export async function getTableSessionsOverview(req, res) {
                 (sum, item) => sum + item.activeDevices,
                 0
             ),
+            nextActivityExpiryAt,
             tables
         })
     } catch (err) {

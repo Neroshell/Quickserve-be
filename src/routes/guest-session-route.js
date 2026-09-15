@@ -6,6 +6,8 @@ import Business from "../models/Business.js"
 import ServicePoint from "../models/ServicePoint.js"
 import { isBusinessServable } from "../utils/restaurantOrderValidation.js"
 import { startCustomerJourney } from "../services/customerJourneyService.js"
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
+import { publishServicePointsChanged } from "../utils/sseManager.js"
 
 const router = express.Router()
 
@@ -125,6 +127,14 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       // visit credential and continuity with the device-history identity.
       boundSessionId: deviceSessionId || null,
     })
+
+    if (resolveBusinessCapabilities(business).identity.shell === "hotel") {
+      await publishServicePointsChanged({
+        businessId,
+        scope: "activity",
+        publish: req.app?.locals?.publishEvent,
+      })
+    }
 
     // Start / resolve canonical CustomerJourney
     const journey = await startCustomerJourney({

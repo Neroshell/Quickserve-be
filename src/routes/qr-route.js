@@ -5,6 +5,8 @@ import GuestSession from "../models/GuestSession.js"
 import Business from "../models/Business.js"
 import ServicePoint from "../models/ServicePoint.js"
 import { isBusinessServable } from "../utils/restaurantOrderValidation.js"
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
+import { publishServicePointsChanged } from "../utils/sseManager.js"
 
 const router = express.Router()
 
@@ -95,6 +97,14 @@ router.get("/:businessId/:servicePointId", tableSessionLimiter, async (req, res)
       expiresAt,
       boundSessionId: null,
     })
+
+    if (resolveBusinessCapabilities(business).identity.shell === "hotel") {
+      await publishServicePointsChanged({
+        businessId,
+        scope: "activity",
+        publish: req.app?.locals?.publishEvent,
+      })
+    }
 
     // 4. Redirect to the frontend QR intercept page
     const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000"

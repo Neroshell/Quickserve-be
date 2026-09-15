@@ -6,6 +6,10 @@ import Business from "../src/models/Business.js"
 import ServicePoint from "../src/models/ServicePoint.js"
 import { normalizeHotelRoomTypePayload } from "../src/controllers/businessController.js"
 import { resolveAllowedServicePointType } from "../src/controllers/servicePointController.js"
+import {
+    SERVICE_POINTS_CHANGED_EVENT,
+    publishServicePointsChanged,
+} from "../src/utils/sseManager.js"
 
 test("Room Type templates remain embedded Business configuration with canonical metadata", () => {
     const roomTypeSchema = Business.schema.path("hotelRoomTypes").schema
@@ -135,4 +139,40 @@ test("live room metrics are derived from tenant-scoped guest sessions and room S
     assert.match(source, /activeRoomDevicesNow:/)
     assert.match(source, /activeServicePointsNow: tables\.length/)
     assert.match(source, /activeGuestDevicesNow: activeSessionsNow/)
+    assert.match(source, /nextExpiresAt: \{ \$min: "\$expiresAt" \}/)
+    assert.match(source, /nextActivityExpiryAt,/)
+})
+
+test("hotel Service Point realtime uses a tenant-scoped content-free invalidation", async () => {
+    const calls = []
+    await publishServicePointsChanged({
+        businessId: "biz_hotel_a",
+        scope: "configuration",
+        publish: async (...args) => calls.push(args),
+    })
+
+    assert.deepEqual(calls, [[
+        SERVICE_POINTS_CHANGED_EVENT,
+        "biz_hotel_a",
+        ["owner"],
+        { invalidated: true, scope: "configuration" },
+    ]])
+    assert.equal(JSON.stringify(calls).includes("guest"), false)
+    assert.equal(JSON.stringify(calls).includes("reservation"), false)
+})
+
+test("hotel session creation and Service Point mutations publish only invalidation scopes", async () => {
+    const guestSessionRoute = await readFile(new URL("../src/routes/guest-session-route.js", import.meta.url), "utf8")
+    const qrRoute = await readFile(new URL("../src/routes/qr-route.js", import.meta.url), "utf8")
+    const servicePointController = await readFile(new URL("../src/controllers/servicePointController.js", import.meta.url), "utf8")
+
+    for (const source of [guestSessionRoute, qrRoute]) {
+        assert.match(source, /resolveBusinessCapabilities\(business\)\.identity\.shell === "hotel"/)
+        assert.match(source, /publishServicePointsChanged\(\{[\s\S]*?scope: "activity"/)
+    }
+    assert.match(servicePointController, /export async function createServicePoint[\s\S]*?scope: "configuration"/)
+    assert.match(servicePointController, /export async function updateServicePoint[\s\S]*?scope: "configuration"/)
+    assert.match(servicePointController, /export async function toggleServicePoint[\s\S]*?scope: "configuration"/)
+    assert.match(servicePointController, /export async function toggleReservableServicePoint[\s\S]*?scope: "configuration"/)
+    assert.match(servicePointController, /export async function deleteServicePoint[\s\S]*?scope: "configuration"/)
 })

@@ -10,6 +10,7 @@ import {
     invalidatePublicBusinessRoute,
     invalidateSetupProgress,
 } from "../services/cacheInvalidationService.js"
+import { publishServicePointsChanged } from "../utils/sseManager.js"
 
 const PUBLIC_SERVICE_POINT_SOURCE_FIELDS = new Set([
     "label", "servicePointType", "roomType", "capacity", "pricePerNight",
@@ -462,6 +463,11 @@ export async function createServicePoint(req, res) {
             invalidateSetupProgress(businessId),
             invalidatePublicBusinessRoute(business.countryCode, business.slug),
         ])
+        await publishServicePointsChanged({
+            businessId,
+            scope: "configuration",
+            publish: req.app?.locals?.publishEvent,
+        })
 
         return res.status(201).json(toPublicServicePoint(sp))
     } catch (err) {
@@ -694,6 +700,11 @@ export async function updateServicePoint(req, res) {
                     : invalidatePublicBusinessForBusinessId(businessId)
                 : Promise.resolve(true),
         ])
+        await publishServicePointsChanged({
+            businessId,
+            scope: "configuration",
+            publish: req.app?.locals?.publishEvent,
+        })
 
         return res.json(sp)
     } catch (err) {
@@ -729,6 +740,11 @@ export async function toggleServicePoint(req, res) {
             invalidateSetupProgress(businessId),
             invalidatePublicBusinessForBusinessId(businessId),
         ])
+        await publishServicePointsChanged({
+            businessId,
+            scope: "configuration",
+            publish: req.app?.locals?.publishEvent,
+        })
 
         return res.json({
             servicePointId: current.servicePointId,
@@ -768,6 +784,11 @@ export async function toggleReservableServicePoint(req, res) {
             invalidateSetupProgress(businessId),
             invalidatePublicBusinessForBusinessId(businessId),
         ])
+        await publishServicePointsChanged({
+            businessId,
+            scope: "configuration",
+            publish: req.app?.locals?.publishEvent,
+        })
 
         return res.json({
             servicePointId: current.servicePointId,
@@ -803,6 +824,11 @@ export async function deleteServicePoint(req, res) {
             invalidateSetupProgress(businessId),
             invalidatePublicBusinessForBusinessId(businessId),
         ])
+        await publishServicePointsChanged({
+            businessId,
+            scope: "configuration",
+            publish: req.app?.locals?.publishEvent,
+        })
 
         return res.json({ success: true, message: "Service point deleted successfully" })
     } catch (err) {
