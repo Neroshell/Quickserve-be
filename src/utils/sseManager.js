@@ -72,7 +72,7 @@ const MANAGER_SSE_PERMISSIONS_BY_CHANNEL = {
 }
 
 const MANAGER_ACCESS_REVOKED_EVENT = "__manager_access_revoked"
-const MANAGEMENT_ACCESS_REVOKED_EVENT = "__management_access_revoked"
+export const CO_OWNER_ACCESS_CHANGED_EVENT = "co_owner_access_changed"
 export const NOTIFICATION_CHANGED_EVENT = "notification_changed"
 export const SERVICE_POINTS_CHANGED_EVENT = "service_points_changed"
 
@@ -253,6 +253,50 @@ export async function notificationSseHandler(req, res, {
             try {
                 res.end()
             } catch {}
+            removeClient(client)
+        }
+    }, 25_000)
+    keepAlive.unref?.()
+    client.keepAlive = keepAlive
+
+    req.on("close", () => removeClient(client))
+}
+
+/**
+ * Authenticated, recipient-scoped Co-Owner access invalidation stream.
+ * Permission state is never sent over SSE; clients refetch /auth/me.
+ */
+export async function coOwnerAccessSseHandler(req, res, {
+    resolveCoOwner = resolveCurrentCoOwner,
+} = {}) {
+    const businessId = req.session?.user?.businessId
+    if (!businessId || req.session?.user?.role !== "co_owner") {
+        return res.status(403).end("Forbidden")
+    }
+
+    const coOwner = await resolveCoOwner(req)
+    if (!coOwner || coOwner.businessId !== businessId) {
+        return res.status(403).end("Forbidden")
+    }
+
+    configureStreamResponse(res)
+    const client = {
+        res,
+        role: "co_owner_access",
+        businessId,
+        accessIdentity: {
+            staffObjectId: String(coOwner._id),
+            staffId: coOwner.staffId,
+        },
+    }
+    addClient(client)
+    res.write(`event: heartbeat\ndata: ${JSON.stringify({ ok: true, t: Date.now() })}\n\n`)
+
+    const keepAlive = setInterval(() => {
+        try {
+            res.write(`event: heartbeat\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`)
+        } catch (error) {
+            console.error("[SSE] Co-Owner access heartbeat failed:", error.message)
             removeClient(client)
         }
     }, 25_000)
@@ -478,6 +522,14 @@ export function disconnectManagementClients({ businessId, staffObjectId, staffId
     return disconnected
 }
 
+function coOwnerAccessTargetMatches(client, target) {
+    if (!target || !client.accessIdentity) return false
+    return Boolean(
+        (target.staffObjectId && client.accessIdentity.staffObjectId === String(target.staffObjectId)) ||
+        (target.staffId && client.accessIdentity.staffId === target.staffId)
+    )
+}
+
 // ── Local delivery ───────────────────────────────────────────────────────────
 /**
  * Deliver a canonical event message to all matching SSE clients on THIS instance.
@@ -487,7 +539,15 @@ export function disconnectManagementClients({ businessId, staffObjectId, staffId
  * @param {{ event: string, businessId: string, targets: string[]|null, payload: object }} msg
  */
 export async function broadcastLocal(msg) {
-    const { event, businessId, targets, payload, recipientTargets, notificationAccess } = msg
+    const {
+        event,
+        businessId,
+        targets,
+        payload,
+        recipientTargets,
+        notificationAccess,
+        coOwnerAccessTarget,
+    } = msg
 
     if (!event || !businessId) {
         console.warn("[SSE] broadcastLocal called with missing event or businessId — skipping", msg)
@@ -504,12 +564,29 @@ export async function broadcastLocal(msg) {
         })
         return
     }
-    if (event === MANAGEMENT_ACCESS_REVOKED_EVENT) {
+    if (event === CO_OWNER_ACCESS_CHANGED_EVENT) {
         disconnectManagementClients({
             businessId,
-            staffObjectId: payload?.staffObjectId,
-            staffId: payload?.staffId,
+            staffObjectId: coOwnerAccessTarget?.staffObjectId,
+            staffId: coOwnerAccessTarget?.staffId,
         })
+
+        for (const client of clients) {
+            if (
+                client.role !== "co_owner_access" ||
+                client.businessId !== businessId ||
+                !coOwnerAccessTargetMatches(client, coOwnerAccessTarget)
+            ) continue
+
+            try {
+                client.res.write(
+                    `event: ${CO_OWNER_ACCESS_CHANGED_EVENT}\ndata: ${JSON.stringify({ invalidated: true })}\n\n`,
+                )
+            } catch (error) {
+                console.error("[SSE] Co-Owner access invalidation write failed:", error.message)
+                removeClient(client)
+            }
+        }
         return
     }
 
@@ -751,15 +828,18 @@ export async function publishManagerAccessRevocation({ businessId, staffObjectId
     )
 }
 
-/** Disconnect a Co-Owner's management SSE streams on every app instance. */
-export async function publishManagementAccessRevocation({ businessId, staffObjectId, staffId }) {
+/** Invalidate one Co-Owner's auth state and close stale management streams. */
+export async function publishCoOwnerAccessChanged({ businessId, staffObjectId, staffId }) {
     return publishEvent(
-        MANAGEMENT_ACCESS_REVOKED_EVENT,
+        CO_OWNER_ACCESS_CHANGED_EVENT,
         businessId,
-        null,
+        ["co_owner_access"],
+        { invalidated: true },
         {
-            staffObjectId: staffObjectId ? String(staffObjectId) : null,
-            staffId: staffId || null,
+            coOwnerAccessTarget: {
+                staffObjectId: staffObjectId ? String(staffObjectId) : null,
+                staffId: staffId || null,
+            },
         },
     )
 }

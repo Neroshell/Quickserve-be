@@ -25,6 +25,10 @@ import {
 process.env.REDIS_URL = ""
 const { updateCoOwnerAccess } = await import("../src/controllers/teamController.js")
 const { loginUser } = await import("../src/controllers/authController.js")
+const {
+    CO_OWNER_ACCESS_CHANGED_EVENT,
+    coOwnerAccessSseHandler,
+} = await import("../src/utils/sseManager.js")
 
 function createResponse() {
     return {
@@ -324,6 +328,99 @@ test("access updates whitelist keys and scope the target by authenticated busine
     assert.deepEqual(res.body.coOwnerRestrictions, [MANAGEMENT_ACCESS_AREAS.BUSINESS_SETTINGS])
 })
 
+test("persisted Co-Owner grants and revocations invalidate every affected tab only", async (t) => {
+    const streams = []
+
+    async function connect({ businessId, staffObjectId, staffId }) {
+        const writes = []
+        let closeHandler
+        const req = {
+            session: { user: { role: "co_owner", businessId } },
+            on(event, handler) {
+                if (event === "close") closeHandler = handler
+            },
+        }
+        const res = {
+            setHeader() {},
+            flushHeaders() {},
+            write(value) { writes.push(value) },
+            end() {},
+            status() { return this },
+        }
+        await coOwnerAccessSseHandler(req, res, {
+            resolveCoOwner: async () => ({
+                _id: staffObjectId,
+                staffId,
+                businessId,
+                role: "co_owner",
+                accountStatus: "active",
+            }),
+        })
+        const stream = { writes, close: () => closeHandler?.() }
+        streams.push(stream)
+        return stream
+    }
+
+    const affected = await connect({
+        businessId: "biz_alpha",
+        staffObjectId: "507f1f77bcf86cd799439011",
+        staffId: "COW-1000",
+    })
+    const affectedSecondTab = await connect({
+        businessId: "biz_alpha",
+        staffObjectId: "507f1f77bcf86cd799439011",
+        staffId: "COW-1000",
+    })
+    const otherCoOwner = await connect({
+        businessId: "biz_alpha",
+        staffObjectId: "507f1f77bcf86cd799439012",
+        staffId: "COW-2000",
+    })
+    const otherTenant = await connect({
+        businessId: "biz_beta",
+        staffObjectId: "507f1f77bcf86cd799439011",
+        staffId: "COW-1000",
+    })
+    const initialWrites = streams.map((stream) => stream.writes.length)
+
+    t.mock.method(Staff, "findOneAndUpdate", (filter, update) => ({
+        select: async () => coOwnerRecord({
+            coOwnerRestrictions: update.$set.coOwnerRestrictions,
+        }),
+    }))
+    const req = {
+        session: { user: { role: "owner", businessId: "biz_alpha" } },
+        params: { staffId: "COW-1000" },
+        body: { coOwnerRestrictions: [MANAGEMENT_ACCESS_AREAS.MENU] },
+    }
+    const res = createResponse()
+    await updateCoOwnerAccess(req, res)
+
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(res.body.coOwnerRestrictions, [MANAGEMENT_ACCESS_AREAS.MENU])
+
+    assert.equal(affected.writes.length, initialWrites[0] + 1)
+    assert.equal(affectedSecondTab.writes.length, initialWrites[1] + 1)
+    assert.equal(otherCoOwner.writes.length, initialWrites[2])
+    assert.equal(otherTenant.writes.length, initialWrites[3])
+
+    req.body.coOwnerRestrictions = []
+    await updateCoOwnerAccess(req, res)
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(res.body.coOwnerRestrictions, [])
+    assert.equal(affected.writes.length, initialWrites[0] + 2)
+    assert.equal(affectedSecondTab.writes.length, initialWrites[1] + 2)
+    assert.equal(otherCoOwner.writes.length, initialWrites[2])
+    assert.equal(otherTenant.writes.length, initialWrites[3])
+
+    const delivered = affected.writes.at(-1)
+    assert.match(delivered, new RegExp(`event: ${CO_OWNER_ACCESS_CHANGED_EVENT}`))
+    assert.match(delivered, /"invalidated":true/)
+    assert.doesNotMatch(delivered, /COW-1000|507f1f77bcf86cd799439011|coOwnerRestrictions|managementAccessAreas/)
+
+    streams.forEach((stream) => stream.close())
+})
+
 test("access API rejects unknown restriction keys before writing", async (t) => {
     let writes = 0
     t.mock.method(Staff, "findOneAndUpdate", () => {
@@ -349,6 +446,7 @@ test("route declarations preserve the Billing and ownership boundary matrix", as
     const uploadRoutes = await readFile(new URL("../src/routes/upload-route.js", import.meta.url), "utf8")
     const orderRoutes = await readFile(new URL("../src/routes/order-route.js", import.meta.url), "utf8")
     const scopedOrderRoutes = await readFile(new URL("../src/routes/business-scoped-route.js", import.meta.url), "utf8")
+    const authRoutes = await readFile(new URL("../src/routes/auth-route.js", import.meta.url), "utf8")
 
     for (const path of ["/billing", "/billing/commission", "/billing/invoices", "/stripe/status", "/stripe/payout-summary"]) {
         assert.ok(ownerRoutes.includes(`"${path}"`), path)
@@ -373,4 +471,5 @@ test("route declarations preserve the Billing and ownership boundary matrix", as
     assert.match(uploadRoutes, /MANAGEMENT_ACCESS_AREAS\.BRANDING/)
     assert.match(orderRoutes, /requireRole\("owner", "co_owner", "admin", "manager"\)/)
     assert.match(scopedOrderRoutes, /requireRole\("owner", "co_owner", "admin", "manager", "waiter"/)
+    assert.match(authRoutes, /"\/access-events", requireAuth, requireRole\("co_owner"\), coOwnerAccessSseHandler/)
 })

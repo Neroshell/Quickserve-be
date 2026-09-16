@@ -169,14 +169,14 @@ export async function updateCoOwnerAccess(req, res) {
         if (!coOwner) return res.status(404).json({ error: "Co-Owner not found" })
 
         try {
-            const { publishManagementAccessRevocation } = await import("../utils/sseManager.js")
-            await publishManagementAccessRevocation({
+            const { publishCoOwnerAccessChanged } = await import("../utils/sseManager.js")
+            await publishCoOwnerAccessChanged({
                 businessId,
                 staffObjectId: coOwner._id,
                 staffId: coOwner.staffId,
             })
         } catch (streamError) {
-            console.error("[updateCoOwnerAccess] Failed to refresh Co-Owner live streams", streamError)
+            console.error("[updateCoOwnerAccess] Failed to publish Co-Owner access invalidation", streamError)
         }
 
         return res.json(buildCoOwnerAccessPayload(coOwner))

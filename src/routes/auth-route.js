@@ -1,6 +1,8 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
 import { validateInviteToken, setupOwnerPassword, loginUser, getMe, requestPasswordReset, resetPassword, changePassword, changeEmail, confirmEmailChange } from "../controllers/authController.js";
+import { coOwnerAccessSseHandler } from "../utils/sseManager.js";
+import { requireAuth, requireRole } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
@@ -134,8 +136,11 @@ router.post("/login", authLimiter, loginUser);
  */
 router.get("/me", getMe);
 
+// Co-Owner permission changes are delivered as content-free invalidations.
+// The client refetches /auth/me; backend route guards remain authoritative.
+router.get("/access-events", requireAuth, requireRole("co_owner"), coOwnerAccessSseHandler);
+
 import { validateStaffToken, setupStaffPassword, logoutUser, staffHeartbeat } from "../controllers/authController.js";
-import { requireAuth } from "../middleware/authMiddleware.js";
 
 /**
  * @openapi
