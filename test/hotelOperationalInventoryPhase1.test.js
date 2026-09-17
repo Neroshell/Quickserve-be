@@ -55,6 +55,8 @@ function buildRoomUsageHarness({
     roomActive = true,
     business = HOTEL,
     failMovementCreate = false,
+    housekeepingOperation = null,
+    rejectConcurrentSessionReads = false,
 } = {}) {
     let persistedItems = clone(items || [
         {
@@ -91,35 +93,56 @@ function buildRoomUsageHarness({
         },
     ])
     let persistedMovements = []
+    let persistedHousekeepingOperation = clone(housekeepingOperation)
     let sequence = 0
     let transactionQueue = Promise.resolve()
 
     function stateFor(session) {
-        return session?.state || { items: persistedItems, movements: persistedMovements }
+        return session?.state || {
+            items: persistedItems,
+            movements: persistedMovements,
+            housekeepingOperation: persistedHousekeepingOperation,
+        }
+    }
+
+    async function sessionRead(session, read) {
+        if (!rejectConcurrentSessionReads || !session) return read()
+        if (session.activeReads > 0) throw new Error("parallel transaction operation")
+        session.activeReads = (session.activeReads || 0) + 1
+        try {
+            await new Promise((resolve) => setImmediate(resolve))
+            return read()
+        } finally {
+            session.activeReads -= 1
+        }
     }
 
     const dependencies = {
         BusinessModel: {
-            async findOne(filter) {
-                return filter.businessId === business.businessId ? clone(business) : null
+            async findOne(filter, _projection, options = {}) {
+                return sessionRead(options.session, () => (
+                    filter.businessId === business.businessId ? clone(business) : null
+                ))
             },
         },
         ServicePointModel: {
-            async findOne(filter) {
-                if (
-                    filter.businessId !== roomBusinessId ||
-                    filter.servicePointId !== "sp_room_401" ||
-                    filter.servicePointType !== roomType ||
-                    filter.isActive !== roomActive
-                ) return null
-                return {
-                    businessId: roomBusinessId,
-                    servicePointId: "sp_room_401",
-                    servicePointType: roomType,
-                    isActive: roomActive,
-                    label: "Room 401",
-                    roomType: "Deluxe King",
-                }
+            async findOne(filter, _projection, options = {}) {
+                return sessionRead(options.session, () => {
+                    if (
+                        filter.businessId !== roomBusinessId ||
+                        filter.servicePointId !== "sp_room_401" ||
+                        filter.servicePointType !== roomType ||
+                        filter.isActive !== roomActive
+                    ) return null
+                    return {
+                        businessId: roomBusinessId,
+                        servicePointId: "sp_room_401",
+                        servicePointType: roomType,
+                        isActive: roomActive,
+                        label: "Room 401",
+                        roomType: "Deluxe King",
+                    }
+                })
             },
         },
         InventoryItemModel: {
@@ -144,7 +167,12 @@ function buildRoomUsageHarness({
                     movement.operationId === filter.operationId
                 ))
             },
-            async create(inputs, { session }) {
+            async create(inputs, { session, ordered }) {
+                assert.equal(
+                    ordered,
+                    true,
+                    "multi-item Room Usage must use an ordered insert inside its MongoDB session",
+                )
                 if (failMovementCreate) throw new Error("injected ledger failure")
                 const state = stateFor(session)
                 const movements = inputs.map((input) => ({
@@ -154,6 +182,27 @@ function buildRoomUsageHarness({
                 }))
                 state.movements.push(...movements)
                 return movements
+            },
+        },
+        HousekeepingOperationModel: {
+            async findOne(filter, _projection, options = {}) {
+                const operation = stateFor(options.session).housekeepingOperation
+                if (
+                    !operation ||
+                    operation.businessId !== filter.businessId ||
+                    operation.housekeepingOperationId !== filter.housekeepingOperationId
+                ) return null
+                return clone(operation)
+            },
+            async findOneAndUpdate(filter, update, options = {}) {
+                const state = stateFor(options.session)
+                const operation = state.housekeepingOperation
+                if (!operation || operation._id !== filter._id || operation.businessId !== filter.businessId) return null
+                for (const field of ["servicePointId", "status", "active", "supplyOutcome"]) {
+                    if (Object.hasOwn(filter, field) && operation[field] !== filter[field]) return null
+                }
+                Object.assign(operation, clone(update.$set || {}))
+                return clone(operation)
             },
         },
         generateMovementId: () => `imv_${++sequence}`,
@@ -167,11 +216,13 @@ function buildRoomUsageHarness({
                 this.state = {
                     items: clone(persistedItems),
                     movements: clone(persistedMovements),
+                    housekeepingOperation: clone(persistedHousekeepingOperation),
                 }
                 try {
                     await work()
                     persistedItems = clone(this.state.items)
                     persistedMovements = clone(this.state.movements)
+                    persistedHousekeepingOperation = clone(this.state.housekeepingOperation)
                 } finally {
                     this.state = null
                     release()
@@ -185,7 +236,11 @@ function buildRoomUsageHarness({
     return {
         dependencies,
         snapshot() {
-            return { items: clone(persistedItems), movements: clone(persistedMovements) }
+            return {
+                items: clone(persistedItems),
+                movements: clone(persistedMovements),
+                housekeepingOperation: clone(persistedHousekeepingOperation),
+            }
         },
     }
 }
@@ -337,6 +392,79 @@ test("multi-item Room Usage consumes available stock atomically and records cano
         assert.equal(movement.operationId, result.operationId)
         assert.deepEqual(movement.performedBy, ACTOR)
     }
+})
+
+test("Housekeeping supplies reuse canonical Room Usage and persist the operation outcome atomically", async () => {
+    const operation = {
+        _id: "housekeeping_mongo_1",
+        housekeepingOperationId: "hko_room_401",
+        businessId: "hotel_a",
+        servicePointId: "sp_room_401",
+        status: "cleaning",
+        active: true,
+        claimedBy: "HSK-1001",
+        supplyOutcome: "pending",
+        roomUsageOperationId: null,
+    }
+    const housekeeper = { staffId: "HSK-1001", role: "housekeeping", name: "Sarah" }
+    const harness = buildRoomUsageHarness({ housekeepingOperation: operation })
+    const input = command({
+        actor: housekeeper,
+        idempotencyKey: undefined,
+        housekeepingOperationId: operation.housekeepingOperationId,
+    })
+
+    const first = await recordRoomUsage(input, harness.dependencies)
+    assert.equal(first.replayed, false)
+    assert.equal(first.housekeepingOperationId, operation.housekeepingOperationId)
+    assert.equal(harness.snapshot().housekeepingOperation.supplyOutcome, "recorded")
+    assert.equal(harness.snapshot().housekeepingOperation.roomUsageOperationId, first.operationId)
+
+    const replay = await recordRoomUsage(input, harness.dependencies)
+    assert.equal(replay.replayed, true)
+    assert.equal(harness.snapshot().movements.length, 2)
+    assert.deepEqual(harness.snapshot().items.map((item) => item.onHandQuantity), [8, 6])
+
+    const insufficient = buildRoomUsageHarness({ housekeepingOperation: operation })
+    await assert.rejects(
+        recordRoomUsage(command({
+            actor: housekeeper,
+            idempotencyKey: undefined,
+            housekeepingOperationId: operation.housekeepingOperationId,
+            items: [{ inventoryItemId: "inv_soap", quantity: 7, unit: "piece" }],
+        }), insufficient.dependencies),
+        (error) => error.code === "INSUFFICIENT_AVAILABLE_INVENTORY",
+    )
+    assert.equal(insufficient.snapshot().housekeepingOperation.supplyOutcome, "pending")
+    assert.equal(insufficient.snapshot().movements.length, 0)
+    assert.deepEqual(insufficient.snapshot().items.map((item) => item.onHandQuantity), [10, 8])
+})
+
+test("Housekeeping Room Usage keeps MongoDB transaction reads sequential", async () => {
+    const operation = {
+        _id: "housekeeping_mongo_sequential",
+        housekeepingOperationId: "hko_room_401_sequential",
+        businessId: "hotel_a",
+        servicePointId: "sp_room_401",
+        status: "cleaning",
+        active: true,
+        claimedBy: "HSK-1001",
+        supplyOutcome: "pending",
+        roomUsageOperationId: null,
+    }
+    const harness = buildRoomUsageHarness({
+        housekeepingOperation: operation,
+        rejectConcurrentSessionReads: true,
+    })
+
+    const result = await recordRoomUsage(command({
+        actor: { staffId: "HSK-1001", role: "housekeeping", name: "Sarah" },
+        idempotencyKey: undefined,
+        housekeepingOperationId: operation.housekeepingOperationId,
+    }), harness.dependencies)
+
+    assert.equal(result.replayed, false)
+    assert.equal(harness.snapshot().housekeepingOperation.supplyOutcome, "recorded")
 })
 
 test("Room Usage validates canonical room and tenant-owned active hotel items", async () => {

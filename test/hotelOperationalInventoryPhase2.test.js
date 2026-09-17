@@ -200,8 +200,15 @@ test("Room Usage context resolves a Room ServicePoint template as editable sugge
         },
         InventoryItemModel: {
             async find(filter) {
-                const ids = new Set(filter.inventoryItemId.$in)
-                return items.filter((item) => item.businessId === filter.businessId && ids.has(item.inventoryItemId))
+                const ids = filter.inventoryItemId?.$in
+                    ? new Set(filter.inventoryItemId.$in)
+                    : null
+                return items.filter((item) => (
+                    item.businessId === filter.businessId &&
+                    (!ids || ids.has(item.inventoryItemId)) &&
+                    (!Object.hasOwn(filter, "deletedAt") || item.deletedAt === filter.deletedAt) &&
+                    (!Object.hasOwn(filter, "isActive") || item.isActive === filter.isActive)
+                ))
             },
         },
     })
@@ -209,6 +216,7 @@ test("Room Usage context resolves a Room ServicePoint template as editable sugge
     assert.equal(result.selectedRoom.servicePointId, "sp_room_401")
     assert.equal(result.template.configured, true)
     assert.equal(result.template.roomTypeName, "Deluxe King")
+    assert.deepEqual(result.items.map((item) => item.inventoryItemId), ["inv_soap"])
     assert.deepEqual(result.template.suggestions.map((line) => [
         line.inventoryItemId,
         line.quantity,
@@ -288,4 +296,3 @@ test("Phase 2 routes preserve dual permissions and the Phase 1 confirmation comm
     assert.match(roomUsageService, /INVENTORY_MOVEMENT_TYPES\.CONSUME/)
     assert.doesNotMatch(roomUsageService, /standardSupplyTemplate/)
 })
-

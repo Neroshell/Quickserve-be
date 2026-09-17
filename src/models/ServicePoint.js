@@ -16,6 +16,18 @@ export function normalizeRoomType(value) {
     return normalized || null
 }
 
+const RoomReadinessSchema = new mongoose.Schema({
+    state: {
+        type: String,
+        enum: ["ready", "needs_cleaning", "cleaning"],
+        required: true,
+        default: "ready",
+    },
+    operationId: { type: String, default: null },
+    changedAt: { type: Date, default: Date.now },
+    changedBy: { type: String, default: null },
+}, { _id: false })
+
 /**
  * Historical defaults are now resolved by businessCapabilityService.
  *   hotel → "room"
@@ -110,6 +122,14 @@ const ServicePointSchema = new mongoose.Schema(
             maxlength: 200,
             select: false,
         },
+        roomReadiness: {
+            type: RoomReadinessSchema,
+            default: function roomReadinessDefault() {
+                return this.servicePointType === "room"
+                    ? { state: "ready", operationId: null, changedAt: new Date(), changedBy: null }
+                    : undefined
+            },
+        },
         creationRequestFingerprint: {
             type: String,
             default: null,
@@ -135,6 +155,7 @@ ServicePointSchema.index({
     isActive: 1,
     reservable: 1,
 })
+ServicePointSchema.index({ businessId: 1, servicePointType: 1, "roomReadiness.state": 1 })
 
 ServicePointSchema.pre("validate", function () {
     if (
@@ -145,6 +166,12 @@ ServicePointSchema.pre("validate", function () {
         this.invalidate(
             "roomType",
             "roomType is only available for room ServicePoints"
+        )
+    }
+    if (this.servicePointType !== "room" && this.roomReadiness != null) {
+        this.invalidate(
+            "roomReadiness",
+            "roomReadiness is only available for room ServicePoints"
         )
     }
 })

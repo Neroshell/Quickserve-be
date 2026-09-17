@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto"
 import { redisPub, REDIS_CHANNEL } from "../config/redisClient.js"
 import Business from "../models/Business.js"
 import Staff from "../models/Staff.js"
-import { resolveCurrentCoOwner, resolveCurrentManager } from "../middleware/authMiddleware.js"
+import { resolveCurrentCoOwner, resolveCurrentManager, resolveCurrentOperationalStaff } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import {
     MANAGEMENT_AREA_BY_PERMISSION,
@@ -32,6 +32,7 @@ import {
     isCurrentCustomerVisitStillActive,
     resolveCurrentCustomerVisit,
 } from "../services/customerOrderAccessService.js"
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 
 // Which SSE channel(s) a given authenticated staff role is allowed to subscribe to.
 // The channel is derived from the session role — NOT the client-supplied query —
@@ -42,10 +43,11 @@ const SSE_CHANNELS_BY_ROLE = {
     kitchen: ["kitchen"],
     bartender: ["bar"],
     waiter: ["waiter", "reservations"],
-    manager: ["kitchen", "bar", "waiter", "owner", "reservations"],
-    owner: ["kitchen", "bar", "waiter", "owner", "reservations"],
-    co_owner: ["kitchen", "bar", "waiter", "owner", "reservations"],
-    admin: ["kitchen", "bar", "waiter", "owner", "reservations"],
+    housekeeping: ["housekeeping"],
+    manager: ["kitchen", "bar", "waiter", "owner", "reservations", "housekeeping"],
+    owner: ["kitchen", "bar", "waiter", "owner", "reservations", "housekeeping"],
+    co_owner: ["kitchen", "bar", "waiter", "owner", "reservations", "housekeeping"],
+    admin: ["kitchen", "bar", "waiter", "owner", "reservations", "housekeeping"],
 }
 
 // Customer-facing SSE roles — these streams are scoped to a single table.
@@ -69,12 +71,14 @@ const MANAGER_SSE_PERMISSIONS_BY_CHANNEL = {
         PERMISSIONS.STAFF_VIEW,
     ]),
     reservations: new Set([PERMISSIONS.RESERVATIONS_VIEW]),
+    housekeeping: new Set([PERMISSIONS.HOUSEKEEPING_VIEW]),
 }
 
 const MANAGER_ACCESS_REVOKED_EVENT = "__manager_access_revoked"
 export const CO_OWNER_ACCESS_CHANGED_EVENT = "co_owner_access_changed"
 export const NOTIFICATION_CHANGED_EVENT = "notification_changed"
 export const SERVICE_POINTS_CHANGED_EVENT = "service_points_changed"
+export const HOUSEKEEPING_CHANGED_EVENT = "housekeeping_changed"
 
 function managerPermissionAllowsEvent(permission, event) {
     if (permission === PERMISSIONS.DASHBOARD_VIEW) return true
@@ -82,6 +86,7 @@ function managerPermissionAllowsEvent(permission, event) {
     if (permission === PERMISSIONS.SERVICE_POINTS_VIEW) return event === SERVICE_POINTS_CHANGED_EVENT
     if (permission === PERMISSIONS.STAFF_VIEW) return event.startsWith("staff_")
     if (permission === PERMISSIONS.RESERVATIONS_VIEW) return event.startsWith("reservation_")
+    if (permission === PERMISSIONS.HOUSEKEEPING_VIEW) return event === HOUSEKEEPING_CHANGED_EVENT
     return false
 }
 
@@ -146,6 +151,33 @@ async function findCurrentCoOwnerForClient(client) {
     } catch (err) {
         console.error("[SSE] Failed to revalidate Co-Owner stream:", err.message)
         return null
+    }
+}
+
+async function findCurrentOperationalStaffForClient(client) {
+    const identityFilter = client.operationalIdentity?.staffObjectId
+        ? { _id: client.operationalIdentity.staffObjectId }
+        : { staffId: client.operationalIdentity?.staffId }
+    try {
+        return await Staff.findOne({
+            ...identityFilter,
+            businessId: client.businessId,
+            role: client.operationalRole,
+            accountStatus: "active",
+        }).select("permissions").lean()
+    } catch (error) {
+        console.error("[SSE] Failed to revalidate operational stream:", error.message)
+        return null
+    }
+}
+
+async function businessHasLodgingCapability(businessId) {
+    try {
+        const business = await Business.findOne({ businessId }).select("businessType modules").lean()
+        return Boolean(business && resolveBusinessCapabilities(business).visibleModules.includes("lodging"))
+    } catch (error) {
+        console.error("[SSE] Failed to revalidate lodging capability:", error.message)
+        return false
     }
 }
 
@@ -315,6 +347,9 @@ export async function sseHandler(req, res) {
     let managerIdentity = null
     let coOwnerArea = null
     let managementIdentity = null
+    let operationalPermission = null
+    let operationalIdentity = null
+    let operationalRole = null
 
     if (!businessId) {
         return res.status(400).end("Missing businessId")
@@ -355,6 +390,10 @@ export async function sseHandler(req, res) {
             role = allowedChannels[0]
         }
 
+        if (role === "housekeeping" && !await businessHasLodgingCapability(businessId)) {
+            return res.status(403).end("Forbidden. Housekeeping is not enabled for this business.")
+        }
+
         if (req.session.user.role === "manager") {
             const requestedPermission = req.query.permission
             const allowedPermissions = MANAGER_SSE_PERMISSIONS_BY_CHANNEL[role]
@@ -393,6 +432,17 @@ export async function sseHandler(req, res) {
                 staffObjectId: String(coOwner._id),
                 staffId: coOwner.staffId,
             }
+        } else if (req.session.user.role === "housekeeping") {
+            const staff = await resolveCurrentOperationalStaff(req)
+            if (!staff || !(staff.permissions || []).includes(PERMISSIONS.HOUSEKEEPING_VIEW)) {
+                return res.status(403).end("Forbidden. Housekeeping live-update permission denied.")
+            }
+            operationalPermission = PERMISSIONS.HOUSEKEEPING_VIEW
+            operationalRole = staff.role
+            operationalIdentity = {
+                staffObjectId: String(staff._id),
+                staffId: staff.staffId,
+            }
         }
     }
 
@@ -414,6 +464,9 @@ export async function sseHandler(req, res) {
         managerIdentity,
         coOwnerArea,
         managementIdentity,
+        operationalPermission,
+        operationalIdentity,
+        operationalRole,
     }
 
     addClient(client)
@@ -454,6 +507,16 @@ export async function sseHandler(req, res) {
                     }, { area: client.coOwnerArea }))
                     : currentManager?.permissions?.includes(client.managerPermission)
                 if (!stillAllowed) {
+                    res.end()
+                    clearInterval(keepAlive)
+                    removeClient(client)
+                    return
+                }
+            }
+            if (client.operationalPermission) {
+                const currentStaff = await findCurrentOperationalStaffForClient(client)
+                if (!clients.has(client)) return
+                if (!currentStaff?.permissions?.includes(client.operationalPermission)) {
                     res.end()
                     clearInterval(keepAlive)
                     removeClient(client)
@@ -680,6 +743,16 @@ export async function broadcastLocal(msg) {
             }
         }
 
+        if (client.operationalPermission) {
+            const currentStaff = await findCurrentOperationalStaffForClient(client)
+            if (!clients.has(client)) continue
+            if (!currentStaff?.permissions?.includes(client.operationalPermission)) {
+                try { client.res.end() } catch {}
+                removeClient(client)
+                continue
+            }
+        }
+
         // Customer delivery fails closed unless both the canonical GuestSession
         // visit and ServicePoint match. Historical/device identity is never used
         // for live fan-out, including later visits at the same ServicePoint.
@@ -777,6 +850,25 @@ export async function publishServicePointsChanged({
     } catch (error) {
         // MongoDB remains authoritative. Clients recover on reconnect/focus.
         console.error("[ServicePoints] Realtime invalidation failed:", error.message)
+    }
+}
+
+/** Publish a tenant-scoped, content-free Housekeeping invalidation signal. */
+export async function publishHousekeepingChanged({
+    businessId,
+    publish = publishEvent,
+}) {
+    if (!businessId) return
+    try {
+        await publish(
+            HOUSEKEEPING_CHANGED_EVENT,
+            businessId,
+            ["housekeeping"],
+            { invalidated: true },
+        )
+    } catch (error) {
+        // MongoDB remains authoritative. Clients recover on reconnect/focus.
+        console.error("[Housekeeping] Realtime invalidation failed:", error.message)
     }
 }
 

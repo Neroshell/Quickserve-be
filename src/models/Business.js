@@ -95,6 +95,31 @@ const HotelSettingsSchema = new mongoose.Schema({
     }
 }, { _id: false })
 
+const HousekeepingSettingsSchema = new mongoose.Schema({
+    // No default SLA is assumed. A room is overdue only after management has
+    // explicitly configured the corresponding operational target.
+    targetStartMinutes: {
+        type: Number,
+        default: null,
+        min: 1,
+        max: 10080,
+        validate: {
+            validator: (value) => value === null || Number.isInteger(value),
+            message: "Housekeeping start target must be a whole number of minutes",
+        },
+    },
+    targetCleaningMinutes: {
+        type: Number,
+        default: null,
+        min: 1,
+        max: 10080,
+        validate: {
+            validator: (value) => value === null || Number.isInteger(value),
+            message: "Housekeeping cleaning target must be a whole number of minutes",
+        },
+    },
+}, { _id: false })
+
 const PropertyPhotoSchema = new mongoose.Schema({
     url: { type: String, required: true, trim: true, maxlength: 2048 },
     publicId: { type: String, required: true, trim: true, maxlength: 500 },
@@ -398,6 +423,7 @@ const BusinessSchema = new mongoose.Schema({
     paymentPreferences: { type: PaymentPreferencesSchema, default: () => ({}) },
     tablePreferences: { type: TablePreferencesSchema, default: () => ({}) },
     hotelSettings: { type: HotelSettingsSchema, default: () => ({}) },
+    housekeepingSettings: { type: HousekeepingSettingsSchema, default: () => ({}) },
     propertyProfile: {
         type: PropertyProfileSchema,
         default: function defaultPropertyProfile() {

@@ -8,7 +8,11 @@ import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse 
 import { resolveBusinessCapabilities, resolveBusinessModules } from "../services/businessCapabilityService.js";
 import { resolveSubscriptionEntitlements } from "../services/subscriptionEntitlementService.js";
 import { markStaffActive, markStaffOffline } from "../services/presenceService.js";
-import { resolveCurrentCoOwner, resolveCurrentManager } from "../middleware/authMiddleware.js";
+import {
+    resolveCurrentCoOwner,
+    resolveCurrentManager,
+    resolveCurrentOperationalStaff,
+} from "../middleware/authMiddleware.js";
 import { getEffectiveManagementAreas } from "../constants/managementAccess.js";
 /**
  * Validate an invitation token
@@ -317,7 +321,7 @@ export async function logoutUser(req, res) {
     try {
         // Mark staff as offline if applicable
         const sessionUser = req.session?.user;
-        const STAFF_ROLES = ["waiter", "staff", "kitchen", "bartender", "manager", "co_owner"];
+        const STAFF_ROLES = ["waiter", "staff", "kitchen", "bartender", "housekeeping", "manager", "co_owner"];
         if (sessionUser && STAFF_ROLES.includes(sessionUser.role) && sessionUser.email) {
             try {
                 const staff = await Staff.findOne({ email: sessionUser.email });
@@ -362,7 +366,7 @@ export async function logoutUser(req, res) {
 export async function staffHeartbeat(req, res) {
     try {
         const sessionUser = req.session?.user;
-        const STAFF_ROLES = ["waiter", "staff", "kitchen", "bartender", "manager", "co_owner"];
+        const STAFF_ROLES = ["waiter", "staff", "kitchen", "bartender", "housekeeping", "manager", "co_owner"];
         
         if (!sessionUser || !STAFF_ROLES.includes(sessionUser.role)) {
             return res.status(403).json({ message: "Forbidden: Only operational staff can send heartbeats." });
@@ -430,7 +434,7 @@ export async function getMe(req, res) {
                 ? await resolveCurrentManager(req)
                 : role === "co_owner"
                     ? await resolveCurrentCoOwner(req)
-                    : await Staff.findOne({ email, businessId, accountStatus: "active" }).select('-passwordHash');
+                    : await resolveCurrentOperationalStaff(req);
             if (!staff) return res.status(401).json({ message: "Account disabled or not found." });
             
             // Also fetch business to get businessType and currency
@@ -448,7 +452,7 @@ export async function getMe(req, res) {
                 name: staff.name,
                 displayName: businessDisplayName,
                 staffId: staff.staffId,
-                ...(role === "manager" ? { permissions: staff.permissions || [] } : {}),
+                permissions: staff.permissions || [],
                 ...(role === "co_owner" ? {
                     coOwnerRestrictions: staff.coOwnerRestrictions || [],
                 } : {}),

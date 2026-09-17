@@ -2,7 +2,7 @@ import mongoose from "mongoose"
 import { PERMISSION_VALUES } from "../constants/permissions.js"
 import { MANAGEMENT_ACCESS_AREA_VALUES } from "../constants/managementAccess.js"
 
-const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender", "co_owner"]
+const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender", "housekeeping", "co_owner"]
 
 const StaffSchema = new mongoose.Schema({
     businessId: { type: String, required: true, index: true },

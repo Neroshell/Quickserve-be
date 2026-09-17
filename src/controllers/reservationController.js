@@ -27,6 +27,11 @@ import {
   RESTAURANT_AVAILABILITY_POLICIES,
   getRestaurantAvailability,
 } from "../services/restaurantReservationAvailabilityService.js";
+import {
+  checkoutReservationIntoHousekeeping,
+  HousekeepingDomainError,
+} from "../services/housekeepingService.js";
+import { publishHousekeepingChanged } from "../utils/sseManager.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 const ARCHIVABLE_RESERVATION_STATUSES = new Set([
@@ -742,6 +747,7 @@ export async function updateReservationStatus(req, res) {
       }
     }
 
+    let housekeepingChanged = false;
     if (status === "accepted_awaiting_payment") {
       await ensureReservationPricingSnapshot({
         reservation,
@@ -770,6 +776,21 @@ export async function updateReservationStatus(req, res) {
           reason: error?.code || error?.name || "enqueue_failed",
         });
       }
+    } else if (status === "checked_out" && isHotel) {
+      const actorSnapshot = buildReservationStaffSnapshot(req.session?.user);
+      const checkout = await checkoutReservationIntoHousekeeping({
+        businessId: reservation.businessId,
+        reservationId: String(reservation._id),
+        actor: {
+          actorId: actorSnapshot?.userId,
+          staffId: req.session?.user?.staffId || null,
+          name: actorSnapshot?.name,
+          role: actorSnapshot?.role,
+        },
+        reservationActor: actorSnapshot,
+      });
+      reservation = checkout.reservation;
+      housekeepingChanged = !checkout.replayed;
     } else {
       const now = new Date();
       const actor = buildReservationStaffSnapshot(req.session?.user);
@@ -868,6 +889,11 @@ export async function updateReservationStatus(req, res) {
         }));
       }
 
+      if (housekeepingChanged) {
+        const publish = req.app?.locals?.publishHousekeepingChanged || publishHousekeepingChanged;
+        await publish({ businessId: reservation.businessId });
+      }
+
       if (!reservationObj.email) {
         console.log("Reservation status changed without an email recipient", {
           reservationId: String(reservationObj._id),
@@ -937,6 +963,12 @@ export async function updateReservationStatus(req, res) {
       arrivalReminderStatus,
     });
   } catch (error) {
+    if (error instanceof HousekeepingDomainError || Number.isInteger(error?.statusCode)) {
+      return res.status(error.statusCode || 409).json({
+        error: error.message,
+        code: error.code || "HOUSEKEEPING_CHECKOUT_ERROR",
+      });
+    }
     console.error("[reservationController.updateReservationStatus] Error:", error);
     res.status(500).json({ error: "Server error" });
   }

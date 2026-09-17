@@ -1,6 +1,7 @@
 import Business from "../models/Business.js"
 import InventoryItem from "../models/InventoryItem.js"
 import ServicePoint, { normalizeRoomType } from "../models/ServicePoint.js"
+import HousekeepingOperation from "../models/HousekeepingOperation.js"
 import { InventoryDomainError, toInventoryItemDTO } from "./canonicalInventoryService.js"
 import { resolveBusinessCapabilities } from "./businessCapabilityService.js"
 import { isHotelOperationalInventoryDomain } from "./inventoryDomainService.js"
@@ -251,18 +252,46 @@ export async function readRoomTypeSupplyTemplate({
 export async function readRoomUsageContext({
     businessId,
     servicePointId = null,
+    housekeepingOperationId = null,
+    actor = null,
 }, {
     BusinessModel = Business,
     InventoryItemModel = InventoryItem,
     ServicePointModel = ServicePoint,
+    HousekeepingOperationModel = HousekeepingOperation,
 } = {}) {
     const tenantId = requiredText(businessId, "businessId", 200)
-    const requestedRoomId = servicePointId === null || servicePointId === undefined || servicePointId === ""
+    let requestedRoomId = servicePointId === null || servicePointId === undefined || servicePointId === ""
         ? null
         : requiredText(servicePointId, "servicePointId", 100)
+    const linkedOperationId = housekeepingOperationId === null || housekeepingOperationId === undefined || housekeepingOperationId === ""
+        ? null
+        : requiredText(housekeepingOperationId, "housekeepingOperationId", 100)
 
     const business = await resolveLean(BusinessModel.findOne({ businessId: tenantId }))
     assertHotelBusiness(business)
+
+    if (linkedOperationId) {
+        const operation = await HousekeepingOperationModel.findOne({
+            businessId: tenantId,
+            housekeepingOperationId: linkedOperationId,
+        })
+        if (!operation) {
+            throw templateError("Housekeeping operation not found", "HOUSEKEEPING_OPERATION_NOT_FOUND", 404)
+        }
+        if (operation.status !== "cleaning" || operation.active !== true) {
+            throw templateError("Housekeeping operation is not actively cleaning", "HOUSEKEEPING_ROOM_USAGE_CONFLICT", 409)
+        }
+        if (requestedRoomId && requestedRoomId !== operation.servicePointId) {
+            throw templateError("Room does not match the Housekeeping operation", "HOUSEKEEPING_ROOM_USAGE_CONFLICT", 409)
+        }
+        const actorId = actor?.staffId || actor?.actorId || actor?.userId || null
+        const managementActor = ["owner", "restaurant_owner", "admin", "co_owner", "manager"].includes(actor?.role)
+        if (!managementActor && (!actorId || operation.claimedBy !== String(actorId))) {
+            throw templateError("Only the current cleaner or authorized management may service this room", "HOUSEKEEPING_CLAIM_REQUIRED", 403)
+        }
+        requestedRoomId = operation.servicePointId
+    }
 
     let roomQuery = ServicePointModel.find({
         businessId: tenantId,
@@ -279,8 +308,18 @@ export async function readRoomUsageContext({
         roomType: room.roomType ?? null,
     }))
 
+    let itemQuery = InventoryItemModel.find({
+        businessId: tenantId,
+        deletedAt: null,
+        isActive: true,
+    })
+    if (typeof itemQuery?.sort === "function") itemQuery = itemQuery.sort({ name: 1, inventoryItemId: 1 })
+    const eligibleItems = (await resolveLean(itemQuery) || [])
+        .filter((item) => isHotelOperationalInventoryDomain(item.domain || "food_service"))
+        .map(toInventoryItemDTO)
+
     if (!requestedRoomId) {
-        return { rooms, selectedRoom: null, template: null }
+        return { rooms, selectedRoom: null, template: null, items: eligibleItems }
     }
     const selectedRoom = (roomRecords || []).find(
         (room) => room.servicePointId === requestedRoomId,
@@ -322,6 +361,6 @@ export async function readRoomUsageContext({
             suggestions,
             unavailableItems,
         },
+        items: eligibleItems,
     }
 }
-

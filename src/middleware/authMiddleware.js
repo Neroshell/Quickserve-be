@@ -51,6 +51,29 @@ function getManagementStaffIdentityFilter(sessionUser) {
     return null
 }
 
+export async function resolveCurrentOperationalStaff(req) {
+    const sessionUser = req.session?.user
+    if (!sessionUser?.businessId || ["owner", "restaurant_owner", "admin", "co_owner", "manager"].includes(sessionUser.role)) {
+        return null
+    }
+    if (req.resolvedOperationalStaff) return req.resolvedOperationalStaff
+
+    const filter = getManagementStaffIdentityFilter(sessionUser)
+    if (!filter) return null
+    const staff = await Staff.findOne(filter)
+        .select("_id businessId staffId role accountStatus permissions name email")
+        .lean()
+    if (
+        !staff ||
+        staff.accountStatus !== "active" ||
+        staff.role !== sessionUser.role ||
+        staff.businessId !== sessionUser.businessId
+    ) return null
+
+    req.resolvedOperationalStaff = staff
+    return staff
+}
+
 /**
  * Resolve the current Manager or Co-Owner from MongoDB. Session data identifies
  * the account, while current database state remains the authorization authority.
@@ -206,4 +229,51 @@ export function requirePermissionForAuthenticatedManager(permissionKey) {
         managerPermissions: [permissionKey],
         onlyWhenManagementAuthenticated: true,
     })
+}
+
+/**
+ * Bounded permission guard for operational workspaces. Management semantics
+ * remain unchanged, while non-management Staff are reloaded from MongoDB and
+ * must hold one of the explicit permissions supplied here.
+ */
+export function requireOperationalPermission(...permissionKeys) {
+    if (permissionKeys.length === 0 || permissionKeys.some((permissionKey) => !isValidPermission(permissionKey))) {
+        throw new TypeError("requireOperationalPermission received an unknown permission")
+    }
+
+    return async (req, res, next) => {
+        const sessionUser = req.session?.user
+        if (!sessionUser) return res.status(401).json({ message: "Unauthorized. Please log in." })
+
+        try {
+            if (["owner", "restaurant_owner", "admin"].includes(sessionUser.role)) return next()
+
+            if (sessionUser.role === "co_owner") {
+                const staff = await resolveCurrentCoOwner(req)
+                if (!staff) return sendForbidden(res)
+                const allowed = permissionKeys.some((permissionKey) => resolveManagementAccess({
+                    ...sessionUser,
+                    coOwnerRestrictions: req.resolvedCoOwnerRestrictions,
+                }, { area: MANAGEMENT_AREA_BY_PERMISSION[permissionKey] }))
+                return allowed ? next() : sendForbidden(res)
+            }
+
+            if (sessionUser.role === "manager") {
+                const staff = await resolveCurrentManager(req)
+                if (!staff) return sendForbidden(res)
+                return permissionKeys.some((permissionKey) => req.resolvedManagerPermissions.includes(permissionKey))
+                    ? next()
+                    : sendForbidden(res)
+            }
+
+            const staff = await resolveCurrentOperationalStaff(req)
+            if (!staff) return sendForbidden(res)
+            return permissionKeys.some((permissionKey) => (staff.permissions || []).includes(permissionKey))
+                ? next()
+                : sendForbidden(res)
+        } catch (error) {
+            console.error("[authorization] Failed to resolve operational permission", error)
+            return res.status(500).json({ message: "Unable to verify permissions." })
+        }
+    }
 }

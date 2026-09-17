@@ -21,7 +21,7 @@ const RESTAURANT_NAVIGATION = Object.freeze([
 ])
 
 const HOTEL_NAVIGATION_BASE = Object.freeze([
-    Object.freeze({ id: "hotelOperations", label: "Hotel Operations", items: Object.freeze(["reservations", "transactions", "servicePoints"]) }),
+    Object.freeze({ id: "hotelOperations", label: "Hotel Operations", items: Object.freeze(["reservations", "housekeeping", "transactions", "servicePoints"]) }),
 ])
 
 const HOTEL_NAVIGATION_COMMON = Object.freeze([

@@ -135,6 +135,7 @@ test("co-owner access catalog uses stable high-level areas", () => {
         "transactions",
         "menu",
         "inventory",
+        "housekeeping",
         "service_points",
         "staff_management",
         "analytics",

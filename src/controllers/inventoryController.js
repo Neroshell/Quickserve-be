@@ -45,6 +45,10 @@ import {
 } from "../services/inventoryDomainService.js"
 import { recordRoomUsage } from "../services/inventoryRoomUsageService.js"
 import { readRoomUsageContext } from "../services/hotelRoomSupplyTemplateService.js"
+import { PERMISSIONS } from "../constants/permissions.js"
+import { MANAGEMENT_ACCESS_AREAS, resolveManagementAccess } from "../constants/managementAccess.js"
+import { publishHousekeepingChanged } from "../utils/sseManager.js"
+import { recordHousekeepingInventoryException } from "../services/housekeepingManagementService.js"
 
 function getOwnerBusinessId(req) {
     return req.session?.user?.businessId || null
@@ -52,7 +56,7 @@ function getOwnerBusinessId(req) {
 
 function getInventoryActor(req) {
     const sessionUser = req.session?.user || {}
-    const currentStaff = req.resolvedManagerStaff || req.resolvedCoOwnerStaff || null
+    const currentStaff = req.resolvedOperationalStaff || req.resolvedManagerStaff || req.resolvedCoOwnerStaff || null
     return {
         staffId: String(
             currentStaff?.staffId ||
@@ -75,6 +79,19 @@ function getInventoryActor(req) {
 
 function getIdempotencyKey(req) {
     return req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"] || null
+}
+
+function canPerformLinkedHousekeeping(req) {
+    const role = req.session?.user?.role
+    if (["owner", "restaurant_owner", "admin"].includes(role)) return true
+    if (role === "co_owner") {
+        return resolveManagementAccess({
+            role,
+            coOwnerRestrictions: req.resolvedCoOwnerRestrictions || [],
+        }, { area: MANAGEMENT_ACCESS_AREAS.HOUSEKEEPING })
+    }
+    const staff = req.resolvedManagerStaff || req.resolvedOperationalStaff
+    return Boolean(staff?.permissions?.includes(PERMISSIONS.HOUSEKEEPING_PERFORM))
 }
 
 function handleInventoryError(res, error, operation) {
@@ -332,7 +349,11 @@ export async function listInventoryMovements(req, res) {
 export async function recordOwnerRoomUsage(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
+    const housekeepingOperationId = req.body?.housekeepingOperationId || null
     try {
+        if (housekeepingOperationId && !canPerformLinkedHousekeeping(req)) {
+            return res.status(403).json({ error: "Housekeeping perform permission is required" })
+        }
         const result = await recordRoomUsage({
             businessId,
             servicePointId: req.body?.servicePointId,
@@ -340,9 +361,33 @@ export async function recordOwnerRoomUsage(req, res) {
             note: req.body?.note,
             actor: getInventoryActor(req),
             idempotencyKey: getIdempotencyKey(req),
+            housekeepingOperationId,
         })
+        if (housekeepingOperationId && !result.replayed) {
+            const publish = req.app?.locals?.publishHousekeepingChanged || publishHousekeepingChanged
+            await publish({ businessId })
+        }
         return res.status(result.replayed ? 200 : 201).json(result)
     } catch (error) {
+        if (housekeepingOperationId && error?.code === "INSUFFICIENT_AVAILABLE_INVENTORY") {
+            try {
+                await recordHousekeepingInventoryException({
+                    businessId,
+                    operationId: housekeepingOperationId,
+                    servicePointId: req.body?.servicePointId,
+                    attemptedItems: req.body?.items,
+                    failureCode: error.code,
+                    failureMessage: error.message,
+                    actor: getInventoryActor(req),
+                })
+                const publish = req.app?.locals?.publishHousekeepingChanged || publishHousekeepingChanged
+                await publish({ businessId })
+            } catch (exceptionError) {
+                // Preserve the canonical Inventory rejection even if recording
+                // the separate operational exception fails.
+                console.error("[Housekeeping] Inventory exception could not be recorded", exceptionError)
+            }
+        }
         return handleInventoryError(res, error, "room-usage")
     }
 }
@@ -351,9 +396,15 @@ export async function getOwnerRoomUsageContext(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
+        const housekeepingOperationId = req.query?.housekeepingOperationId || null
+        if (housekeepingOperationId && !canPerformLinkedHousekeeping(req)) {
+            return res.status(403).json({ error: "Housekeeping perform permission is required" })
+        }
         return res.json(await readRoomUsageContext({
             businessId,
             servicePointId: req.query?.servicePointId,
+            housekeepingOperationId,
+            actor: getInventoryActor(req),
         }))
     } catch (error) {
         return handleInventoryError(res, error, "room-usage-context")

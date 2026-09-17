@@ -21,6 +21,7 @@ import publicRoute from "./src/routes/public-route.js"
 import internalRoute from "./src/routes/internal-route.js"
 import guestProfileRoute from "./src/routes/guestProfileRoutes.js"
 import onboardingRoute from "./src/routes/onboarding-route.js"
+import housekeepingRoute from "./src/routes/housekeeping-route.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 import helmet from "helmet"
 import { sessionMiddleware } from "./src/config/session.js"
@@ -105,6 +106,7 @@ app.use(
   guestProfileRoute,
 )
 app.use("/owner", ownerRoute)
+app.use("/housekeeping", housekeepingRoute)
 app.use("/menu-items", menuRoute)
 app.use("/business", restaurantRoute)
 app.use("/table-session", tableSessionRoute)

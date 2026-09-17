@@ -4,6 +4,7 @@ import Business from "../models/Business.js"
 import InventoryItem from "../models/InventoryItem.js"
 import InventoryMovement, { generateInventoryMovementId } from "../models/InventoryMovement.js"
 import ServicePoint from "../models/ServicePoint.js"
+import HousekeepingOperation from "../models/HousekeepingOperation.js"
 import { INVENTORY_ITEM_DOMAINS, INVENTORY_MOVEMENT_TYPES } from "../constants/inventory.js"
 import {
     buildInventoryRequestFingerprint,
@@ -96,10 +97,11 @@ function lineIdempotencyKey(operationId, inventoryItemId) {
         .slice(0, 24)}`
 }
 
-function buildResult({ room, items, movements, operationId, replayed }) {
+function buildResult({ room, items, movements, operationId, replayed, housekeepingOperationId = null }) {
     return {
         operationId,
         replayed,
+        housekeepingOperationId,
         room: {
             servicePointId: room.servicePointId,
             label: room.label,
@@ -121,33 +123,42 @@ export async function recordRoomUsage({
     note,
     actor,
     idempotencyKey,
+    housekeepingOperationId = null,
 }, {
     BusinessModel = Business,
     InventoryItemModel = InventoryItem,
     InventoryMovementModel = InventoryMovement,
     ServicePointModel = ServicePoint,
+    HousekeepingOperationModel = HousekeepingOperation,
     generateMovementId = generateInventoryMovementId,
     startSession = () => mongoose.startSession(),
     notifyInventoryTransitions = null,
 } = {}) {
     const tenantId = requiredText(businessId, "businessId", 200)
     const roomId = requiredText(servicePointId, "servicePointId", 100)
-    const key = normalizeInventoryIdempotencyKey(idempotencyKey)
+    const linkedHousekeepingOperationId = housekeepingOperationId === null || housekeepingOperationId === undefined || housekeepingOperationId === ""
+        ? null
+        : requiredText(housekeepingOperationId, "housekeepingOperationId", 100)
+    const key = normalizeInventoryIdempotencyKey(
+        linkedHousekeepingOperationId
+            ? `housekeeping:${linkedHousekeepingOperationId}:supplies:v1`
+            : idempotencyKey,
+    )
     const performedBy = normalizeInventoryActor(actor)
     const requestedLines = normalizeRoomUsageLines(items)
     const usageNote = optionalText(note, "note", 1000)
     const operationId = operationIdentity(tenantId, key)
 
     const execute = async (session) => {
-        const [business, room] = await Promise.all([
-            lean(BusinessModel.findOne({ businessId: tenantId }, null, { session })),
-            lean(ServicePointModel.findOne({
-                businessId: tenantId,
-                servicePointId: roomId,
-                servicePointType: "room",
-                isActive: true,
-            }, null, { session })),
-        ])
+        // MongoDB transactions do not support parallel operations on one session.
+        // Keep these reads sequential so Room Usage cannot fail with transaction-state errors.
+        const business = await lean(BusinessModel.findOne({ businessId: tenantId }, null, { session }))
+        const room = await lean(ServicePointModel.findOne({
+            businessId: tenantId,
+            servicePointId: roomId,
+            servicePointType: "room",
+            isActive: true,
+        }, null, { session }))
         if (!business || !resolveBusinessCapabilities(business).visibleModules.includes("lodging")) {
             throw roomUsageError(
                 "Room Usage is not enabled for this business",
@@ -157,6 +168,43 @@ export async function recordRoomUsage({
         }
         if (!room) {
             throw roomUsageError("Active hotel room not found", "ROOM_SERVICE_POINT_NOT_FOUND", 404)
+        }
+
+        let housekeepingOperation = null
+        if (linkedHousekeepingOperationId) {
+            housekeepingOperation = await HousekeepingOperationModel.findOne({
+                businessId: tenantId,
+                housekeepingOperationId: linkedHousekeepingOperationId,
+            }, null, { session })
+            if (!housekeepingOperation) {
+                throw roomUsageError("Housekeeping operation not found", "HOUSEKEEPING_OPERATION_NOT_FOUND", 404)
+            }
+            if (
+                housekeepingOperation.servicePointId !== roomId ||
+                housekeepingOperation.status !== "cleaning" ||
+                housekeepingOperation.active !== true
+            ) {
+                throw roomUsageError(
+                    "Housekeeping operation does not match this active room cleaning",
+                    "HOUSEKEEPING_ROOM_USAGE_CONFLICT",
+                    409,
+                )
+            }
+            const managementActor = ["owner", "restaurant_owner", "admin", "co_owner", "manager"].includes(performedBy.role)
+            if (!managementActor && housekeepingOperation.claimedBy !== performedBy.staffId) {
+                throw roomUsageError(
+                    "Only the current cleaner or authorized management may record supplies",
+                    "HOUSEKEEPING_CLAIM_REQUIRED",
+                    403,
+                )
+            }
+            if (!["pending", "recorded"].includes(housekeepingOperation.supplyOutcome)) {
+                throw roomUsageError(
+                    "This cleaning already has a no-supplies outcome",
+                    "HOUSEKEEPING_SUPPLY_OUTCOME_CONFLICT",
+                    409,
+                )
+            }
         }
 
         const itemIds = requestedLines.map((line) => line.inventoryItemId)
@@ -210,6 +258,7 @@ export async function recordRoomUsage({
             })),
             note: usageNote,
             actorStaffId: performedBy.staffId,
+            housekeepingOperationId: linkedHousekeepingOperationId,
         })
         const existingMovements = await lean(InventoryMovementModel.find({
             businessId: tenantId,
@@ -232,6 +281,7 @@ export async function recordRoomUsage({
                 movements: existingMovements,
                 operationId,
                 replayed: true,
+                housekeepingOperationId: linkedHousekeepingOperationId,
             })
         }
 
@@ -277,13 +327,50 @@ export async function recordRoomUsage({
                 costCurrency: item.costCurrency ?? null,
             })
         }
-        const movements = await InventoryMovementModel.create(movementInputs, { session })
+        const movements = await InventoryMovementModel.create(movementInputs, {
+            session,
+            ordered: true,
+        })
+        if (housekeepingOperation) {
+            const linked = await HousekeepingOperationModel.findOneAndUpdate({
+                _id: housekeepingOperation._id,
+                businessId: tenantId,
+                servicePointId: roomId,
+                status: "cleaning",
+                active: true,
+                supplyOutcome: "pending",
+            }, {
+                $set: {
+                    supplyOutcome: "recorded",
+                    roomUsageOperationId: operationId,
+                    ...(housekeepingOperation.inventoryException?.status === "unresolved" ? {
+                        "inventoryException.status": "resolved",
+                        "inventoryException.resolvedBy": {
+                            staffId: performedBy.staffId,
+                            name: performedBy.name,
+                            role: performedBy.role,
+                        },
+                        "inventoryException.resolvedAt": new Date(),
+                        "inventoryException.reconciliationMovementIds": movements.map((movement) => movement.movementId),
+                        "inventoryException.resolutionNote": "Resolved by successful canonical Room Usage retry",
+                    } : {}),
+                },
+            }, { new: true, runValidators: true, session })
+            if (!linked) {
+                throw roomUsageError(
+                    "Housekeeping supply outcome changed. Refresh and try again.",
+                    "HOUSEKEEPING_SUPPLY_OUTCOME_CONFLICT",
+                    409,
+                )
+            }
+        }
         return buildResult({
             room,
             items: normalizedLines.map((line) => line.item),
             movements,
             operationId,
             replayed: false,
+            housekeepingOperationId: linkedHousekeepingOperationId,
         })
     }
 

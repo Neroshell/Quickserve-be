@@ -1,8 +1,11 @@
 import assert from "node:assert/strict"
 import test, { after } from "node:test"
+import mongoose from "mongoose"
 import { redisPub, redisSub } from "../src/config/redisClient.js"
 import Business from "../src/models/Business.js"
+import HousekeepingOperation from "../src/models/HousekeepingOperation.js"
 import Reservation from "../src/models/Reservation.js"
+import ServicePoint from "../src/models/ServicePoint.js"
 import {
     deleteReservation,
     isReservationStatusTransitionAllowed,
@@ -308,10 +311,38 @@ test("checkout requires checked_in and preserves the first timestamp on retry", 
     mockHotelBusiness(t)
     const checkedIn = stayReservation({
         status: "checked_in",
+        servicePointId: "sp_room_401",
     })
     let currentReservation = checkedIn
     let updateCount = 0
     let firstUpdate
+    let housekeepingOperation = null
+    t.mock.method(mongoose, "startSession", async () => ({
+        async withTransaction(work) { await work() },
+        async endSession() {},
+    }))
+    t.mock.method(ServicePoint, "findOne", async () => ({
+        businessId: "hotel_1",
+        servicePointId: checkedIn.servicePointId,
+        servicePointType: "room",
+        isActive: true,
+        roomReadiness: { state: "ready", operationId: null },
+    }))
+    t.mock.method(ServicePoint, "findOneAndUpdate", async () => ({
+        businessId: "hotel_1",
+        servicePointId: checkedIn.servicePointId,
+        servicePointType: "room",
+        roomReadiness: { state: "needs_cleaning" },
+    }))
+    t.mock.method(HousekeepingOperation, "create", async ([input]) => {
+        housekeepingOperation = {
+            _id: "housekeeping_operation_1",
+            ...input,
+            toObject() { return { ...this } },
+        }
+        return [housekeepingOperation]
+    })
+    t.mock.method(HousekeepingOperation, "findOne", async () => housekeepingOperation)
     t.mock.method(
         Reservation,
         "findOne",

@@ -1,14 +1,16 @@
 import Staff from "../models/Staff.js"
+import Business from "../models/Business.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
 import { hashToken } from "../utils/tokenHash.js"
 import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 import { getStaffPresence } from "../services/presenceService.js"
-import { normalizePermissions } from "../constants/permissions.js"
+import { HOUSEKEEPING_DEFAULT_PERMISSIONS, normalizePermissions } from "../constants/permissions.js"
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 
-const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender"]
-const OPERATIONAL_ROLES = ["waiter", "kitchen", "bartender"]
+const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender", "housekeeping"]
+const OPERATIONAL_ROLES = ["waiter", "kitchen", "bartender", "housekeeping"]
 const MANAGER_ADMIN_ROLES = new Set(["owner", "co_owner", "restaurant_owner", "admin"])
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -83,7 +85,7 @@ export async function getStaff(req, res) {
                 role: s.role,
                 name: s.name,
                 email: s.email,
-                ...(MANAGER_ADMIN_ROLES.has(requesterRole) && s.role === "manager"
+                ...(MANAGER_ADMIN_ROLES.has(requesterRole) && ["manager", "housekeeping"].includes(s.role)
                     ? { permissions: s.permissions || [] }
                     : {}),
                 accountStatus: s.accountStatus,
@@ -138,8 +140,17 @@ export async function createStaff(req, res) {
 
         if (requesterRole === "manager" && !OPERATIONAL_ROLES.includes(role)) {
             return res.status(403).json({
-                error: "Managers may create only waiter, kitchen, or bartender staff.",
+                error: "Managers may create only operational staff.",
             })
+        }
+
+        if (role === "housekeeping") {
+            const business = await Business.findOne({ businessId })
+                .select("businessType modules")
+                .lean()
+            if (!business || !resolveBusinessCapabilities(business).visibleModules.includes("lodging")) {
+                return res.status(403).json({ error: "Housekeeping is available only for lodging businesses." })
+            }
         }
 
         let normalizedPermissions = []
@@ -152,6 +163,8 @@ export async function createStaff(req, res) {
             } catch (err) {
                 return res.status(400).json({ error: err.message })
             }
+        } else if (role === "housekeeping") {
+            normalizedPermissions = [...HOUSEKEEPING_DEFAULT_PERMISSIONS]
         }
 
         email = normalizeAccountEmail(email)
@@ -175,10 +188,11 @@ export async function createStaff(req, res) {
             staffId = staffId.trim().toUpperCase()
         }
 
-        // Validate staffId format (must start with STF, WTR, KIT, BAR, or MGR)
-        if (!/^(STF|WTR|KIT|BAR|MGR)-[A-Z0-9]{4,}$/i.test(staffId)) {
+        // Validate staffId format (role-specific prefixes remain display helpers;
+        // the canonical Staff document identity is unchanged).
+        if (!/^(STF|WTR|KIT|BAR|HSK|MGR)-[A-Z0-9]{4,}$/i.test(staffId)) {
             return res.status(400).json({
-                error: "staffId must follow the format WTR-XXXX, KIT-XXXX, BAR-XXXX, MGR-XXXX, or STF-XXXX."
+                error: "staffId must follow the format WTR-XXXX, KIT-XXXX, BAR-XXXX, HSK-XXXX, MGR-XXXX, or STF-XXXX."
             })
         }
 
@@ -221,7 +235,7 @@ export async function createStaff(req, res) {
         return res.status(201).json({
             staffId: staff.staffId,
             role: staff.role,
-            ...(staff.role === "manager" ? { permissions: staff.permissions || [] } : {}),
+            ...(["manager", "housekeeping"].includes(staff.role) ? { permissions: staff.permissions || [] } : {}),
             name: staff.name,
             email: staff.email,
             accountStatus: staff.accountStatus,
@@ -256,7 +270,7 @@ export async function deleteStaff(req, res) {
         if (req.session?.user?.role === "manager") {
             if (!OPERATIONAL_ROLES.includes(target.role)) {
                 return res.status(403).json({
-                    error: "Managers may remove only waiter, kitchen, or bartender staff.",
+                    error: "Managers may remove only operational staff.",
                 })
             }
             if (

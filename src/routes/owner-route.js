@@ -69,7 +69,7 @@ import {
 } from "../controllers/notificationController.js"
 import { notificationSseHandler } from "../utils/sseManager.js"
 
-import { requireAuth, requireManagementArea, requirePermission, requirePrimaryOwner, requireRole } from "../middleware/authMiddleware.js"
+import { requireAuth, requireManagementArea, requireOperationalPermission, requirePermission, requirePrimaryOwner, requireRole } from "../middleware/authMiddleware.js"
 import { requireEntitlement } from "../middleware/subscriptionMiddleware.js"
 import { requireBusinessModule } from "../middleware/businessCapabilityMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
@@ -305,12 +305,18 @@ router.get(
 )
 router.post(
     "/inventory/room-usage",
-    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    requireOperationalPermission(
+        PERMISSIONS.INVENTORY_ROOM_USAGE_RECORD,
+        PERMISSIONS.INVENTORY_MANAGE,
+    ),
     recordOwnerRoomUsage,
 )
 router.get(
     "/inventory/room-usage/context",
-    requirePermission(PERMISSIONS.INVENTORY_MANAGE),
+    requireOperationalPermission(
+        PERMISSIONS.INVENTORY_ROOM_USAGE_RECORD,
+        PERMISSIONS.INVENTORY_MANAGE,
+    ),
     getOwnerRoomUsageContext,
 )
 router.get(
