@@ -41,6 +41,7 @@ const [
   { default: GuestProfile },
   { default: GuestVisit },
   { default: CustomerJourney },
+  { default: Staff },
 ] = await Promise.all([
   import("../src/controllers/orderController.js"),
   import("../src/controllers/paymentController.js"),
@@ -64,6 +65,7 @@ const [
   import("../src/models/GuestProfile.js"),
   import("../src/models/GuestVisit.js"),
   import("../src/models/CustomerJourney.js"),
+  import("../src/models/Staff.js"),
 ]);
 
 const {
@@ -1026,13 +1028,31 @@ test("Scenario C: mixed order events split kitchen/bar items, preserve waiter vi
     guestSession: createGuestSessionFixture({ boundSessionId: "device-a" }),
   });
   t.mock.method(console, "log", () => {});
+  const rolesByStaffId = {
+    "kitchen-a": "kitchen",
+    "bar-a": "bartender",
+    "waiter-a": "waiter",
+    "waiter-b": "waiter",
+  };
+  t.mock.method(Staff, "findOne", (query) => {
+    const role = query.role || rolesByStaffId[query.staffId];
+    return mockQuery({
+      _id: query._id || `${query.businessId}-${role}`,
+      businessId: query.businessId,
+      staffId: query.staffId || `${role}-${query.businessId}`,
+      role,
+      accountStatus: "active",
+      permissions: [],
+      authVersion: 0,
+    });
+  });
 
   const clients = [
     {
       request: createSseClientRequest({
         role: "kitchen",
         businessId: "business-a",
-        session: createStaffSession({ role: "kitchen" }),
+        session: createStaffSession({ role: "kitchen", staffId: "kitchen-a" }),
       }),
       response: createSseResponse(),
     },
@@ -1040,7 +1060,7 @@ test("Scenario C: mixed order events split kitchen/bar items, preserve waiter vi
       request: createSseClientRequest({
         role: "bar",
         businessId: "business-a",
-        session: createStaffSession({ role: "bartender" }),
+        session: createStaffSession({ role: "bartender", staffId: "bar-a" }),
       }),
       response: createSseResponse(),
     },
@@ -1048,7 +1068,7 @@ test("Scenario C: mixed order events split kitchen/bar items, preserve waiter vi
       request: createSseClientRequest({
         role: "waiter",
         businessId: "business-a",
-        session: createStaffSession({ role: "waiter" }),
+        session: createStaffSession({ role: "waiter", staffId: "waiter-a" }),
       }),
       response: createSseResponse(),
     },
@@ -1067,6 +1087,7 @@ test("Scenario C: mixed order events split kitchen/bar items, preserve waiter vi
         session: createStaffSession({
           role: "waiter",
           businessId: "business-b",
+          staffId: "waiter-b",
         }),
       }),
       response: createSseResponse(),
@@ -1897,7 +1918,7 @@ test("order-again data uses current tenant menu price and rejects another guest 
 test("authorization rejects unauthenticated internal actions and role spoofing", async (t) => {
   const unauthorizedRes = createResponse();
   let nextCalled = false;
-  requireAuth({}, unauthorizedRes, () => {
+  await requireAuth({}, unauthorizedRes, () => {
     nextCalled = true;
   });
   assert.equal(unauthorizedRes.statusCode, 401);
@@ -1914,6 +1935,15 @@ test("authorization rejects unauthenticated internal actions and role spoofing",
   assert.equal(kitchenRes.statusCode, 403);
 
   t.mock.method(console, "log", () => {});
+  t.mock.method(Staff, "findOne", (query) => mockQuery({
+    _id: "business-a-kitchen",
+    businessId: query.businessId,
+    staffId: "staff-a",
+    role: query.role || "kitchen",
+    accountStatus: "active",
+    permissions: [],
+    authVersion: 0,
+  }));
   const spoofed = createSseClientRequest({
     role: "waiter",
     businessId: "business-a",

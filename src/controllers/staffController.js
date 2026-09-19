@@ -283,17 +283,15 @@ export async function deleteStaff(req, res) {
 
         await Staff.deleteOne({ _id: target._id, businessId })
 
-        if (target.role === "manager") {
-            try {
-                const { publishManagerAccessRevocation } = await import("../utils/sseManager.js")
-                await publishManagerAccessRevocation({
-                    businessId,
-                    staffObjectId: target._id,
-                    staffId: target.staffId,
-                })
-            } catch (streamError) {
-                console.error("[deleteStaff] Failed to revoke Manager live streams", streamError)
-            }
+        try {
+            const { publishStaffAccessRevocation } = await import("../utils/sseManager.js")
+            await publishStaffAccessRevocation({
+                businessId,
+                staffObjectId: target._id,
+                staffId: target.staffId,
+            })
+        } catch (streamError) {
+            console.error("[deleteStaff] Failed to revoke Staff live streams", streamError)
         }
 
         await invalidateSetupProgress(businessId)

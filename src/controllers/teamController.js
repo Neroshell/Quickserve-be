@@ -201,6 +201,17 @@ export async function removeCoOwner(req, res) {
             return res.status(404).json({ error: "Co-Owner not found" })
         }
 
+        try {
+            const { publishStaffAccessRevocation } = await import("../utils/sseManager.js")
+            await publishStaffAccessRevocation({
+                businessId,
+                staffObjectId: result._id,
+                staffId: result.staffId,
+            })
+        } catch (streamError) {
+            console.error("[removeCoOwner] Failed to revoke Co-Owner live streams", streamError)
+        }
+
         await invalidateSetupProgress(businessId)
 
         return res.json({ message: "Co-Owner removed successfully" })

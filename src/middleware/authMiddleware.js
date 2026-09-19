@@ -7,11 +7,55 @@ import {
     resolveManagementAccess,
 } from "../constants/managementAccess.js"
 
-export function requireAuth(req, res, next) {
+const STAFF_SESSION_ROLES = new Set([
+    "waiter",
+    "kitchen",
+    "manager",
+    "bartender",
+    "housekeeping",
+    "co_owner",
+])
+
+function normalizedAuthVersion(value) {
+    const version = Number(value)
+    return Number.isSafeInteger(version) && version >= 0 ? version : 0
+}
+
+export function isStaffSessionUser(sessionUser) {
+    return Boolean(
+        sessionUser &&
+        (sessionUser.type === "staff" || STAFF_SESSION_ROLES.has(sessionUser.role)),
+    )
+}
+
+function sendRevokedSession(req, res) {
+    res.clearCookie?.("qs_dashboard_session")
+    if (typeof req.session?.destroy === "function") {
+        req.session.destroy((error) => {
+            if (error) console.error("[authorization] Failed to destroy revoked session", error)
+        })
+    }
+    return res.status(401).json({
+        message: "Session is no longer valid. Please log in again.",
+        code: "SESSION_REVOKED",
+    })
+}
+
+export async function requireAuth(req, res, next) {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ message: "Unauthorized. Please log in." })
     }
-    next()
+
+    if (!isStaffSessionUser(req.session.user)) return next()
+
+    try {
+        const staff = await resolveCurrentStaff(req)
+        if (!staff) return sendRevokedSession(req, res)
+        return next()
+    } catch (error) {
+        console.error("[authorization] Failed to verify current Staff session", error)
+        return res.status(500).json({ message: "Unable to verify session." })
+    }
 }
 
 export function requireRole(...roles) {
@@ -32,7 +76,7 @@ function sendForbidden(res) {
     return res.status(403).json({ message: "Forbidden. Insufficient permissions." })
 }
 
-function getManagementStaffIdentityFilter(sessionUser) {
+function getStaffIdentityFilter(sessionUser) {
     const businessId = sessionUser?.businessId
     if (!businessId) return null
 
@@ -51,6 +95,37 @@ function getManagementStaffIdentityFilter(sessionUser) {
     return null
 }
 
+/**
+ * Resolve the canonical Staff record once per request. The session establishes
+ * identity only; MongoDB remains authoritative for tenant, active state, role,
+ * configurable access, and credential revocation version.
+ */
+export async function resolveCurrentStaff(req) {
+    const sessionUser = req.session?.user
+    if (!isStaffSessionUser(sessionUser)) return null
+    if (req.resolvedCurrentStaff) return req.resolvedCurrentStaff
+
+    const filter = getStaffIdentityFilter(sessionUser)
+    if (!filter) return null
+
+    const staff = await Staff.findOne(filter)
+        .select("_id businessId staffId role accountStatus permissions coOwnerRestrictions name email authVersion")
+        .lean()
+
+    if (
+        !staff ||
+        staff.accountStatus !== "active" ||
+        staff.businessId !== sessionUser.businessId ||
+        staff.role !== sessionUser.role ||
+        normalizedAuthVersion(staff.authVersion) !== normalizedAuthVersion(req.session.staffAuthVersion)
+    ) {
+        return null
+    }
+
+    req.resolvedCurrentStaff = staff
+    return staff
+}
+
 export async function resolveCurrentOperationalStaff(req) {
     const sessionUser = req.session?.user
     if (!sessionUser?.businessId || ["owner", "restaurant_owner", "admin", "co_owner", "manager"].includes(sessionUser.role)) {
@@ -58,17 +133,8 @@ export async function resolveCurrentOperationalStaff(req) {
     }
     if (req.resolvedOperationalStaff) return req.resolvedOperationalStaff
 
-    const filter = getManagementStaffIdentityFilter(sessionUser)
-    if (!filter) return null
-    const staff = await Staff.findOne(filter)
-        .select("_id businessId staffId role accountStatus permissions name email")
-        .lean()
-    if (
-        !staff ||
-        staff.accountStatus !== "active" ||
-        staff.role !== sessionUser.role ||
-        staff.businessId !== sessionUser.businessId
-    ) return null
+    const staff = await resolveCurrentStaff(req)
+    if (!staff) return null
 
     req.resolvedOperationalStaff = staff
     return staff
@@ -87,16 +153,10 @@ export async function resolveCurrentManagementStaff(req, expectedRole) {
         : "resolvedCoOwnerStaff"
     if (req[cacheKey]) return req[cacheKey]
 
-    const filter = getManagementStaffIdentityFilter(sessionUser)
-    if (!filter) return null
-
-    const staff = await Staff.findOne(filter)
-        .select("_id businessId staffId role accountStatus permissions coOwnerRestrictions name email")
-        .lean()
+    const staff = await resolveCurrentStaff(req)
 
     if (
         !staff ||
-        staff.accountStatus !== "active" ||
         staff.role !== expectedRole ||
         staff.businessId !== sessionUser.businessId
     ) {

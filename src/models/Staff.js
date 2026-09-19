@@ -51,6 +51,10 @@ const StaffSchema = new mongoose.Schema({
         default: [],
     },
     passwordHash: { type: String },
+    // Incremented after security-sensitive authority or credential changes.
+    // Sessions keep the version observed at login so old devices stay revoked
+    // even if an account is later re-enabled, without requiring a Redis scan.
+    authVersion: { type: Number, default: 0, min: 0 },
     inviteToken: { type: String, select: false },
     inviteTokenExpires: { type: Date },
     passwordResetToken: { type: String, index: true, select: false },
@@ -62,6 +66,42 @@ StaffSchema.index({ businessId: 1, staffId: 1 }, { unique: true })
 
 // Ensure email is unique per business
 StaffSchema.index({ businessId: 1, email: 1 }, { unique: true })
+
+// Password controllers increment authVersion explicitly so the new version is
+// persisted in the same save as the replacement hash. Model hooks cover every
+// canonical role/account-status mutation, including future management flows.
+const AUTH_VERSION_PATHS = ["accountStatus", "role"]
+
+StaffSchema.pre("save", function incrementAuthVersionForSensitiveSave() {
+    if (this.isNew || !AUTH_VERSION_PATHS.some((path) => this.isModified(path))) return
+    const current = Number(this.authVersion)
+    this.authVersion = (Number.isSafeInteger(current) && current >= 0 ? current : 0) + 1
+})
+
+function updateTouchesSensitiveAuthState(update = {}) {
+    return AUTH_VERSION_PATHS.some((path) => (
+        Object.hasOwn(update, path) ||
+        Object.hasOwn(update.$set || {}, path) ||
+        Object.hasOwn(update.$unset || {}, path)
+    ))
+}
+
+function incrementAuthVersionForSensitiveQueryUpdate() {
+    const update = this.getUpdate() || {}
+    if (!updateTouchesSensitiveAuthState(update)) return
+
+    delete update.authVersion
+    if (update.$set) delete update.$set.authVersion
+    update.$inc = {
+        ...(update.$inc || {}),
+        authVersion: Number(update.$inc?.authVersion || 0) + 1,
+    }
+    this.setUpdate(update)
+}
+
+StaffSchema.pre("findOneAndUpdate", incrementAuthVersionForSensitiveQueryUpdate)
+StaffSchema.pre("updateOne", incrementAuthVersionForSensitiveQueryUpdate)
+StaffSchema.pre("updateMany", incrementAuthVersionForSensitiveQueryUpdate)
 
 // Keep the canonical collection explicit; never rely on Mongoose pluralization.
 export default mongoose.models.Staff || mongoose.model("Staff", StaffSchema, "staff")

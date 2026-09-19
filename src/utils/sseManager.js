@@ -21,7 +21,13 @@ import { randomUUID } from "node:crypto"
 import { redisPub, REDIS_CHANNEL } from "../config/redisClient.js"
 import Business from "../models/Business.js"
 import Staff from "../models/Staff.js"
-import { resolveCurrentCoOwner, resolveCurrentManager, resolveCurrentOperationalStaff } from "../middleware/authMiddleware.js"
+import {
+    isStaffSessionUser,
+    resolveCurrentCoOwner,
+    resolveCurrentManager,
+    resolveCurrentOperationalStaff,
+    resolveCurrentStaff,
+} from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import {
     MANAGEMENT_AREA_BY_PERMISSION,
@@ -75,6 +81,7 @@ const MANAGER_SSE_PERMISSIONS_BY_CHANNEL = {
 }
 
 const MANAGER_ACCESS_REVOKED_EVENT = "__manager_access_revoked"
+const STAFF_ACCESS_REVOKED_EVENT = "__staff_access_revoked"
 export const CO_OWNER_ACCESS_CHANGED_EVENT = "co_owner_access_changed"
 export const NOTIFICATION_CHANGED_EVENT = "notification_changed"
 export const SERVICE_POINTS_CHANGED_EVENT = "service_points_changed"
@@ -92,6 +99,11 @@ function managerPermissionAllowsEvent(permission, event) {
 
 // ── Local client registry ────────────────────────────────────────────────────
 const clients = new Set()
+
+function normalizedAuthVersion(value) {
+    const version = Number(value)
+    return Number.isSafeInteger(version) && version >= 0 ? version : 0
+}
 
 // Redis distributes events to other API instances. The publishing instance
 // also delivers directly to its own SSE clients so a stalled subscriber cannot
@@ -120,14 +132,17 @@ async function findCurrentManagerForClient(client) {
         : { staffId: client.managerIdentity?.staffId }
 
     try {
-        return await Staff.findOne({
+        const staff = await Staff.findOne({
             ...identityFilter,
             businessId: client.businessId,
             role: "manager",
             accountStatus: "active",
         })
-            .select("permissions")
+            .select("permissions authVersion")
             .lean()
+        return staff && normalizedAuthVersion(staff.authVersion) === normalizedAuthVersion(client.managementAuthVersion)
+            ? staff
+            : null
     } catch (err) {
         console.error("[SSE] Failed to revalidate Manager stream:", err.message)
         return null
@@ -140,14 +155,17 @@ async function findCurrentCoOwnerForClient(client) {
         : { staffId: client.managementIdentity?.staffId }
 
     try {
-        return await Staff.findOne({
+        const staff = await Staff.findOne({
             ...identityFilter,
             businessId: client.businessId,
             role: "co_owner",
             accountStatus: "active",
         })
-            .select("coOwnerRestrictions")
+            .select("coOwnerRestrictions authVersion")
             .lean()
+        return staff && normalizedAuthVersion(staff.authVersion) === normalizedAuthVersion(client.managementAuthVersion)
+            ? staff
+            : null
     } catch (err) {
         console.error("[SSE] Failed to revalidate Co-Owner stream:", err.message)
         return null
@@ -159,12 +177,15 @@ async function findCurrentOperationalStaffForClient(client) {
         ? { _id: client.operationalIdentity.staffObjectId }
         : { staffId: client.operationalIdentity?.staffId }
     try {
-        return await Staff.findOne({
+        const staff = await Staff.findOne({
             ...identityFilter,
             businessId: client.businessId,
             role: client.operationalRole,
             accountStatus: "active",
-        }).select("permissions").lean()
+        }).select("permissions authVersion").lean()
+        return staff && normalizedAuthVersion(staff.authVersion) === normalizedAuthVersion(client.operationalAuthVersion)
+            ? staff
+            : null
     } catch (error) {
         console.error("[SSE] Failed to revalidate operational stream:", error.message)
         return null
@@ -206,9 +227,13 @@ async function revalidateNotificationClient(client, access = {}) {
             role: client.notificationRole,
             accountStatus: "active",
         })
-            .select("permissions coOwnerRestrictions")
+            .select("permissions coOwnerRestrictions authVersion")
             .lean()
         if (!staff) return false
+        if (
+            normalizedAuthVersion(staff.authVersion) !==
+            normalizedAuthVersion(client.notificationAuthVersion)
+        ) return false
 
         if (!access?.area) return true
         if (client.notificationRole === "co_owner") {
@@ -265,6 +290,7 @@ export async function notificationSseHandler(req, res, {
             recipientKind: context.recipientKind,
             recipientId: String(context.recipientId),
         },
+        notificationAuthVersion: context.staffAuthVersion,
         notificationRevalidator: revalidateClient,
     }
     addClient(client)
@@ -316,6 +342,11 @@ export async function coOwnerAccessSseHandler(req, res, {
         res,
         role: "co_owner_access",
         businessId,
+        managementIdentity: {
+            staffObjectId: String(coOwner._id),
+            staffId: coOwner.staffId,
+        },
+        managementAuthVersion: coOwner.authVersion,
         accessIdentity: {
             staffObjectId: String(coOwner._id),
             staffId: coOwner.staffId,
@@ -324,8 +355,15 @@ export async function coOwnerAccessSseHandler(req, res, {
     addClient(client)
     res.write(`event: heartbeat\ndata: ${JSON.stringify({ ok: true, t: Date.now() })}\n\n`)
 
-    const keepAlive = setInterval(() => {
+    const keepAlive = setInterval(async () => {
         try {
+            const stillAllowed = await findCurrentCoOwnerForClient(client)
+            if (!clients.has(client)) return
+            if (!stillAllowed) {
+                res.end()
+                removeClient(client)
+                return
+            }
             res.write(`event: heartbeat\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`)
         } catch (error) {
             console.error("[SSE] Co-Owner access heartbeat failed:", error.message)
@@ -350,6 +388,8 @@ export async function sseHandler(req, res) {
     let operationalPermission = null
     let operationalIdentity = null
     let operationalRole = null
+    let operationalAuthVersion = null
+    let managementAuthVersion = null
 
     if (!businessId) {
         return res.status(400).end("Missing businessId")
@@ -380,9 +420,24 @@ export async function sseHandler(req, res) {
             return res.status(403).end("Forbidden. businessId mismatch.")
         }
 
+        let currentStaff = null
+        if (isStaffSessionUser(req.session.user)) {
+            try {
+                currentStaff = await resolveCurrentStaff(req)
+            } catch (error) {
+                console.error("[SSE] Failed to verify current Staff session:", error.message)
+                return res.status(500).end("Unable to verify session.")
+            }
+            if (!currentStaff) {
+                return res.status(401).end("Session is no longer valid. Please log in again.")
+            }
+        }
+
+        const currentRole = currentStaff?.role || req.session.user.role
+
         // Anti-spoofing: pin the channel to what this session role is allowed to
         // receive. A staffer cannot read another role's stream by changing ?role=.
-        const allowedChannels = SSE_CHANNELS_BY_ROLE[req.session.user.role] || []
+        const allowedChannels = SSE_CHANNELS_BY_ROLE[currentRole] || []
         if (allowedChannels.length === 0) {
             return res.status(403).end("Forbidden. Role not permitted for live updates.")
         }
@@ -394,7 +449,7 @@ export async function sseHandler(req, res) {
             return res.status(403).end("Forbidden. Housekeeping is not enabled for this business.")
         }
 
-        if (req.session.user.role === "manager") {
+        if (currentRole === "manager") {
             const requestedPermission = req.query.permission
             const allowedPermissions = MANAGER_SSE_PERMISSIONS_BY_CHANNEL[role]
             const manager = await resolveCurrentManager(req)
@@ -411,7 +466,8 @@ export async function sseHandler(req, res) {
                 staffId: manager.staffId,
             }
             managementIdentity = managerIdentity
-        } else if (req.session.user.role === "co_owner") {
+            managementAuthVersion = manager.authVersion
+        } else if (currentRole === "co_owner") {
             const requestedPermission = req.query.permission
             const allowedPermissions = MANAGER_SSE_PERMISSIONS_BY_CHANNEL[role]
             const requestedArea = MANAGEMENT_AREA_BY_PERMISSION[requestedPermission]
@@ -432,13 +488,23 @@ export async function sseHandler(req, res) {
                 staffObjectId: String(coOwner._id),
                 staffId: coOwner.staffId,
             }
-        } else if (req.session.user.role === "housekeeping") {
-            const staff = await resolveCurrentOperationalStaff(req)
-            if (!staff || !(staff.permissions || []).includes(PERMISSIONS.HOUSEKEEPING_VIEW)) {
+            managementAuthVersion = coOwner.authVersion
+        } else if (["waiter", "kitchen", "bartender", "housekeeping"].includes(currentRole)) {
+            const staff = currentStaff || await resolveCurrentOperationalStaff(req)
+            if (!staff) {
+                return res.status(401).end("Session is no longer valid. Please log in again.")
+            }
+            if (
+                currentRole === "housekeeping" &&
+                !(staff.permissions || []).includes(PERMISSIONS.HOUSEKEEPING_VIEW)
+            ) {
                 return res.status(403).end("Forbidden. Housekeeping live-update permission denied.")
             }
-            operationalPermission = PERMISSIONS.HOUSEKEEPING_VIEW
+            operationalPermission = currentRole === "housekeeping"
+                ? PERMISSIONS.HOUSEKEEPING_VIEW
+                : null
             operationalRole = staff.role
+            operationalAuthVersion = staff.authVersion
             operationalIdentity = {
                 staffObjectId: String(staff._id),
                 staffId: staff.staffId,
@@ -464,9 +530,11 @@ export async function sseHandler(req, res) {
         managerIdentity,
         coOwnerArea,
         managementIdentity,
+        managementAuthVersion,
         operationalPermission,
         operationalIdentity,
         operationalRole,
+        operationalAuthVersion,
     }
 
     addClient(client)
@@ -513,10 +581,13 @@ export async function sseHandler(req, res) {
                     return
                 }
             }
-            if (client.operationalPermission) {
+            if (client.operationalIdentity) {
                 const currentStaff = await findCurrentOperationalStaffForClient(client)
                 if (!clients.has(client)) return
-                if (!currentStaff?.permissions?.includes(client.operationalPermission)) {
+                if (
+                    !currentStaff ||
+                    (client.operationalPermission && !currentStaff.permissions?.includes(client.operationalPermission))
+                ) {
                     res.end()
                     clearInterval(keepAlive)
                     removeClient(client)
@@ -564,9 +635,53 @@ export function disconnectManagerClients({ businessId, staffObjectId, staffId })
     return disconnected
 }
 
+function staffIdentityMatches(client, { staffObjectId, staffId }) {
+    const identities = [
+        client.managerIdentity,
+        client.managementIdentity,
+        client.operationalIdentity,
+        client.accessIdentity,
+    ].filter(Boolean)
+
+    if (
+        client.notificationIdentity?.recipientKind === "staff" &&
+        client.notificationIdentity.recipientId
+    ) {
+        identities.push({ staffObjectId: client.notificationIdentity.recipientId })
+    }
+
+    return identities.some((identity) => (
+        (staffObjectId && identity.staffObjectId === String(staffObjectId)) ||
+        (staffId && identity.staffId === staffId)
+    ))
+}
+
+/** Close every live stream for one Staff identity on this app instance. */
+export function disconnectStaffClients({ businessId, staffObjectId, staffId }) {
+    let disconnected = 0
+    for (const client of [...clients]) {
+        if (client.businessId !== businessId) continue
+        if (!staffIdentityMatches(client, { staffObjectId, staffId })) continue
+
+        try {
+            client.res.end()
+        } catch (error) {
+            console.error("[SSE] Failed to close revoked Staff stream:", error.message)
+        } finally {
+            removeClient(client)
+            disconnected++
+        }
+    }
+    return disconnected
+}
+
 export function disconnectManagementClients({ businessId, staffObjectId, staffId }) {
     let disconnected = 0
     for (const client of [...clients]) {
+        // The dedicated Co-Owner access stream must receive the invalidation
+        // event so its UI can refetch /auth/me. Generic Staff revocation still
+        // closes this stream through disconnectStaffClients.
+        if (client.role === "co_owner_access") continue
         if (client.businessId !== businessId || !client.managementIdentity) continue
         const isTarget =
             (staffObjectId && client.managementIdentity.staffObjectId === String(staffObjectId)) ||
@@ -619,6 +734,14 @@ export async function broadcastLocal(msg) {
 
     // Internal control message distributed over the existing realtime bus.
     // It is consumed by every app instance and is never forwarded to clients.
+    if (event === STAFF_ACCESS_REVOKED_EVENT) {
+        disconnectStaffClients({
+            businessId,
+            staffObjectId: payload?.staffObjectId,
+            staffId: payload?.staffId,
+        })
+        return
+    }
     if (event === MANAGER_ACCESS_REVOKED_EVENT) {
         disconnectManagerClients({
             businessId,
@@ -670,6 +793,7 @@ export async function broadcastLocal(msg) {
 
     let matched = 0
     const managerAuthorizationByIdentity = new Map()
+    const operationalAuthorizationByIdentity = new Map()
 
     for (const client of clients) {
         // Business isolation — strict
@@ -743,10 +867,20 @@ export async function broadcastLocal(msg) {
             }
         }
 
-        if (client.operationalPermission) {
-            const currentStaff = await findCurrentOperationalStaffForClient(client)
+        if (client.operationalIdentity) {
+            const identityKey = `${client.businessId}:${client.operationalIdentity.staffObjectId || client.operationalIdentity.staffId || "unknown"}`
+            if (!operationalAuthorizationByIdentity.has(identityKey)) {
+                operationalAuthorizationByIdentity.set(
+                    identityKey,
+                    findCurrentOperationalStaffForClient(client),
+                )
+            }
+            const currentStaff = await operationalAuthorizationByIdentity.get(identityKey)
             if (!clients.has(client)) continue
-            if (!currentStaff?.permissions?.includes(client.operationalPermission)) {
+            if (
+                !currentStaff ||
+                (client.operationalPermission && !currentStaff.permissions?.includes(client.operationalPermission))
+            ) {
                 try { client.res.end() } catch {}
                 removeClient(client)
                 continue
@@ -911,6 +1045,19 @@ export async function publishNotificationChanged({
 export async function publishManagerAccessRevocation({ businessId, staffObjectId, staffId }) {
     return publishEvent(
         MANAGER_ACCESS_REVOKED_EVENT,
+        businessId,
+        null,
+        {
+            staffObjectId: staffObjectId ? String(staffObjectId) : null,
+            staffId: staffId || null,
+        },
+    )
+}
+
+/** Disconnect every current SSE stream for one revoked/version-changed Staff account. */
+export async function publishStaffAccessRevocation({ businessId, staffObjectId, staffId }) {
+    return publishEvent(
+        STAFF_ACCESS_REVOKED_EVENT,
         businessId,
         null,
         {

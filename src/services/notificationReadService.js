@@ -154,6 +154,7 @@ export async function resolveNotificationAccessContext(req, {
             businessId,
             recipientKind: NOTIFICATION_RECIPIENT_KINDS.STAFF,
             recipientId: staff._id,
+            staffAuthVersion: staff.authVersion,
             user: {
                 role: "co_owner",
                 coOwnerRestrictions: staff.coOwnerRestrictions || [],
@@ -170,6 +171,7 @@ export async function resolveNotificationAccessContext(req, {
             businessId,
             recipientKind: NOTIFICATION_RECIPIENT_KINDS.STAFF,
             recipientId: staff._id,
+            staffAuthVersion: staff.authVersion,
             user: { role: "manager", permissions: staff.permissions || [] },
         }
     }

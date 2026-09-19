@@ -282,7 +282,7 @@ router.post("/reset-password", authLimiter, resetPassword);
  *     tags:
  *       - Auth
  */
-router.post("/change-password", authLimiter, changePassword);
+router.post("/change-password", authLimiter, requireAuth, changePassword);
 
 /**
  * @openapi

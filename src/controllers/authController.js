@@ -12,8 +12,14 @@ import {
     resolveCurrentCoOwner,
     resolveCurrentManager,
     resolveCurrentOperationalStaff,
+    resolveCurrentStaff,
 } from "../middleware/authMiddleware.js";
 import { getEffectiveManagementAreas } from "../constants/managementAccess.js";
+
+function nextStaffAuthVersion(value) {
+    const version = Number(value)
+    return (Number.isSafeInteger(version) && version >= 0 ? version : 0) + 1
+}
 /**
  * Validate an invitation token
  * GET /auth/invite/validate?token=...
@@ -288,6 +294,9 @@ export async function loginUser(req, res) {
                 req.session.regenerate((err) => {
                     if (err) return reject(err);
                     req.session.user = userObj;
+                    req.session.staffAuthVersion = Number.isSafeInteger(Number(staff.authVersion))
+                        ? Number(staff.authVersion)
+                        : 0;
                     req.session.save((err) => {
                         if (err) return reject(err);
                         resolve(res.json({
@@ -372,28 +381,16 @@ export async function staffHeartbeat(req, res) {
             return res.status(403).json({ message: "Forbidden: Only operational staff can send heartbeats." });
         }
         
-        // Refresh Redis TTL using canonical Mongo _id.
-        // staffObjectId is stored in session at login. For sessions created
-        // before this change, fall back to a lightweight DB lookup.
-        let staffMongoId = sessionUser.staffObjectId;
-        if (sessionUser.role === "manager") {
-            const manager = await resolveCurrentManager(req);
-            if (!manager) {
-                return res.status(403).json({ message: "Manager account is disabled or no longer exists." });
-            }
-            staffMongoId = manager._id.toString();
-        } else if (!staffMongoId) {
-            const Staff = (await import("../models/Staff.js")).default;
-            const staffDoc = await Staff.findOne(
-                { email: sessionUser.email, businessId: sessionUser.businessId },
-                "_id"
-            ).lean();
-            if (!staffDoc) {
-                return res.status(404).json({ message: "Staff record not found." });
-            }
-            staffMongoId = staffDoc._id.toString();
+        // requireAuth has already resolved the canonical active Staff record
+        // for this request; reuse it instead of trusting the session payload.
+        const staff = await resolveCurrentStaff(req);
+        if (!staff) {
+            return res.status(401).json({
+                message: "Session is no longer valid. Please log in again.",
+                code: "SESSION_REVOKED",
+            });
         }
-        await markStaffActive(sessionUser.businessId, staffMongoId);
+        await markStaffActive(staff.businessId, staff._id.toString());
         
         return res.json({ ok: true });
     } catch (err) {
@@ -408,7 +405,7 @@ export async function getMe(req, res) {
             return res.status(401).json({ message: "Not authenticated" });
         }
         
-        const { role, email, businessId } = req.session.user;
+        const { role, email } = req.session.user;
 
         // Optionally, grab fresh data from DB to ensure user isn't disabled
         if (role === 'owner') {
@@ -580,9 +577,21 @@ export async function resetPassword(req, res) {
             await user.save();
         } else {
             user.passwordHash = passwordHash;
+            user.authVersion = nextStaffAuthVersion(user.authVersion);
             user.passwordResetToken = undefined;
             user.passwordResetExpires = undefined;
             await user.save();
+
+            try {
+                const { publishStaffAccessRevocation } = await import("../utils/sseManager.js");
+                await publishStaffAccessRevocation({
+                    businessId: user.businessId,
+                    staffObjectId: user._id,
+                    staffId: user.staffId,
+                });
+            } catch (streamError) {
+                console.error("[resetPassword] Failed to close stale Staff streams", streamError);
+            }
         }
 
         return res.json({ message: "Password has been successfully reset. You can now log in." });
@@ -613,17 +622,26 @@ export async function changePassword(req, res) {
             return res.status(400).json({ message: "New password must be at least 8 characters long, and contain at least one uppercase letter, one lowercase letter, and one number." });
         }
 
-        const { role, email } = req.session.user;
+        const { role, email, businessId } = req.session.user;
         let user;
         let userType = "owner";
         
         if (role === 'owner') {
             user = await Business.findOne({ ownerEmail: email });
         } else {
-            if (role === "manager" && !await resolveCurrentManager(req)) {
-                return res.status(403).json({ message: "Manager account is disabled or no longer exists." });
+            const currentStaff = await resolveCurrentStaff(req);
+            if (!currentStaff) {
+                return res.status(401).json({
+                    message: "Session is no longer valid. Please log in again.",
+                    code: "SESSION_REVOKED",
+                });
             }
-            user = await Staff.findOne({ email, businessId, accountStatus: "active" });
+            user = await Staff.findOne({
+                _id: currentStaff._id,
+                businessId: currentStaff.businessId,
+                accountStatus: "active",
+                role: currentStaff.role,
+            });
             userType = "staff";
         }
 
@@ -643,11 +661,38 @@ export async function changePassword(req, res) {
             user.ownerPasswordHash = passwordHash;
         } else {
             user.passwordHash = passwordHash;
+            user.authVersion = nextStaffAuthVersion(user.authVersion);
         }
 
         await user.save();
 
-        return res.json({ message: "Password updated successfully" });
+        if (userType === "staff") {
+            try {
+                const { publishStaffAccessRevocation } = await import("../utils/sseManager.js");
+                await publishStaffAccessRevocation({
+                    businessId: user.businessId,
+                    staffObjectId: user._id,
+                    staffId: user.staffId,
+                });
+            } catch (streamError) {
+                console.error("[changePassword] Failed to close stale Staff streams", streamError);
+            }
+
+            res.clearCookie?.("qs_dashboard_session");
+            if (typeof req.session?.destroy === "function") {
+                await new Promise((resolve) => {
+                    req.session.destroy((error) => {
+                        if (error) console.error("[changePassword] Failed to destroy current session", error);
+                        resolve();
+                    });
+                });
+            }
+        }
+
+        return res.json({
+            message: "Password updated successfully",
+            ...(userType === "staff" ? { reauthenticationRequired: true } : {}),
+        });
     } catch (err) {
         console.error("Change password error:", err);
         return res.status(500).json({ message: "Server error changing password" });
