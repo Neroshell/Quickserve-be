@@ -683,7 +683,7 @@ export async function createReservationCheckoutSession(req, res) {
                     transfer_data: { destination: business.stripeAccountId },
                     metadata,
                 },
-                success_url: `${FRONTEND_BASE_URL}/reservation/confirmation/${reservation._id}`,
+                success_url: `${FRONTEND_BASE_URL}/reservation/confirmation/${reservation._id}#session_id={CHECKOUT_SESSION_ID}`,
                 cancel_url: `${FRONTEND_BASE_URL}/reservation/pay/${secureToken}?payment=cancelled`,
                 ...(reservation.email ? { customer_email: reservation.email } : {}),
             };

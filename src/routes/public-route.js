@@ -206,7 +206,7 @@ router.get("/reservations/by-token/:secureToken", getReservationByToken);
  * @openapi
  * /public/reservations/by-id/{reservationId}:
  *   get:
- *     summary: Fetch a reservation by ID for the post-payment confirmation page
+ *     summary: Fetch a minimal confirmation using a reservation-bound Checkout Session capability
  *     tags:
  *       - Public
  */

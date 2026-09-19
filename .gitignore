@@ -118,6 +118,8 @@ test/sessionTouchThrottling.test.js
 !test/housekeepingPhase2.test.js
 !test/housekeepingAuthFlow.test.js
 !test/reservationPaymentIdempotency.test.js
+!test/hotelReservationConcurrency.integration.test.js
+!test/reservationPrivacy.test.js
 test/phoneNumber.test.js
 test/googlePlacesService.test.js
 test/ownerOrdersPagination.test.js

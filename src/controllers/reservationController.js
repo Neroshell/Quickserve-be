@@ -19,7 +19,11 @@ import {
   enqueueReservationPaymentExpiry,
 } from "../queues/index.js";
 import { scheduleReservationArrivalReminder } from "../services/reservationArrivalService.js";
-import { createReservationService, createHotelReservation } from "../services/reservationCreationService.js";
+import {
+  createReservationService,
+  createHotelReservation,
+  reassignHotelReservationRoom,
+} from "../services/reservationCreationService.js";
 import { HOTEL_PAYMENT_WINDOW_MINUTES, getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
 import { resolveBusinessDay } from "../utils/businessDate.js";
 import { buildRestaurantTodayOperations } from "../services/restaurantReservationOperationsService.js";
@@ -1798,68 +1802,18 @@ export async function reassignHotelRoom(req, res) {
       return res.status(400).json({ error: "New room ID is required." });
     }
 
-    const scope = reservationScope(req, id);
-    if (!scope) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    const reservation = await Reservation.findOne(scope);
-    if (!reservation) {
-      return res.status(404).json({ error: "Reservation not found." });
-    }
-
-    if (!reservation.checkInDate || !reservation.checkOutDate) {
-      return res.status(400).json({ error: "Room reassignment is only supported for hotel reservations." });
-    }
-
-    if (reservation.status === "cancelled" || reservation.status === "declined" || reservation.status === "expired" || reservation.status === "checked_out") {
-      return res.status(400).json({ error: "Cannot reassign a terminal reservation." });
-    }
-
-    if (reservation.servicePointId === newServicePointId) {
-      return res.status(200).json({ message: "Room is already assigned.", reservation: toOwnerReservationResponse(reservation) });
-    }
-
-    const newRoom = await mongoose.model("ServicePoint").findOne({
+    const { reservation, unchanged } = await reassignHotelReservationRoom({
       businessId,
-      servicePointId: newServicePointId,
-      isActive: { $ne: false },
-      reservable: { $ne: false },
-      $or: [
-        { servicePointType: "room" },
-        { servicePointType: { $exists: false } },
-        { servicePointType: null },
-      ]
-    }).lean();
+      reservationId: id,
+      newServicePointId,
+    });
 
-    if (!newRoom) {
-      return res.status(404).json({ error: "Target room not found or is not a reservable lodging room." });
+    if (unchanged) {
+      return res.status(200).json({
+        message: "Room is already assigned.",
+        reservation: toOwnerReservationResponse(reservation),
+      });
     }
-
-    if (newRoom.capacity != null && reservation.guestCount > newRoom.capacity) {
-      return res.status(400).json({ error: "Target room cannot accommodate the guest count." });
-    }
-
-    const { BLOCKING_STAY_STATUSES } = await import("../services/reservationCreationService.js");
-
-    const conflict = await Reservation.findOne({
-      _id: { $ne: reservation._id },
-      businessId,
-      servicePointId: newServicePointId,
-      status: { $in: [...BLOCKING_STAY_STATUSES] },
-      checkInDate: { $lt: reservation.checkOutDate },
-      checkOutDate: { $gt: reservation.checkInDate }
-    }).lean();
-
-    if (conflict) {
-      return res.status(409).json({ error: "Target room is not available for the entire stay." });
-    }
-
-    reservation.servicePointId = newRoom.servicePointId;
-    reservation.servicePointLabel = newRoom.displayLabel || newRoom.label;
-    reservation.roomTypeSnapshot = newRoom.roomType || null;
-
-    await reservation.save();
 
     await publishReservationEvent(businessId, {
       type: "reservation_updated",
@@ -1872,6 +1826,9 @@ export async function reassignHotelRoom(req, res) {
     });
 
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
     console.error("[reservationController.reassignHotelRoom] Error:", error);
     return res.status(500).json({ error: "Server error" });
   }

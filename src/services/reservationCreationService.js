@@ -80,8 +80,47 @@ export async function resolveHotelRoom({ servicePointId, businessId, session } =
 }
 
 /**
+ * Acquires the canonical room document as the transaction's allocation lock.
+ * Concurrent transactions for the same physical room cannot both pass the
+ * subsequent overlap check and commit.
+ */
+export async function lockHotelRoomForReservation({
+  servicePointId,
+  businessId,
+  session,
+}) {
+  const sp = await ServicePoint.findOneAndUpdate(
+    {
+      servicePointId,
+      businessId,
+      isActive: { $ne: false },
+      reservable: { $ne: false },
+    },
+    { $currentDate: { updatedAt: true } },
+    { returnDocument: "after", session },
+  ).lean();
+
+  if (!sp) {
+    const err = new Error("The selected room is not available for booking.");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (sp.servicePointType && sp.servicePointType !== "room") {
+    const err = new Error(
+      `The selected service point is of type "${sp.servicePointType}", not a room.`,
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return sp;
+}
+
+/**
  * Checks for overlapping blocking reservations for the given room and date range.
- * Must be called inside a MongoDB session for concurrency safety.
+ * On a mutating allocation path, call this after acquiring the room's
+ * ServicePoint write lock in the same MongoDB transaction.
  * Throws a 409 if a conflict is found.
  */
 export async function assertNoRoomConflict({
@@ -113,6 +152,116 @@ export async function assertNoRoomConflict({
     err.statusCode = 409;
     throw err;
   }
+}
+
+function normalizeHotelAllocationTransactionError(error) {
+  if (error?.statusCode) return error;
+
+  const transient =
+    error?.hasErrorLabel?.("TransientTransactionError") ||
+    error?.hasErrorLabel?.("UnknownTransactionCommitResult") ||
+    [112, 251].includes(error?.code) ||
+    ["WriteConflict", "NoSuchTransaction"].includes(error?.codeName);
+
+  if (!transient) return error;
+
+  const conflict = new Error(
+    "Room availability changed while the reservation was being saved. Please try again.",
+  );
+  conflict.statusCode = 409;
+  conflict.code = "HOTEL_ROOM_ALLOCATION_CONFLICT";
+  conflict.cause = error;
+  return conflict;
+}
+
+/**
+ * Atomically moves one hotel reservation to another physical room. The
+ * destination ServicePoint lock and reservation update commit together.
+ */
+export async function reassignHotelReservationRoom({
+  businessId,
+  reservationId,
+  newServicePointId,
+  startSession = () => mongoose.startSession(),
+}) {
+  const session = await startSession();
+  let reservation;
+  let unchanged = false;
+
+  try {
+    await session.withTransaction(async () => {
+      reservation = await Reservation.findOne({
+        _id: reservationId,
+        businessId,
+      }).session(session);
+
+      if (!reservation) {
+        const err = new Error("Reservation not found.");
+        err.statusCode = 404;
+        throw err;
+      }
+
+      if (!reservation.checkInDate || !reservation.checkOutDate) {
+        const err = new Error(
+          "Room reassignment is only supported for hotel reservations.",
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+
+      if (["cancelled", "declined", "expired", "checked_out"].includes(reservation.status)) {
+        const err = new Error("Cannot reassign a terminal reservation.");
+        err.statusCode = 400;
+        throw err;
+      }
+
+      if (reservation.servicePointId === newServicePointId) {
+        unchanged = true;
+        return;
+      }
+
+      let newRoom;
+      try {
+        newRoom = await lockHotelRoomForReservation({
+          businessId,
+          servicePointId: newServicePointId,
+          session,
+        });
+      } catch (error) {
+        if (error?.statusCode === 400) {
+          error.statusCode = 404;
+          error.message = "Target room not found or is not a reservable lodging room.";
+        }
+        throw error;
+      }
+
+      if (newRoom.capacity != null && reservation.guestCount > newRoom.capacity) {
+        const err = new Error("Target room cannot accommodate the guest count.");
+        err.statusCode = 400;
+        throw err;
+      }
+
+      await assertNoRoomConflict({
+        businessId,
+        servicePointId: newServicePointId,
+        checkInDate: reservation.checkInDate,
+        checkOutDate: reservation.checkOutDate,
+        excludeReservationId: reservation._id,
+        session,
+      });
+
+      reservation.servicePointId = newRoom.servicePointId;
+      reservation.servicePointLabel = newRoom.displayLabel || newRoom.label;
+      reservation.roomTypeSnapshot = newRoom.roomType || null;
+      await reservation.save({ session });
+    });
+  } catch (error) {
+    throw normalizeHotelAllocationTransactionError(error);
+  } finally {
+    await session.endSession();
+  }
+
+  return { reservation, unchanged };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,7 +370,7 @@ export async function createHotelReservation({
   try {
     await session.withTransaction(async () => {
       // Phase I rules 4–8 inside transaction for concurrency safety
-      const sp = await resolveHotelRoom({
+      const sp = await lockHotelRoomForReservation({
         servicePointId,
         businessId: business.businessId,
         session,
@@ -348,6 +497,8 @@ export async function createHotelReservation({
 
       await hotelReservation.save({ session });
     });
+  } catch (error) {
+    throw normalizeHotelAllocationTransactionError(error);
   } finally {
     await session.endSession();
   }

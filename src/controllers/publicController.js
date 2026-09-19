@@ -3,7 +3,7 @@ import Reservation, { timeStringToMinutes, MIN_DURATION_MINUTES } from "../model
 import ServicePoint from "../models/ServicePoint.js";
 import Plan from "../models/Plan.js";
 import { sendReservationRequestEmail, sendReservationRequestReceivedEmail } from "../utils/emailService.js";
-import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "../services/reservationPricingService.js";
+import { buildReservationPricingSnapshot } from "../services/reservationPricingService.js";
 import { dispatchRestaurantReservationEmail } from "../services/email/emailDispatchService.js";
 import { validateReservationGuestCapacity } from "../services/reservationCapacityService.js";
 import { EMAIL_JOB_NAMES } from "../queues/index.js";
@@ -17,8 +17,16 @@ import {
   cacheKeys,
   responseCache,
 } from "../services/responseCacheService.js";
+import {
+  PUBLIC_RESERVATION_LINK_ERROR,
+  PublicReservationAccessError,
+  resolveReservationConfirmationAccess,
+  resolveReservationPaymentAccess,
+} from "../services/reservationPublicAccessService.js";
 
 const SERVABLE_STATUSES = ["active", "onboarding", "draft"];
+const RESERVATION_CONFIRMATION_SESSION_HEADER =
+  "x-reservation-confirmation-session";
 const PUBLIC_BUSINESS_FIELDS = new Set([
   "businessId", "slug", "name", "displayName", "address", "phoneNumber",
   "country", "currency", "timezone", "logoUrl", "branding", "operatingHours",
@@ -47,6 +55,21 @@ function isSafePublicBusinessDto(value, expectedSlug) {
       Object.keys(servicePoint).every(field => PUBLIC_SERVICE_POINT_FIELDS.has(field))
     )
   );
+}
+
+function setPrivateNoStore(res) {
+  res.set({
+    "Cache-Control": "private, no-store, max-age=0",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  });
+}
+
+function publicReservationAccessError(res) {
+  return res.status(404).json({
+    error: PUBLIC_RESERVATION_LINK_ERROR,
+  });
 }
 
 /**
@@ -398,101 +421,44 @@ export async function getPublicRestaurantAvailability(req, res) {
  * Only returns safe, customer-facing fields.
  */
 export async function getReservationByToken(req, res) {
+  setPrivateNoStore(res);
   try {
-    const { secureToken } = req.params;
-    if (!secureToken) {
-      return res.status(400).json({ error: "secureToken is required" });
-    }
-
-    const reservation = await Reservation.findOne({ secureToken })
-      .select("-stripeSessionId")
-      .lean();
-    if (!reservation) {
-      return res.status(404).json({ error: "Reservation not found" });
-    }
-
-    const business = await Business.findOne({ businessId: reservation.businessId })
-      .select("businessId name displayName logoUrl currency country countryCode slug")
-      .lean();
-    if (!business) {
-      return res.status(404).json({ error: "Business not found" });
-    }
-
-    const pricing = getCustomerReservationPricing(reservation);
-
-    // Strip internal fields before sending to client
-    delete reservation.secureToken;
-    delete reservation.stripeCheckoutSessionId;
-    delete reservation.stripePaymentIntentId;
-    delete reservation.stripeConnectedAccountId;
-    delete reservation.platformFeeCents;
-    delete reservation.businessAbsorbedPlatformFeeCents;
-    delete reservation.platformFeeMode;
-    delete reservation.customerPlatformFeePercent;
-    delete reservation.planApplied;
-    delete reservation.commissionRateApplied;
-    delete reservation.commissionAmountCents;
-    delete reservation.planAtOrder;
-    delete reservation.commissionRateAtOrder;
-    delete reservation.platformFeeRateAtOrder;
-    delete reservation.grossAmount;
-    delete reservation.netToBusinessAmount;
-    delete reservation.amountPaidCents;
-
-    res.json({ reservation: { ...reservation, pricing }, business });
+    const result = await resolveReservationPaymentAccess({
+      secureToken: req.params?.secureToken,
+    });
+    return res.json(result);
   } catch (error) {
+    if (error instanceof PublicReservationAccessError) {
+      return publicReservationAccessError(res);
+    }
     console.error("[publicController.getReservationByToken] Error:", error);
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error" });
   }
 }
 
 /**
  * GET /public/reservations/by-id/:reservationId
- * Fetch a reservation by its MongoDB _id for the confirmation page (post-payment).
- * Only returns safe fields; does NOT expose secureToken.
+ * Fetch the strict confirmation DTO only when the reservation-bound Stripe
+ * Checkout Session capability is supplied in a request header.
  */
 export async function getReservationById(req, res) {
+  setPrivateNoStore(res);
   try {
-    const { reservationId } = req.params;
-    if (!reservationId) {
-      return res.status(400).json({ error: "reservationId is required" });
-    }
-
-    const reservation = await Reservation.findById(reservationId)
-      .select("-secureToken -stripeSessionId -paymentExpiresAt")
-      .lean();
-    if (!reservation) {
-      return res.status(404).json({ error: "Reservation not found" });
-    }
-
-    const business = await Business.findOne({ businessId: reservation.businessId })
-      .select("businessId name displayName logoUrl currency country countryCode slug")
-      .lean();
-    if (!business) {
-      return res.status(404).json({ error: "Business not found" });
-    }
-
-    const pricing = getCustomerReservationPricing(reservation);
-    delete reservation.stripeCheckoutSessionId;
-    delete reservation.stripePaymentIntentId;
-    delete reservation.stripeConnectedAccountId;
-    delete reservation.platformFeeCents;
-    delete reservation.businessAbsorbedPlatformFeeCents;
-    delete reservation.platformFeeMode;
-    delete reservation.customerPlatformFeePercent;
-    delete reservation.planApplied;
-    delete reservation.commissionRateApplied;
-    delete reservation.commissionAmountCents;
-    delete reservation.planAtOrder;
-    delete reservation.commissionRateAtOrder;
-    delete reservation.platformFeeRateAtOrder;
-    delete reservation.grossAmount;
-    delete reservation.netToBusinessAmount;
-    delete reservation.amountPaidCents;
-
-    res.json({ reservation: { ...reservation, pricing }, business });
+    const checkoutSessionId =
+      req.get?.(RESERVATION_CONFIRMATION_SESSION_HEADER) ||
+      req.headers?.[RESERVATION_CONFIRMATION_SESSION_HEADER];
+    const result = await resolveReservationConfirmationAccess({
+      reservationId: req.params?.reservationId,
+      checkoutSessionId,
+    });
+    return res.json(result);
   } catch (error) {
+    if (error instanceof PublicReservationAccessError) {
+      return publicReservationAccessError(res);
+    }
     console.error("[publicController.getReservationById] Error:", error);
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error" });
   }
 }
+
+export { RESERVATION_CONFIRMATION_SESSION_HEADER, setPrivateNoStore };
