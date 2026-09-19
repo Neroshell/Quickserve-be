@@ -8,6 +8,10 @@ import { isBusinessServable } from "../utils/restaurantOrderValidation.js"
 import { startCustomerJourney } from "../services/customerJourneyService.js"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 import { publishServicePointsChanged } from "../utils/sseManager.js"
+import {
+  normalizeServicePointQrCapabilityVersion,
+  servicePointQrCapabilityMatches,
+} from "../services/servicePointQrCapabilityService.js"
 
 const router = express.Router()
 
@@ -40,17 +44,19 @@ function randomToken() {
  *             required:
  *               - businessId
  *               - servicePointId
+ *               - qrCapability
+ *               - sessionId
  *             properties:
  *               businessId:
  *                 type: string
- *               businessId:
- *                 type: string
- *                 description: Legacy restaurant ID (backward compatibility)
  *               servicePointId:
  *                 type: string
- *               servicePointId:
+ *               qrCapability:
  *                 type: string
- *                 description: Legacy table ID (backward compatibility)
+ *                 description: Signed, tenant- and ServicePoint-scoped QR capability
+ *               sessionId:
+ *                 type: string
+ *                 description: Persistent device identity used for GuestSession binding
  *     responses:
  *       200:
  *         description: Table session started successfully
@@ -71,10 +77,17 @@ function randomToken() {
  *                 label:
  *                   type: string
  */
-router.post("/start", tableSessionLimiter, async (req, res) => {
+const INVALID_QR_RESPONSE = Object.freeze({
+  error: "This QR code is invalid or no longer active.",
+})
+
+export async function startGuestSession(req, res) {
   try {
     const businessId = req.body.businessId
     const servicePointId = req.body.servicePointId
+    const qrCapability = typeof req.body.qrCapability === "string"
+      ? req.body.qrCapability.trim()
+      : ""
     const deviceSessionId = typeof req.body.sessionId === "string"
       ? req.body.sessionId.trim()
       : ""
@@ -82,34 +95,37 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
     if (!businessId || !servicePointId) {
       return res.status(400).json({ error: "Missing businessId or servicePointId" })
     }
-
-    // 1. Validate business exists
-    const business = await Business.findOne({ businessId })
-    if (!isBusinessServable(business)) {
-      return res.status(404).json({ error: "Business not found" })
+    if (!deviceSessionId) {
+      return res.status(400).json({ error: "Missing sessionId" })
+    }
+    if (!qrCapability) {
+      return res.status(403).json(INVALID_QR_RESPONSE)
     }
 
-    let label = null
-    let code = null
-    let canonicalJourneyServicePointId = null
-
-    // 2. If this is a managed service point (sp_* prefix), validate it
-    if (servicePointId.startsWith("sp_")) {
-      const sp = await ServicePoint.findOne({ servicePointId: servicePointId, businessId })
-      if (!sp) {
-        return res.status(404).json({ error: "Service point not found" })
-      }
-      if (!sp.isActive) {
-        return res.status(400).json({
-          error: "This service point is currently not in service.",
-        })
-      }
-      label = sp.label
-      code = sp.code
-      canonicalJourneyServicePointId = sp.servicePointId
+    // Public identifiers select only a candidate scope. The signed capability
+    // must match canonical tenant, ServicePoint and rotation state before any
+    // current-visit authority can be created.
+    const [business, servicePoint] = await Promise.all([
+      Business.findOne({ businessId }),
+      ServicePoint.findOne({ servicePointId, businessId })
+        .select("+qrCapabilityVersion"),
+    ])
+    if (!isBusinessServable(business) || !servicePoint?.isActive) {
+      return res.status(403).json(INVALID_QR_RESPONSE)
     }
 
-    // 3. Create session
+    const qrCapabilityVersion = normalizeServicePointQrCapabilityVersion(
+      servicePoint.qrCapabilityVersion
+    )
+    if (!servicePointQrCapabilityMatches(qrCapability, {
+      businessId: servicePoint.businessId,
+      servicePointId: servicePoint.servicePointId,
+      version: qrCapabilityVersion,
+    })) {
+      return res.status(403).json(INVALID_QR_RESPONSE)
+    }
+
+    // GuestSession remains the sole downstream current-visit authority.
     const token = randomToken()
     const fallbackMinutes = 120
     const expiryMinutes =
@@ -125,7 +141,9 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       expiresAt,
       // Bind at issuance so current reads and live streams can prove both the
       // visit credential and continuity with the device-history identity.
-      boundSessionId: deviceSessionId || null,
+      boundSessionId: deviceSessionId,
+      issuanceMethod: "qr_capability",
+      qrCapabilityVersion,
     })
 
     if (resolveBusinessCapabilities(business).identity.shell === "hotel") {
@@ -139,10 +157,10 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
     // Start / resolve canonical CustomerJourney
     const journey = await startCustomerJourney({
       businessId,
-      servicePointId: canonicalJourneyServicePointId,
+      servicePointId: servicePoint.servicePointId,
       orderType: "dine-in",
       tableSessionToken: token,
-      sessionId: deviceSessionId || null,
+      sessionId: deviceSessionId,
       journeyId: req.body.journeyId || null,
     })
 
@@ -151,15 +169,21 @@ router.post("/start", tableSessionLimiter, async (req, res) => {
       expiresAt,
       businessId,
       servicePointId,
-      label,
-      code,
+      label: servicePoint.label,
+      code: servicePoint.code,
       journeyId: journey?.journeyId || null,
     })
   } catch (err) {
+    if (err?.code === "SERVICE_POINT_QR_CAPABILITY_SECRET_MISSING") {
+      console.error("Table session start error: QR capability signing is not configured")
+      return res.status(503).json({ error: "QR session service is unavailable" })
+    }
     console.error("Table session start error:", err)
     return res.status(500).json({ error: "Server error" })
   }
-})
+}
+
+router.post("/start", tableSessionLimiter, startGuestSession)
 
 /**
  * Public route to initialize or refresh a customer journey (e.g. for Takeaway or direct menu entry).

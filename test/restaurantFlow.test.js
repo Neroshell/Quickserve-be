@@ -10,6 +10,7 @@ process.env.STRIPE_SECRET_KEY = "sk_test_restaurant_flow";
 process.env.STRIPE_WEBHOOK_SECRET = "whsec_restaurant_flow";
 process.env.RESEND_API_KEY = "re_test_restaurant_flow";
 process.env.FRONTEND_BASE_URL = "https://app.quickserve.test";
+process.env.QR_CAPABILITY_SIGNING_SECRET = "restaurant-flow-qr-secret-that-is-long-enough";
 
 const [
   {
@@ -29,6 +30,7 @@ const [
   { requireAuth, requireRole },
   { sseHandler },
   { default: guestSessionRouter },
+  { createServicePointQrCapability },
   { default: Order },
   { default: GuestSession },
   { default: PendingCheckout },
@@ -51,6 +53,7 @@ const [
   import("../src/middleware/authMiddleware.js"),
   import("../src/utils/sseManager.js"),
   import("../src/routes/guest-session-route.js"),
+  import("../src/services/servicePointQrCapabilityService.js"),
   import("../src/models/order.js"),
   import("../src/models/GuestSession.js"),
   import("../src/models/PendingCheckout.js"),
@@ -495,6 +498,11 @@ test("valid active ServicePoint creates a tenant-bound guest session", async (t)
         businessId: "business-a",
         servicePointId: "sp_table_a",
         sessionId: "device-a",
+        qrCapability: createServicePointQrCapability({
+          businessId: "business-a",
+          servicePointId: "sp_table_a",
+          version: 1,
+        }),
       },
     },
     res,
@@ -506,6 +514,8 @@ test("valid active ServicePoint creates a tenant-bound guest session", async (t)
   assert.equal(created.servicePointId, "sp_table_a");
   assert.ok(created.expiresAt > new Date());
   assert.equal(created.boundSessionId, "device-a");
+  assert.equal(created.issuanceMethod, "qr_capability");
+  assert.equal(created.qrCapabilityVersion, 1);
 });
 
 test("guest-session bootstrap rejects inactive businesses, disabled ServicePoints, and tenant manipulation", async (t) => {
@@ -530,19 +540,37 @@ test("guest-session bootstrap rejects inactive businesses, disabled ServicePoint
 
   const inactiveRes = createResponse();
   await handler(
-    { body: { businessId: "business-a", servicePointId: "sp_table_a" } },
+    { body: {
+      businessId: "business-a",
+      servicePointId: "sp_table_a",
+      sessionId: "device-a",
+      qrCapability: createServicePointQrCapability({
+        businessId: "business-a",
+        servicePointId: "sp_table_a",
+        version: 1,
+      }),
+    } },
     inactiveRes,
   );
-  assert.equal(inactiveRes.statusCode, 404);
+  assert.equal(inactiveRes.statusCode, 403);
 
   business = createBusinessFixture();
   servicePoint = createServicePointFixture({ isActive: false });
   const disabledRes = createResponse();
   await handler(
-    { body: { businessId: "business-a", servicePointId: "sp_table_a" } },
+    { body: {
+      businessId: "business-a",
+      servicePointId: "sp_table_a",
+      sessionId: "device-a",
+      qrCapability: createServicePointQrCapability({
+        businessId: "business-a",
+        servicePointId: "sp_table_a",
+        version: 1,
+      }),
+    } },
     disabledRes,
   );
-  assert.equal(disabledRes.statusCode, 400);
+  assert.equal(disabledRes.statusCode, 403);
 
   servicePoint = createServicePointFixture({
     businessId: "business-b",
@@ -550,10 +578,19 @@ test("guest-session bootstrap rejects inactive businesses, disabled ServicePoint
   });
   const tenantAttackRes = createResponse();
   await handler(
-    { body: { businessId: "business-a", servicePointId: "sp_table_b" } },
+    { body: {
+      businessId: "business-a",
+      servicePointId: "sp_table_b",
+      sessionId: "device-a",
+      qrCapability: createServicePointQrCapability({
+        businessId: "business-b",
+        servicePointId: "sp_table_b",
+        version: 1,
+      }),
+    } },
     tenantAttackRes,
   );
-  assert.equal(tenantAttackRes.statusCode, 404);
+  assert.equal(tenantAttackRes.statusCode, 403);
   assert.equal(createCount, 0);
 });
 

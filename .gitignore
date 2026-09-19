@@ -68,6 +68,7 @@ docker-data/
 
 test/*
 !test/customerOrderVisitScope.test.js
+!test/qrCapability.test.js
 !test/orderFulfillmentService.test.js
 !test/orderFulfillment.integration.test.js
 !test/customerTimingWaiterCall.test.js

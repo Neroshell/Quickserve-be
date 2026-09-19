@@ -11,6 +11,10 @@ import {
     invalidateSetupProgress,
 } from "../services/cacheInvalidationService.js"
 import { publishServicePointsChanged } from "../utils/sseManager.js"
+import {
+    createServicePointQrCapability,
+    normalizeServicePointQrCapabilityVersion,
+} from "../services/servicePointQrCapabilityService.js"
 
 const PUBLIC_SERVICE_POINT_SOURCE_FIELDS = new Set([
     "label", "servicePointType", "roomType", "capacity", "pricePerNight",
@@ -134,6 +138,7 @@ function toPublicServicePoint(servicePoint) {
         : { ...servicePoint }
     delete value.creationIdempotencyKey
     delete value.creationRequestFingerprint
+    delete value.qrCapabilityVersion
     return value
 }
 
@@ -219,6 +224,107 @@ export async function getServicePoint(req, res) {
     } catch (err) {
         console.error("[getServicePoint]", err)
         return res.status(500).json({ error: "Failed to fetch service point" })
+    }
+}
+
+function qrCapabilityResponse(servicePoint) {
+    const version = normalizeServicePointQrCapabilityVersion(
+        servicePoint.qrCapabilityVersion
+    )
+    return {
+        capability: createServicePointQrCapability({
+            businessId: servicePoint.businessId,
+            servicePointId: servicePoint.servicePointId,
+            version,
+        }),
+        version,
+    }
+}
+
+function handleQrCapabilityControllerError(name, error, res) {
+    if (error?.code === "SERVICE_POINT_QR_CAPABILITY_SECRET_MISSING") {
+        console.error(`[${name}] QR capability signing is not configured`)
+        return res.status(503).json({
+            error: "QR generation is temporarily unavailable",
+        })
+    }
+    console.error(`[${name}]`, error)
+    return res.status(500).json({ error: "Failed to generate QR capability" })
+}
+
+/**
+ * GET /owner/service-points/:servicePointId/qr-capability
+ * Derive the current signed capability for an authorized management user.
+ */
+export async function getServicePointQrCapability(req, res) {
+    try {
+        const businessId = resolveOwnerBusinessId(req)
+        if (!businessId) {
+            return res.status(401).json({ error: "Unauthorized" })
+        }
+
+        const servicePoint = await ServicePoint.findOne({
+            businessId,
+            servicePointId: req.params.servicePointId,
+        }).select("+qrCapabilityVersion")
+        if (!servicePoint) {
+            return res.status(404).json({ error: "Service point not found" })
+        }
+
+        return res.json(qrCapabilityResponse(servicePoint))
+    } catch (error) {
+        return handleQrCapabilityControllerError(
+            "getServicePointQrCapability",
+            error,
+            res
+        )
+    }
+}
+
+/**
+ * POST /owner/service-points/:servicePointId/qr-capability/rotate
+ * Atomically increment canonical QR state. For legacy records with no stored
+ * version, the first rotation moves from implicit version 1 to version 2.
+ */
+export async function rotateServicePointQrCapability(req, res) {
+    try {
+        const businessId = resolveOwnerBusinessId(req)
+        if (!businessId) {
+            return res.status(401).json({ error: "Unauthorized" })
+        }
+
+        const servicePoint = await ServicePoint.findOneAndUpdate(
+            {
+                businessId,
+                servicePointId: req.params.servicePointId,
+            },
+            [{
+                $set: {
+                    qrCapabilityVersion: {
+                        $add: [
+                            { $ifNull: ["$qrCapabilityVersion", 1] },
+                            1,
+                        ],
+                    },
+                },
+            }],
+            {
+                new: true,
+                select: "+qrCapabilityVersion",
+                updatePipeline: true,
+            }
+        )
+        if (!servicePoint) {
+            return res.status(404).json({ error: "Service point not found" })
+        }
+
+        return res.json(qrCapabilityResponse(servicePoint))
+    } catch (error) {
+        return handleQrCapabilityControllerError(
+            "rotateServicePointQrCapability",
+            error,
+            res
+        )
     }
 }
 

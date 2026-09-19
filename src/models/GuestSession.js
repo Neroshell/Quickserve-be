@@ -9,6 +9,15 @@ const TableSessionSchema = new mongoose.Schema(
     // first device that successfully places an order binds the token
     boundSessionId: { type: String, default: null },
 
+    // Non-secret provenance for operational/security auditing. QR capability
+    // material itself is never stored on GuestSession.
+    issuanceMethod: {
+      type: String,
+      enum: ["qr_capability"],
+      default: null,
+    },
+    qrCapabilityVersion: { type: Number, min: 1, default: null },
+
     // TTL: Mongo will auto-delete after expiresAt passes
     expiresAt: { type: Date, required: true },
   },

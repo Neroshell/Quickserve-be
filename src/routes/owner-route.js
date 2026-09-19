@@ -46,6 +46,8 @@ import {
     toggleServicePoint,
     toggleReservableServicePoint,
     deleteServicePoint,
+    getServicePointQrCapability,
+    rotateServicePointQrCapability,
 } from "../controllers/servicePointController.js"
 import {
     getReservations,
@@ -648,6 +650,17 @@ router.get("/service-points", requirePermission(PERMISSIONS.SERVICE_POINTS_VIEW)
  *         description: Service point created successfully
  */
 router.post("/service-points", requirePermission(PERMISSIONS.SERVICE_POINTS_MANAGE), createServicePoint)
+
+router.get(
+    "/service-points/:servicePointId/qr-capability",
+    requirePermission(PERMISSIONS.SERVICE_POINTS_MANAGE),
+    getServicePointQrCapability
+)
+router.post(
+    "/service-points/:servicePointId/qr-capability/rotate",
+    requirePermission(PERMISSIONS.SERVICE_POINTS_MANAGE),
+    rotateServicePointQrCapability
+)
 
 /**
  * @openapi

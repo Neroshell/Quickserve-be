@@ -97,6 +97,7 @@ export function createServicePointFixture(overrides = {}) {
     capacity: 4,
     isActive: true,
     reservable: true,
+    qrCapabilityVersion: 1,
     ...overrides,
   };
 }

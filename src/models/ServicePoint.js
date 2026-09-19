@@ -94,6 +94,16 @@ const ServicePointSchema = new mongoose.Schema(
             index: true,
         },
 
+        // Canonical revocation state for the signed QR capability. The raw
+        // capability is derived server-side and is never persisted. Existing
+        // records without this field are treated as version 1 until rotation.
+        qrCapabilityVersion: {
+            type: Number,
+            min: 1,
+            default: 1,
+            select: false,
+        },
+
         reservable: {
             type: Boolean,
             default: true,
