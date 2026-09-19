@@ -2,7 +2,6 @@ import Stripe from "stripe";
 import PendingCheckout from "../models/PendingCheckout.js";
 import Business from "../models/Business.js";
 import Order from "../models/order.js";
-import Reservation from "../models/Reservation.js";
 import ServicePoint from "../models/ServicePoint.js";
 import Plan from "../models/Plan.js";
 import MenuItem from "../models/menuItem.js";
@@ -23,7 +22,10 @@ import {
 import { deductTrackedStock } from "../services/inventoryService.js";
 import { buildOrderEstimate } from "../utils/orderEstimate.js";
 import { generateHotelCheckInCredentials } from "../services/hotelCheckInService.js";
-import { confirmReservationPaymentAtomic } from "../services/reservationPaymentConfirmationService.js";
+import {
+    reconcileReservationCheckoutCompleted,
+    reconcileReservationCheckoutExpired,
+} from "../services/reservationPaymentAttemptService.js";
 import {
     reconcileStripeReservationRefund,
     ReservationCancellationError,
@@ -751,7 +753,19 @@ export async function handleStripeWebhook(req, res) {
             // Hotel reservation payments do not participate in restaurant
             // inventory reservations.
             if (metadata.type === "reservation_payment") {
-                return res.status(200).send();
+                const expiry = await reconcileReservationCheckoutExpired({
+                    stripeSession: checkoutSession,
+                });
+                console.log("[webhook] Reservation Checkout expiry processed", {
+                    eventId: event.id,
+                    checkoutSessionId: checkoutSession.id,
+                    paymentAttemptId: expiry.attemptId || metadata.pendingCheckoutId || null,
+                    handled: expiry.handled,
+                    code: expiry.code || null,
+                });
+                return expiry.handled
+                    ? res.status(200).send()
+                    : res.status(400).send(expiry.code || "Reservation payment attempt mismatch");
             }
             const expiry = await handleExpiredOrderCheckout({ checkoutSession, metadata });
             console.log("[webhook] Checkout expiry processed", {
@@ -789,70 +803,28 @@ export async function handleStripeWebhook(req, res) {
 
         // ── Reservation payment branch ──────────────────────────────────────────
         if (paymentType === "reservation_payment") {
-            if (!reservationId) {
-                console.error("[webhook] reservation_payment event missing reservationId in metadata", { sessionId: session.id });
-                return res.status(200).send();
-            }
-
-            const reservation = await Reservation.findById(reservationId);
-            if (!reservation) {
-                console.error(`[webhook] Reservation not found: ${reservationId}`);
-                return res.status(200).send();
-            }
-
-            // Idempotency guard
-            if (reservation.paymentStatus === "paid") {
-                console.log(`[webhook] Reservation ${reservationId} already marked paid — skipping duplicate event`);
-                return res.status(200).send();
-            }
-
-            // Validate payment_status from Stripe (do not trust metadata amounts)
-            if (session.payment_status !== "paid") {
-                console.error(`[webhook] Reservation ${reservationId} checkout.session.completed but payment_status=${session.payment_status}`);
-                return res.status(200).send();
-            }
-
-            // Validate amount: Stripe amount_total (cents) must match stored grossAmount
-            const storedAmountCents = Number(reservation.grossAmount);
-            const stripeAmountCents = Number(session.amount_total);
-            if (!Number.isSafeInteger(storedAmountCents) || storedAmountCents <= 0) {
-                console.error(`[webhook] Reservation ${reservationId} has invalid stored grossAmount: ${storedAmountCents}`);
-                return res.status(200).send();
-            }
-            if (stripeAmountCents !== storedAmountCents) {
-                console.error(`[webhook] Reservation ${reservationId} amount mismatch — stripe=${stripeAmountCents} stored=${storedAmountCents}`);
-                return res.status(200).send();
-            }
-
-            // Validate currency
-            const storedCurrency = (reservation.currency || "").toLowerCase();
-            const stripeCurrency = (session.currency || "").toLowerCase();
-            if (stripeCurrency !== storedCurrency) {
-                console.error(`[webhook] Reservation ${reservationId} currency mismatch — stripe=${stripeCurrency} stored=${storedCurrency}`);
-                return res.status(200).send();
-            }
-
-            // Persist the payment truth with one tenant-scoped conditional update.
-            const paidAt = new Date();
-            const paymentTransition = await confirmReservationPaymentAtomic({
-                reservationId: reservation._id,
-                businessId: reservation.businessId,
-                expectedAmountCents: stripeAmountCents,
-                expectedCurrency: storedCurrency,
-                checkoutSessionId: session.id,
-                paymentIntentId: session.payment_intent || null,
-                confirmedAt: paidAt,
+            const reconciliation = await reconcileReservationCheckoutCompleted({
+                stripeSession: session,
+                eventId: event.id,
             });
-            if (!paymentTransition.transitioned) {
-                if (paymentTransition.alreadyPaid) return res.status(200).send();
-                console.error("[webhook] Reservation payment transition lost its conditional state", {
-                    reservationId,
-                    businessId: reservation.businessId,
-                });
-                return res.status(409).send("Reservation payment state changed");
+            console.log("[webhook] Reservation payment reconciled", {
+                eventId: event.id,
+                reservationId: reconciliation.reservation?._id || reservationId || null,
+                paymentAttemptId: reconciliation.attempt?._id || pendingCheckoutId || null,
+                checkoutSessionId: session.id,
+                accepted: reconciliation.accepted,
+                transitioned: Boolean(reconciliation.transitioned),
+                code: reconciliation.code || null,
+            });
+            if (!reconciliation.accepted) {
+                return res
+                    .status(reconciliation.httpStatus || 409)
+                    .send(reconciliation.code || "Reservation payment reconciliation required");
             }
-            const paidReservation = paymentTransition.reservation;
-            console.log(`[webhook] Reservation ${reservationId} marked paid — session=${session.id}`);
+            if (!reconciliation.transitioned) {
+                return res.status(200).send();
+            }
+            const paidReservation = reconciliation.reservation;
 
             // Fetch business for email / check-in credential generation
             const resBusiness = await Business.findOne({ businessId: paidReservation.businessId }).lean();
@@ -863,13 +835,13 @@ export async function handleStripeWebhook(req, res) {
                     await generateHotelCheckInCredentials(paidReservation, resBusiness);
                 } catch (emailErr) {
                     // Credentials are stored — email failure is non-fatal here.
-                    console.error(`[webhook] Check-in credential/email error for reservation ${reservationId}:`, {
+                    console.error(`[webhook] Check-in credential/email error for reservation ${paidReservation._id}:`, {
                         name: emailErr.name,
                         message: emailErr.message,
                     });
                 }
             } else {
-                console.error(`[webhook] Business not found for reservation ${reservationId} — skipping post-payment email`);
+                console.error(`[webhook] Business not found for reservation ${paidReservation._id}; skipping post-payment email`);
             }
 
             return res.status(200).send();

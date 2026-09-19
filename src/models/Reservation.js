@@ -200,6 +200,17 @@ const ReservationSchema = new mongoose.Schema(
     stripePaymentIntentId: { type: String },
     stripeConnectedAccountId: { type: String },
     amountPaidCents: { type: Number, min: 0 },
+    // Summarizes successful provider payments that could not be accepted as
+    // the one canonical Reservation payment. Full evidence is retained on the
+    // corresponding reservation PendingCheckout attempt.
+    paymentReconciliationStatus: {
+      type: String,
+      enum: ["required", "resolved", null],
+      default: null,
+    },
+    unexpectedPaymentCount: { type: Number, default: 0, min: 0 },
+    unexpectedPaymentAmountCents: { type: Number, default: 0, min: 0 },
+    lastUnexpectedPaymentAt: { type: Date, default: null },
     paymentStatus: {
       type: String,
       enum: ["pending", "paid", "failed", "partially_refunded", "refunded"],

@@ -117,6 +117,7 @@ test/sessionTouchThrottling.test.js
 !test/housekeepingPhase1.test.js
 !test/housekeepingPhase2.test.js
 !test/housekeepingAuthFlow.test.js
+!test/reservationPaymentIdempotency.test.js
 test/phoneNumber.test.js
 test/googlePlacesService.test.js
 test/ownerOrdersPagination.test.js

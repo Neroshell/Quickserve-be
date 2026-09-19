@@ -15,6 +15,10 @@ import {
     ensureReservationPricingSnapshot,
     getCustomerReservationPricing,
 } from "../services/reservationPricingService.js";
+import {
+    createOrReuseReservationCheckout,
+    ReservationPaymentAttemptError,
+} from "../services/reservationPaymentAttemptService.js";
 import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
 import { normalizeTip } from "../utils/tips.js";
 import {
@@ -609,6 +613,13 @@ export async function createReservationCheckoutSession(req, res) {
             return res.status(400).json({ message: "Reservation is not awaiting payment" });
         }
 
+        if (reservation.paymentReconciliationStatus === "required") {
+            return res.status(409).json({
+                code: "RESERVATION_PAYMENT_RECONCILIATION_REQUIRED",
+                message: "This payment requires review. Please contact the business before trying again.",
+            });
+        }
+
         if (reservation.paymentExpiresAt && new Date(reservation.paymentExpiresAt) < new Date()) {
             reservation.status = "expired";
             await reservation.save();
@@ -653,42 +664,63 @@ export async function createReservationCheckoutSession(req, res) {
             businessName: business.displayName || business.name,
         });
 
-        const stripeSessionConfig = {
-            payment_method_types: ["card"],
-            mode: "payment",
-            line_items: lineItems,
-            metadata: {
+        const stripeSessionConfigFactory = (attemptId) => {
+            const metadata = {
                 reservationId: reservation._id.toString(),
                 businessId: business.businessId,
+                pendingCheckoutId: attemptId,
+                paymentAttemptId: attemptId,
                 type: "reservation_payment",
                 pricingSnapshotVersion: String(reservation.pricingSnapshotVersion),
-            },
-            payment_intent_data: {
-                application_fee_amount: reservation.commissionAmountCents,
-                transfer_data: { destination: business.stripeAccountId },
-                metadata: {
-                    reservationId: reservation._id.toString(),
-                    businessId: business.businessId,
-                    type: "reservation_payment"
+            };
+            return {
+                payment_method_types: ["card"],
+                mode: "payment",
+                line_items: lineItems,
+                metadata,
+                payment_intent_data: {
+                    application_fee_amount: reservation.commissionAmountCents,
+                    transfer_data: { destination: business.stripeAccountId },
+                    metadata,
                 },
-            },
-            success_url: `${FRONTEND_BASE_URL}/reservation/confirmation/${reservation._id}`,
-            cancel_url: `${FRONTEND_BASE_URL}/reservation/pay/${secureToken}?payment=cancelled`,
+                success_url: `${FRONTEND_BASE_URL}/reservation/confirmation/${reservation._id}`,
+                cancel_url: `${FRONTEND_BASE_URL}/reservation/pay/${secureToken}?payment=cancelled`,
+                ...(reservation.email ? { customer_email: reservation.email } : {}),
+            };
         };
 
-        if (reservation.email) {
-            stripeSessionConfig.customer_email = reservation.email;
-        }
+        const stripeClient = req.app?.locals?.stripePaymentClient || stripe;
+        const checkout = await createOrReuseReservationCheckout({
+            reservation,
+            business,
+            amountCents,
+            currency,
+            stripeSessionConfigFactory,
+            stripeClient,
+        });
 
-        const stripeSession = await stripe.checkout.sessions.create(stripeSessionConfig);
-
-        reservation.stripeSessionId = stripeSession.id;
-        reservation.stripeConnectedAccountId = business.stripeAccountId;
-        await reservation.save();
-
-        return res.status(201).json({ sessionUrl: stripeSession.url });
+        console.log("[reservationCheckout] Stripe Checkout resolved", {
+            reservationId: String(reservation._id),
+            businessId: reservation.businessId,
+            paymentAttemptId: checkout.attemptId,
+            stripeSessionId: checkout.stripeSessionId,
+            replayed: checkout.replayed,
+        });
+        return res.status(checkout.replayed ? 200 : 201).json({
+            sessionUrl: checkout.sessionUrl,
+            replayed: checkout.replayed,
+        });
     } catch (err) {
-        console.error("[createReservationCheckoutSession] Error:", err);
+        console.error("[createReservationCheckoutSession] Error:", {
+            code: err?.code || null,
+            message: err?.message,
+        });
+        if (err instanceof ReservationPaymentAttemptError || err?.statusCode) {
+            return res.status(err.statusCode || 500).json({
+                code: err.code || "RESERVATION_CHECKOUT_FAILED",
+                message: err.message,
+            });
+        }
         return res.status(500).json({ message: "Server error creating reservation checkout session" });
     }
 }

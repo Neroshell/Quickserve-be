@@ -102,6 +102,9 @@ export function toReservationTransaction(reservation, refunds = []) {
         0,
         originalAmountPaidCents - refundedAmountCents
     )
+    const unexpectedPaymentAmountCents = Number(
+        reservation.unexpectedPaymentAmountCents || 0
+    )
     const hasCapturedPayment = [
         "paid",
         "partially_refunded",
@@ -122,6 +125,18 @@ export function toReservationTransaction(reservation, refunds = []) {
         paidAt: reservation.paidAt,
         paymentChannel: "online",
         paymentStatus: reservation.paymentStatus,
+        paymentReconciliationStatus:
+            reservation.paymentReconciliationStatus || null,
+        unexpectedPaymentCount: Number(
+            reservation.unexpectedPaymentCount || 0
+        ),
+        unexpectedPaymentAmountCents: Number(
+            unexpectedPaymentAmountCents
+        ),
+        providerCapturedAmountCents:
+            originalAmountPaidCents + unexpectedPaymentAmountCents,
+        lastUnexpectedPaymentAt:
+            reservation.lastUnexpectedPaymentAt || null,
         paidVia: hasCapturedPayment ? "online_card" : null,
         receiptEmail: reservation.email,
         receiptSent: Boolean(reservation.confirmationEmailSentAt),
