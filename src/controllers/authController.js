@@ -11,14 +11,32 @@ import { markStaffActive, markStaffOffline } from "../services/presenceService.j
 import {
     resolveCurrentCoOwner,
     resolveCurrentManager,
+    resolveCurrentOwner,
     resolveCurrentOperationalStaff,
     resolveCurrentStaff,
 } from "../middleware/authMiddleware.js";
 import { getEffectiveManagementAreas } from "../constants/managementAccess.js";
+import { validateNewPassword } from "../utils/passwordPolicy.js";
 
 function nextStaffAuthVersion(value) {
     const version = Number(value)
     return (Number.isSafeInteger(version) && version >= 0 ? version : 0) + 1
+}
+
+function normalizedOwnerAuthVersion(value) {
+    const version = Number(value)
+    return Number.isSafeInteger(version) && version >= 0 ? version : 0
+}
+
+function nextOwnerAuthVersion(value) {
+    return normalizedOwnerAuthVersion(value) + 1
+}
+
+function sendPasswordPolicyError(res, password) {
+    const validation = validateNewPassword(password)
+    if (validation.valid) return false
+    res.status(400).json({ message: validation.message, code: validation.code })
+    return true
 }
 /**
  * Validate an invitation token
@@ -111,30 +129,27 @@ export async function setupOwnerPassword(req, res) {
             return res.status(400).json({ message: "Token and password are required" });
         }
 
-        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
-        if (!passwordRegex.test(password)) {
-            return res.status(400).json({ message: "Password must be at least 8 characters long, and contain at least one uppercase letter, one lowercase letter, and one number." });
-        }
+        if (sendPasswordPolicyError(res, password)) return;
 
-        const business = await Business.findOne({
+        const passwordHash = await bcrypt.hash(password, 10);
+        const business = await Business.findOneAndUpdate({
             inviteToken: hashToken(token),
             inviteTokenExpires: { $gt: new Date() },
             ownerStatus: "pending"
-        });
+        }, {
+            $set: {
+                ownerPasswordHash: passwordHash,
+                ownerStatus: "active",
+            },
+            $unset: {
+                inviteToken: "",
+                inviteTokenExpires: "",
+            },
+        }, { new: true });
 
         if (!business) {
             return res.status(404).json({ message: "Invalid or expired invitation token" });
         }
-
-        const saltRounds = 10;
-        const passwordHash = await bcrypt.hash(password, saltRounds);
-
-        business.ownerPasswordHash = passwordHash;
-        business.ownerStatus = "active";
-        business.inviteToken = null;
-        business.inviteTokenExpires = null;
-        
-        await business.save();
 
         return res.json({ message: "Password setup successful! You can now log in." });
     } catch (err) {
@@ -155,30 +170,27 @@ export async function setupStaffPassword(req, res) {
             return res.status(400).json({ message: "Token and password are required" });
         }
 
-        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
-        if (!passwordRegex.test(password)) {
-            return res.status(400).json({ message: "Password must be at least 8 characters long, and contain at least one uppercase letter, one lowercase letter, and one number." });
-        }
+        if (sendPasswordPolicyError(res, password)) return;
 
-        const staff = await Staff.findOne({
+        const passwordHash = await bcrypt.hash(password, 10);
+        const staff = await Staff.findOneAndUpdate({
             inviteToken: hashToken(token),
             inviteTokenExpires: { $gt: new Date() },
             accountStatus: "pending"
-        });
+        }, {
+            $set: {
+                passwordHash,
+                accountStatus: "active",
+            },
+            $unset: {
+                inviteToken: "",
+                inviteTokenExpires: "",
+            },
+        }, { new: true });
 
         if (!staff) {
             return res.status(404).json({ message: "Invalid or expired invitation token" });
         }
-
-        const saltRounds = 10;
-        const passwordHash = await bcrypt.hash(password, saltRounds);
-
-        staff.passwordHash = passwordHash;
-        staff.accountStatus = "active";
-        staff.inviteToken = null;
-        staff.inviteTokenExpires = null;
-        
-        await staff.save();
 
         return res.json({ message: "Account setup successful! You can now log in." });
     } catch (err) {
@@ -204,6 +216,7 @@ export function establishOwnerSession(req, res, business, successResponse = null
                 return reject(err);
             }
             req.session.user = userObj;
+            req.session.ownerAuthVersion = normalizedOwnerAuthVersion(business.ownerAuthVersion);
             req.session.save((err) => {
                 if (err) {
                     console.error("[session] Save error:", err.message);
@@ -239,15 +252,20 @@ export async function loginUser(req, res) {
             return res.status(400).json({ message: "Email and password are required" });
         }
 
-        // 1. Try finding an Owner (Business)
-        const business = await Business.findOne({ ownerEmail: email });
+        const [business, staff] = await Promise.all([
+            Business.findOne({ ownerEmail: email }),
+            Staff.findOne({ email }),
+        ]);
+        const account = business || staff;
+        const passwordHash = business?.ownerPasswordHash || staff?.passwordHash || "$2b$10$CwTycUXWue0Thq9StjUM0uJ8YJ1D8P5x6VD05YQ9NHsl7OU3U3s5m";
+        const isMatch = await bcrypt.compare(password, passwordHash);
+
+        if (!account || !isMatch) {
+            return res.status(401).json({ message: "Invalid credentials" });
+        }
+
         if (business) {
             if (business.ownerStatus !== "active") {
-                return res.status(401).json({ message: "Account is not active. Please check your email for the setup link." });
-            }
-
-            const isMatch = await bcrypt.compare(password, business.ownerPasswordHash);
-            if (!isMatch) {
                 return res.status(401).json({ message: "Invalid credentials" });
             }
 
@@ -262,15 +280,8 @@ export async function loginUser(req, res) {
             });
         }
 
-        // 2. Try finding a Staff member (Waiter / Kitchen / Manager)
-        const staff = await Staff.findOne({ email: email });
         if (staff) {
             if (staff.accountStatus !== "active") {
-                return res.status(401).json({ message: "Account is not active. Please complete your setup first." });
-            }
-
-            const isMatch = await bcrypt.compare(password, staff.passwordHash);
-            if (!isMatch) {
                 return res.status(401).json({ message: "Invalid credentials" });
             }
 
@@ -405,13 +416,11 @@ export async function getMe(req, res) {
             return res.status(401).json({ message: "Not authenticated" });
         }
         
-        const { role, email } = req.session.user;
+        const { role } = req.session.user;
 
         // Optionally, grab fresh data from DB to ensure user isn't disabled
         if (role === 'owner') {
-            const business = await Business.findOne({ ownerEmail: email, ownerStatus: "active" })
-                .select('ownerEmail ownerName displayName businessType modules capabilities currency taxRate timezone ownerStatus currentPlan billingStatus')
-                .lean();
+            const business = req.resolvedCurrentOwner || await resolveCurrentOwner(req);
             if (!business) return res.status(401).json({ message: "Account disabled or not found." });
             return res.json({ 
                 ...req.session.user, 
@@ -543,23 +552,28 @@ export async function resetPassword(req, res) {
             return res.status(400).json({ message: "Token and new password are required" });
         }
 
-        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
-        if (!passwordRegex.test(password)) {
-            return res.status(400).json({ message: "Password must be at least 8 characters long, and contain at least one uppercase letter, one lowercase letter, and one number." });
-        }
+        if (sendPasswordPolicyError(res, password)) return;
 
-        // Try to find the user with the valid token
-        let user = await Business.findOne({
+        const passwordHash = await bcrypt.hash(password, 10);
+        let user = await Business.findOneAndUpdate({
             passwordResetToken: hashToken(token),
             passwordResetExpires: { $gt: new Date() }
-        });
+        }, {
+            $set: { ownerPasswordHash: passwordHash },
+            $unset: { passwordResetToken: "", passwordResetExpires: "" },
+            $inc: { ownerAuthVersion: 1 },
+        }, { new: true });
         let userType = "owner";
 
         if (!user) {
-            user = await Staff.findOne({
+            user = await Staff.findOneAndUpdate({
                 passwordResetToken: hashToken(token),
                 passwordResetExpires: { $gt: new Date() }
-            });
+            }, {
+                $set: { passwordHash },
+                $unset: { passwordResetToken: "", passwordResetExpires: "" },
+                $inc: { authVersion: 1 },
+            }, { new: true });
             userType = "staff";
         }
 
@@ -567,21 +581,14 @@ export async function resetPassword(req, res) {
             return res.status(400).json({ message: "Token is invalid or has expired." });
         }
 
-        const saltRounds = 10;
-        const passwordHash = await bcrypt.hash(password, saltRounds);
-
         if (userType === "owner") {
-            user.ownerPasswordHash = passwordHash;
-            user.passwordResetToken = undefined;
-            user.passwordResetExpires = undefined;
-            await user.save();
+            try {
+                const { publishOwnerAccessRevocation } = await import("../utils/sseManager.js");
+                await publishOwnerAccessRevocation({ businessId: user.businessId });
+            } catch (streamError) {
+                console.error("[resetPassword] Failed to close stale Owner streams", streamError);
+            }
         } else {
-            user.passwordHash = passwordHash;
-            user.authVersion = nextStaffAuthVersion(user.authVersion);
-            user.passwordResetToken = undefined;
-            user.passwordResetExpires = undefined;
-            await user.save();
-
             try {
                 const { publishStaffAccessRevocation } = await import("../utils/sseManager.js");
                 await publishStaffAccessRevocation({
@@ -617,17 +624,21 @@ export async function changePassword(req, res) {
             return res.status(400).json({ message: "Current password and new password are required" });
         }
 
-        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
-        if (!passwordRegex.test(newPassword)) {
-            return res.status(400).json({ message: "New password must be at least 8 characters long, and contain at least one uppercase letter, one lowercase letter, and one number." });
-        }
+        if (sendPasswordPolicyError(res, newPassword)) return;
 
-        const { role, email, businessId } = req.session.user;
+        const { role } = req.session.user;
         let user;
         let userType = "owner";
         
         if (role === 'owner') {
-            user = await Business.findOne({ ownerEmail: email });
+            const currentOwner = await resolveCurrentOwner(req);
+            if (currentOwner) {
+                user = await Business.findOne({
+                    _id: currentOwner._id,
+                    businessId: currentOwner.businessId,
+                    ownerStatus: "active",
+                });
+            }
         } else {
             const currentStaff = await resolveCurrentStaff(req);
             if (!currentStaff) {
@@ -659,6 +670,7 @@ export async function changePassword(req, res) {
 
         if (userType === "owner") {
             user.ownerPasswordHash = passwordHash;
+            user.ownerAuthVersion = nextOwnerAuthVersion(user.ownerAuthVersion);
         } else {
             user.passwordHash = passwordHash;
             user.authVersion = nextStaffAuthVersion(user.authVersion);
@@ -678,20 +690,28 @@ export async function changePassword(req, res) {
                 console.error("[changePassword] Failed to close stale Staff streams", streamError);
             }
 
-            res.clearCookie?.("qs_dashboard_session");
-            if (typeof req.session?.destroy === "function") {
-                await new Promise((resolve) => {
-                    req.session.destroy((error) => {
-                        if (error) console.error("[changePassword] Failed to destroy current session", error);
-                        resolve();
-                    });
-                });
+        } else {
+            try {
+                const { publishOwnerAccessRevocation } = await import("../utils/sseManager.js");
+                await publishOwnerAccessRevocation({ businessId: user.businessId });
+            } catch (streamError) {
+                console.error("[changePassword] Failed to close stale Owner streams", streamError);
             }
+        }
+
+        res.clearCookie?.("qs_dashboard_session");
+        if (typeof req.session?.destroy === "function") {
+            await new Promise((resolve) => {
+                req.session.destroy((error) => {
+                    if (error) console.error("[changePassword] Failed to destroy current session", error);
+                    resolve();
+                });
+            });
         }
 
         return res.json({
             message: "Password updated successfully",
-            ...(userType === "staff" ? { reauthenticationRequired: true } : {}),
+            reauthenticationRequired: true,
         });
     } catch (err) {
         console.error("Change password error:", err);
@@ -842,9 +862,17 @@ export async function confirmEmailChange(req, res) {
         user.emailChangeTokenExpires = undefined;
         await user.save();
 
+        try {
+            const { publishOwnerAccessRevocation } = await import("../utils/sseManager.js");
+            await publishOwnerAccessRevocation({ businessId: user.businessId });
+        } catch (streamError) {
+            console.error("[confirmEmailChange] Failed to close stale Owner streams", streamError);
+        }
+
         // Update active session if the owner is logged in on this device
         if (req.session?.user?.email === oldEmail) {
             req.session.user.email = newEmail;
+            req.session.ownerAuthVersion = normalizedOwnerAuthVersion(user.ownerAuthVersion);
             req.session.save((err) => {
                 if (err) console.error("[confirmEmailChange] Session save error:", err);
             });

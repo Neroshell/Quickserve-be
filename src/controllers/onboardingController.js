@@ -11,8 +11,12 @@ import { getDefaultBusinessModules } from '../services/businessCapabilityService
 import { establishOwnerSession } from './authController.js'
 import { normalizeInternationalPhoneNumber } from '../utils/phoneNumber.js'
 import { PlacesServiceError, resolveGooglePlace, searchGooglePlaces } from '../services/googlePlacesService.js'
+import { validateNewPassword } from '../utils/passwordPolicy.js'
 
 const VERIFICATION_CODE_TTL_MS = 30 * 60 * 1000
+const VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000
+const VERIFICATION_MAX_ATTEMPTS = 5
+const GENERIC_RESEND_MESSAGE = "If an eligible signup exists, a verification code has been sent."
 
 function generateBusinessId() {
     return `biz_${crypto.randomBytes(7).toString("hex")}`
@@ -49,6 +53,47 @@ function getMissingBusinessFields(data) {
         .map(([field, label]) => ({ field, label }))
 }
 
+export async function replaceVerificationChallenge(normalizedEmail, {
+    now = new Date(),
+    sendVerificationCode = sendOnboardingVerificationCode,
+} = {}) {
+    const verificationCode = generateVerificationCode()
+    const session = await OnboardingSession.findOneAndUpdate(
+        {
+            ownerEmail: normalizedEmail,
+            emailVerified: false,
+            $or: [
+                { verificationLastSentAt: { $lte: new Date(now.getTime() - VERIFICATION_RESEND_COOLDOWN_MS) } },
+                { verificationLastSentAt: { $exists: false } },
+            ],
+        },
+        {
+            $set: {
+                verificationToken: hashToken(verificationCode),
+                verificationTokenExpires: new Date(now.getTime() + VERIFICATION_CODE_TTL_MS),
+                verificationAttempts: 0,
+                verificationLastSentAt: now,
+                currentStep: 'verify_email',
+            },
+            $unset: {
+                verificationLockedAt: "",
+                verificationConsumedAt: "",
+            },
+            $inc: { verificationGeneration: 1 },
+        },
+        { new: true },
+    )
+
+    if (!session) return { replaced: false, emailSent: false }
+
+    const emailSent = await sendVerificationCode({
+        to: normalizedEmail,
+        userName: session.ownerName,
+        verificationCode,
+    })
+    return { replaced: true, emailSent: Boolean(emailSent) }
+}
+
 export async function getAddressSuggestions(req, res) {
     try {
         const { sessionId } = req.params
@@ -83,10 +128,26 @@ export async function startSignup(req, res) {
             return res.status(400).json({ message: "You must accept the terms and conditions" })
         }
 
+        const passwordValidation = validateNewPassword(password)
+        if (!passwordValidation.valid) {
+            return res.status(400).json({
+                message: passwordValidation.message,
+                code: passwordValidation.code,
+            })
+        }
+
         const normalizedEmail = email.trim().toLowerCase()
 
         try {
-            await assertEmailAvailable(normalizedEmail)
+            const existingSession = await OnboardingSession.findOne({ ownerEmail: normalizedEmail })
+                .select("_id sessionId")
+                .lean()
+            await assertEmailAvailable(normalizedEmail, {
+                exclude: existingSession ? {
+                    onboardingSessionObjectId: existingSession._id,
+                    onboardingSessionId: existingSession.sessionId,
+                } : {},
+            })
         } catch (err) {
             if (isEmailAlreadyInUseError(err)) {
                 return sendEmailInUseResponse(res)
@@ -110,11 +171,19 @@ export async function startSignup(req, res) {
                     sessionId: generateSessionId(),
                     ownerName,
                     passwordHash,
+                    passwordPolicyVersion: 1,
                     emailVerified: false,
                     verificationToken: hashToken(verificationCode),
                     verificationTokenExpires,
+                    verificationAttempts: 0,
+                    verificationLastSentAt: new Date(),
+                    verificationGeneration: 1,
                     currentStep: 'verify_email',
                     businessData: {}
+                },
+                $unset: {
+                    verificationLockedAt: "",
+                    verificationConsumedAt: ""
                 }
             },
             { new: true, upsert: true }
@@ -146,38 +215,17 @@ export async function startSignup(req, res) {
 export async function resendVerificationEmail(req, res) {
     try {
         const { email } = req.body
-        if (!email) {
+        if (typeof email !== "string" || !email.trim()) {
             return res.status(400).json({ message: "Email is required" })
         }
 
         const normalizedEmail = email.trim().toLowerCase()
-        const session = await OnboardingSession.findOne({ ownerEmail: normalizedEmail })
-
-        if (!session) {
-            return res.status(404).json({ message: "No pending onboarding session found for this email." })
+        const result = await replaceVerificationChallenge(normalizedEmail)
+        if (result.replaced && !result.emailSent) {
+            console.error("Resend verification email delivery failed for an eligible onboarding session")
         }
 
-        if (session.emailVerified) {
-            return res.status(400).json({ message: "Email is already verified." })
-        }
-
-        const verificationCode = generateVerificationCode()
-        session.verificationToken = hashToken(verificationCode)
-        session.verificationTokenExpires = getVerificationExpiresAt()
-        session.currentStep = 'verify_email'
-        await session.save()
-
-        const emailSent = await sendOnboardingVerificationCode({
-            to: normalizedEmail,
-            userName: session.ownerName,
-            verificationCode
-        })
-
-        if (!emailSent) {
-            return res.status(502).json({ message: "Could not send the verification code. Please try again shortly." })
-        }
-
-        return res.json({ message: "Verification code sent." })
+        return res.status(202).json({ message: GENERIC_RESEND_MESSAGE })
     } catch (err) {
         console.error("Resend verification email error:", err)
         return res.status(500).json({ message: "Server error resending verification code" })
@@ -190,32 +238,102 @@ export async function resendVerificationEmail(req, res) {
 export async function verifyEmail(req, res) {
     try {
         const { email, token } = req.body
-        if (!email || !token) {
+        if (typeof email !== "string" || !email.trim() || typeof token !== "string" || !/^\d{6}$/.test(token)) {
             return res.status(400).json({ message: "Email and token are required" })
         }
 
         const normalizedEmail = email.trim().toLowerCase()
         const hashedToken = hashToken(token)
 
-        const session = await OnboardingSession.findOne({ 
+        const now = new Date()
+        const attemptsAvailable = {
+            $or: [
+                { verificationAttempts: { $lt: VERIFICATION_MAX_ATTEMPTS } },
+                { verificationAttempts: { $exists: false } },
+            ],
+        }
+        const session = await OnboardingSession.findOneAndUpdate({
             ownerEmail: normalizedEmail,
+            emailVerified: false,
             verificationToken: hashedToken,
-            verificationTokenExpires: { $gt: new Date() }
-        })
+            verificationTokenExpires: { $gt: now },
+            ...attemptsAvailable,
+        }, {
+            $set: {
+                emailVerified: true,
+                verificationConsumedAt: now,
+                currentStep: 'business_identity',
+            },
+            $unset: {
+                verificationToken: "",
+                verificationTokenExpires: "",
+                verificationLockedAt: "",
+            },
+        }, { new: true })
 
-        if (!session) {
-            return res.status(400).json({ message: "Invalid or expired verification token." })
+        if (session) {
+            return res.json({
+                message: "Email verified successfully",
+                sessionId: session.sessionId
+            })
         }
 
-        session.emailVerified = true
-        session.verificationToken = undefined
-        session.verificationTokenExpires = undefined
-        session.currentStep = 'business_identity'
-        await session.save()
+        const failedAttempt = await OnboardingSession.findOneAndUpdate({
+            ownerEmail: normalizedEmail,
+            emailVerified: false,
+            verificationTokenExpires: { $gt: now },
+            verificationToken: { $ne: hashedToken },
+            ...attemptsAvailable,
+        }, [
+            {
+                $set: {
+                    verificationAttempts: {
+                        $add: [{ $ifNull: ["$verificationAttempts", 0] }, 1],
+                    },
+                },
+            },
+            {
+                $set: {
+                    verificationLockedAt: {
+                        $cond: [
+                            { $gte: ["$verificationAttempts", VERIFICATION_MAX_ATTEMPTS] },
+                            "$$NOW",
+                            "$verificationLockedAt",
+                        ],
+                    },
+                },
+            },
+        ], { new: true })
 
-        return res.json({ 
-            message: "Email verified successfully",
-            sessionId: session.sessionId
+        if (Number(failedAttempt?.verificationAttempts) >= VERIFICATION_MAX_ATTEMPTS) {
+            return res.status(400).json({
+                message: "Too many incorrect codes. Request a new verification code.",
+                code: "VERIFICATION_ATTEMPTS_EXHAUSTED",
+            })
+        }
+
+        const challenge = failedAttempt || await OnboardingSession.findOne({ ownerEmail: normalizedEmail })
+        if (
+            challenge &&
+            !challenge.emailVerified &&
+            challenge.verificationTokenExpires &&
+            challenge.verificationTokenExpires <= now
+        ) {
+            return res.status(400).json({
+                message: "This verification code has expired. Request a new code.",
+                code: "VERIFICATION_CODE_EXPIRED",
+            })
+        }
+        if (Number(challenge?.verificationAttempts) >= VERIFICATION_MAX_ATTEMPTS) {
+            return res.status(400).json({
+                message: "Too many incorrect codes. Request a new verification code.",
+                code: "VERIFICATION_ATTEMPTS_EXHAUSTED",
+            })
+        }
+
+        return res.status(400).json({
+            message: "Invalid or expired verification code.",
+            code: "INVALID_VERIFICATION_CODE",
         })
     } catch (err) {
         console.error("Verify email error:", err)
@@ -390,6 +508,12 @@ export async function completeOnboarding(req, res) {
 
         if (!session.emailVerified) {
             return res.status(400).json({ message: "Email not verified" })
+        }
+        if (session.passwordPolicyVersion !== 1) {
+            return res.status(409).json({
+                message: "Your signup must be restarted to use the current password requirements.",
+                code: "PASSWORD_POLICY_RESTART_REQUIRED",
+            })
         }
 
         const data = session.businessData

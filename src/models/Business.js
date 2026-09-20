@@ -409,6 +409,9 @@ const BusinessSchema = new mongoose.Schema({
         default: "pending" 
     },
     ownerPasswordHash: { type: String },
+    // Mirrors Staff authVersion for the Business-owned primary identity while
+    // keeping the two authentication lifecycles distinct.
+    ownerAuthVersion: { type: Number, default: 0, min: 0 },
     inviteToken: { type: String, index: true, select: false },
     inviteTokenExpires: { type: Date },
     passwordResetToken: { type: String, index: true, select: false },
@@ -460,6 +463,39 @@ const BusinessSchema = new mongoose.Schema({
 BusinessSchema.pre("validate", function normalizeModulesBeforeValidation() {
     this.modules = validateBusinessModulesForType(this.businessType, this.modules)
 })
+
+const OWNER_AUTH_VERSION_PATHS = ["ownerStatus", "ownerEmail"]
+
+BusinessSchema.pre("save", function incrementOwnerAuthVersionForSensitiveSave() {
+    if (this.isNew || !OWNER_AUTH_VERSION_PATHS.some((path) => this.isModified(path))) return
+    const current = Number(this.ownerAuthVersion)
+    this.ownerAuthVersion = (Number.isSafeInteger(current) && current >= 0 ? current : 0) + 1
+})
+
+function ownerUpdateTouchesSensitiveAuthState(update = {}) {
+    return OWNER_AUTH_VERSION_PATHS.some((path) => (
+        Object.hasOwn(update, path) ||
+        Object.hasOwn(update.$set || {}, path) ||
+        Object.hasOwn(update.$unset || {}, path)
+    ))
+}
+
+function incrementOwnerAuthVersionForSensitiveQueryUpdate() {
+    const update = this.getUpdate() || {}
+    if (!ownerUpdateTouchesSensitiveAuthState(update)) return
+
+    delete update.ownerAuthVersion
+    if (update.$set) delete update.$set.ownerAuthVersion
+    update.$inc = {
+        ...(update.$inc || {}),
+        ownerAuthVersion: Number(update.$inc?.ownerAuthVersion || 0) + 1,
+    }
+    this.setUpdate(update)
+}
+
+BusinessSchema.pre("findOneAndUpdate", incrementOwnerAuthVersionForSensitiveQueryUpdate)
+BusinessSchema.pre("updateOne", incrementOwnerAuthVersionForSensitiveQueryUpdate)
+BusinessSchema.pre("updateMany", incrementOwnerAuthVersionForSensitiveQueryUpdate)
 
 // Compound index to ensure slug is unique per country
 BusinessSchema.index({ countryCode: 1, slug: 1 }, { unique: true })

@@ -120,20 +120,26 @@ test("an invited housekeeping account preserves defaults through setup and login
     })
     t.mock.method(Business, "findOne", () => Promise.resolve(null))
     t.mock.method(Staff, "findOne", () => Promise.resolve(staff))
+    t.mock.method(Staff, "findOneAndUpdate", async (_filter, update) => {
+        Object.assign(staff, update.$set)
+        staff.inviteToken = undefined
+        staff.inviteTokenExpires = undefined
+        return staff
+    })
     t.mock.method(bcrypt, "hash", async () => "new-password-hash")
     t.mock.method(bcrypt, "compare", async () => true)
 
     const setupRes = response()
     await setupStaffPassword({
         query: {},
-        body: { token: "raw-invite-token", password: "Password1" },
+        body: { token: "raw-invite-token", password: "LongPassword1" },
     }, setupRes)
     assert.equal(setupRes.statusCode, 200)
     assert.equal(staff.accountStatus, "active")
     assert.deepEqual(staff.permissions, HOUSEKEEPING_DEFAULT_PERMISSIONS)
 
     const loginReq = {
-        body: { email: staff.email, password: "Password1" },
+        body: { email: staff.email, password: "LongPassword1" },
         session: {
             regenerate(callback) { callback() },
             save(callback) { callback() },

@@ -30,6 +30,11 @@ async function lean(query) {
     return query
 }
 
+function normalizedAuthVersion(value) {
+    const version = Number(value)
+    return Number.isSafeInteger(version) && version >= 0 ? version : 0
+}
+
 function asPlain(value) {
     if (!value) return value
     return typeof value.toObject === "function"
@@ -129,18 +134,23 @@ export async function resolveNotificationAccessContext(req, {
         if (!mongoose.isValidObjectId(sessionUser.userId)) {
             throw new NotificationReadError("Forbidden", 403, "NOTIFICATION_FORBIDDEN")
         }
-        const business = await lean(BusinessModel.findOne({
+        const business = req.resolvedCurrentOwner || await lean(BusinessModel.findOne({
             _id: sessionUser.userId,
             businessId,
             ownerStatus: "active",
-        }).select("_id businessId ownerStatus"))
-        if (!business) {
+        }).select("_id businessId ownerStatus ownerAuthVersion"))
+        if (
+            !business ||
+            normalizedAuthVersion(business.ownerAuthVersion) !==
+                normalizedAuthVersion(req.session.ownerAuthVersion)
+        ) {
             throw new NotificationReadError("Forbidden", 403, "NOTIFICATION_FORBIDDEN")
         }
         return {
             businessId,
             recipientKind: NOTIFICATION_RECIPIENT_KINDS.OWNER,
             recipientId: business._id,
+            ownerAuthVersion: business.ownerAuthVersion,
             user: { role: "owner" },
         }
     }

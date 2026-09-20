@@ -1,19 +1,56 @@
 import express from "express";
-import rateLimit from "express-rate-limit";
 import { validateInviteToken, setupOwnerPassword, loginUser, getMe, requestPasswordReset, resetPassword, changePassword, changeEmail, confirmEmailChange } from "../controllers/authController.js";
 import { coOwnerAccessSseHandler } from "../utils/sseManager.js";
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js";
+import {
+  createSharedSecurityRateLimit,
+  getRequestIp,
+  normalizeRateLimitEmail,
+} from "../middleware/sharedSecurityRateLimit.js";
 
 const router = express.Router();
 
-// Strict rate limiter for sensitive auth endpoints
-const authLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 15-minute window
-  max: 5, // Max 5 attempts per IP per window
-  message: { message: "Too many attempts. Please try again in 15 minutes." },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skipSuccessfulRequests: true, // Only count failed requests against the limit
+const loginLimiter = createSharedSecurityRateLimit({
+  scope: "auth-login",
+  windowMs: 15 * 60 * 1000,
+  getDimensions: (req) => [
+    { name: "ip", value: getRequestIp(req), limit: 50 },
+    { name: "email", value: normalizeRateLimitEmail(req.body?.email), limit: 10 },
+  ],
+  message: "Too many login attempts. Please try again later.",
+});
+
+const inviteValidationLimiter = createSharedSecurityRateLimit({
+  scope: "auth-invite-validation",
+  windowMs: 15 * 60 * 1000,
+  getDimensions: (req) => [
+    { name: "ip", value: getRequestIp(req), limit: 100 },
+    { name: "token", value: req.query?.token, limit: 20 },
+  ],
+});
+
+const inviteSetupLimiter = createSharedSecurityRateLimit({
+  scope: "auth-invite-setup",
+  windowMs: 60 * 60 * 1000,
+  getDimensions: (req) => [
+    { name: "ip", value: getRequestIp(req), limit: 30 },
+    { name: "token", value: req.body?.token, limit: 10 },
+  ],
+});
+
+// Retain the canonical route name used by existing password/session regression
+// coverage while replacing its process-local store with shared Redis counters.
+const authLimiter = createSharedSecurityRateLimit({
+  scope: "auth-credential-change",
+  windowMs: 15 * 60 * 1000,
+  getDimensions: (req) => [
+    { name: "ip", value: getRequestIp(req), limit: 30 },
+    {
+      name: "subject",
+      value: normalizeRateLimitEmail(req.body?.email || req.session?.user?.email) || req.body?.token,
+      limit: 10,
+    },
+  ],
 });
 
 /**
@@ -45,7 +82,7 @@ const authLimiter = rateLimit({
  *       400:
  *         description: Invalid or expired token
  */
-router.get("/invite/validate", validateInviteToken);
+router.get("/invite/validate", inviteValidationLimiter, validateInviteToken);
 
 /**
  * @openapi
@@ -74,7 +111,7 @@ router.get("/invite/validate", validateInviteToken);
  *       400:
  *         description: Missing fields or invalid token
  */
-router.post("/invite/setup-password", setupOwnerPassword);
+router.post("/invite/setup-password", inviteSetupLimiter, setupOwnerPassword);
 
 /**
  * @openapi
@@ -103,7 +140,7 @@ router.post("/invite/setup-password", setupOwnerPassword);
  *       401:
  *         description: Invalid email or password
  */
-router.post("/login", authLimiter, loginUser);
+router.post("/login", loginLimiter, loginUser);
 
 /**
  * @openapi
@@ -134,7 +171,7 @@ router.post("/login", authLimiter, loginUser);
  *       401:
  *         description: Unauthorized. Please log in.
  */
-router.get("/me", getMe);
+router.get("/me", requireAuth, getMe);
 
 // Co-Owner permission changes are delivered as content-free invalidations.
 // The client refetches /auth/me; backend route guards remain authoritative.
@@ -177,7 +214,7 @@ router.post("/heartbeat", requireAuth, staffHeartbeat);
  *       400:
  *         description: Invalid or expired token
  */
-router.get("/invite/staff/validate", validateStaffToken);
+router.get("/invite/staff/validate", inviteValidationLimiter, validateStaffToken);
 
 /**
  * @openapi
@@ -206,7 +243,7 @@ router.get("/invite/staff/validate", validateStaffToken);
  *       400:
  *         description: Missing fields or invalid token
  */
-router.post("/invite/staff/setup-password", setupStaffPassword);
+router.post("/invite/staff/setup-password", inviteSetupLimiter, setupStaffPassword);
 
 /**
  * @openapi
@@ -292,7 +329,7 @@ router.post("/change-password", authLimiter, requireAuth, changePassword);
  *     tags:
  *       - Auth
  */
-router.post("/request-email-change", authLimiter, changeEmail);
+router.post("/request-email-change", authLimiter, requireAuth, changeEmail);
 
 /**
  * @openapi

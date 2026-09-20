@@ -34,10 +34,16 @@ const OnboardingSessionSchema = new mongoose.Schema({
     },
     ownerName: { type: String, required: true },
     passwordHash: { type: String, required: true },
+    passwordPolicyVersion: { type: Number, default: null },
     
     emailVerified: { type: Boolean, default: false },
     verificationToken: { type: String, select: false },
     verificationTokenExpires: { type: Date },
+    verificationAttempts: { type: Number, default: 0, min: 0 },
+    verificationLastSentAt: { type: Date },
+    verificationLockedAt: { type: Date },
+    verificationConsumedAt: { type: Date },
+    verificationGeneration: { type: Number, default: 1, min: 1 },
     
     currentStep: { type: String, default: 'verify_email' }, // e.g. verify_email, business_identity, location, localization, plan
     

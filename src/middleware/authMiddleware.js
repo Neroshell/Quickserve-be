@@ -1,5 +1,6 @@
 import mongoose from "mongoose"
 import Staff from "../models/Staff.js"
+import Business from "../models/Business.js"
 import { isValidPermission } from "../constants/permissions.js"
 import {
     MANAGEMENT_AREA_BY_PERMISSION,
@@ -28,6 +29,10 @@ export function isStaffSessionUser(sessionUser) {
     )
 }
 
+export function isOwnerSessionUser(sessionUser) {
+    return Boolean(sessionUser && sessionUser.type === "owner" && sessionUser.role === "owner")
+}
+
 function sendRevokedSession(req, res) {
     res.clearCookie?.("qs_dashboard_session")
     if (typeof req.session?.destroy === "function") {
@@ -46,16 +51,47 @@ export async function requireAuth(req, res, next) {
         return res.status(401).json({ message: "Unauthorized. Please log in." })
     }
 
-    if (!isStaffSessionUser(req.session.user)) return next()
-
     try {
-        const staff = await resolveCurrentStaff(req)
-        if (!staff) return sendRevokedSession(req, res)
+        if (isOwnerSessionUser(req.session.user)) {
+            const owner = await resolveCurrentOwner(req)
+            if (!owner) return sendRevokedSession(req, res)
+        } else if (isStaffSessionUser(req.session.user)) {
+            const staff = await resolveCurrentStaff(req)
+            if (!staff) return sendRevokedSession(req, res)
+        }
         return next()
     } catch (error) {
-        console.error("[authorization] Failed to verify current Staff session", error)
+        console.error("[authorization] Failed to verify current session", error)
         return res.status(500).json({ message: "Unable to verify session." })
     }
+}
+
+/** Resolve the primary owner identity from the canonical Business record. */
+export async function resolveCurrentOwner(req) {
+    const sessionUser = req.session?.user
+    if (!isOwnerSessionUser(sessionUser)) return null
+    if (req.resolvedCurrentOwner) return req.resolvedCurrentOwner
+    if (!mongoose.isValidObjectId(sessionUser.userId) || !sessionUser.businessId) return null
+
+    const business = await Business.findOne({
+        _id: sessionUser.userId,
+        businessId: sessionUser.businessId,
+    })
+        .select("_id businessId ownerEmail ownerName ownerStatus ownerAuthVersion displayName businessType modules capabilities currency taxRate timezone currentPlan billingStatus ownerPasswordHash")
+        .lean()
+
+    if (
+        !business ||
+        business.ownerStatus !== "active" ||
+        business.businessId !== sessionUser.businessId ||
+        business.ownerEmail !== sessionUser.email ||
+        normalizedAuthVersion(business.ownerAuthVersion) !== normalizedAuthVersion(req.session.ownerAuthVersion)
+    ) {
+        return null
+    }
+
+    req.resolvedCurrentOwner = business
+    return business
 }
 
 export function requireRole(...roles) {

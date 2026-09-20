@@ -358,6 +358,14 @@ test("Staff password reset revokes old sessions; only the new credential logs in
         async save() {},
     }
     t.mock.method(Business, "findOne", async () => null)
+    t.mock.method(Business, "findOneAndUpdate", async () => null)
+    t.mock.method(Staff, "findOneAndUpdate", async (_filter, update) => {
+        Object.assign(record, update.$set)
+        record.authVersion += update.$inc.authVersion
+        record.passwordResetToken = undefined
+        record.passwordResetExpires = undefined
+        return record
+    })
     t.mock.method(Staff, "findOne", (filter) => {
         if (filter.passwordResetToken || filter.email) return Promise.resolve(record)
         return selectable(() => ({ ...record }))

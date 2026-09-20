@@ -25,6 +25,7 @@ import {
     isStaffSessionUser,
     resolveCurrentCoOwner,
     resolveCurrentManager,
+    resolveCurrentOwner,
     resolveCurrentOperationalStaff,
     resolveCurrentStaff,
 } from "../middleware/authMiddleware.js"
@@ -82,6 +83,7 @@ const MANAGER_SSE_PERMISSIONS_BY_CHANNEL = {
 
 const MANAGER_ACCESS_REVOKED_EVENT = "__manager_access_revoked"
 const STAFF_ACCESS_REVOKED_EVENT = "__staff_access_revoked"
+const OWNER_ACCESS_REVOKED_EVENT = "__owner_access_revoked"
 export const CO_OWNER_ACCESS_CHANGED_EVENT = "co_owner_access_changed"
 export const NOTIFICATION_CHANGED_EVENT = "notification_changed"
 export const SERVICE_POINTS_CHANGED_EVENT = "service_points_changed"
@@ -192,6 +194,23 @@ async function findCurrentOperationalStaffForClient(client) {
     }
 }
 
+async function findCurrentOwnerForClient(client) {
+    try {
+        const business = await Business.findOne({
+            _id: client.ownerIdentity?.businessObjectId,
+            businessId: client.businessId,
+            ownerStatus: "active",
+        }).select("ownerAuthVersion").lean()
+        return business &&
+            normalizedAuthVersion(business.ownerAuthVersion) === normalizedAuthVersion(client.ownerAuthVersion)
+            ? business
+            : null
+    } catch (error) {
+        console.error("[SSE] Failed to revalidate Owner stream:", error.message)
+        return null
+    }
+}
+
 async function businessHasLodgingCapability(businessId) {
     try {
         const business = await Business.findOne({ businessId }).select("businessType modules").lean()
@@ -214,11 +233,16 @@ function notificationRecipientMatches(client, recipientTargets) {
 async function revalidateNotificationClient(client, access = {}) {
     try {
         if (client.notificationRole === "owner") {
-            return Boolean(await Business.exists({
+            const business = await Business.findOne({
                 _id: client.notificationIdentity?.recipientId,
                 businessId: client.businessId,
                 ownerStatus: "active",
-            }))
+            }).select("ownerAuthVersion").lean()
+            return Boolean(
+                business &&
+                normalizedAuthVersion(business.ownerAuthVersion) ===
+                    normalizedAuthVersion(client.notificationAuthVersion),
+            )
         }
 
         const staff = await Staff.findOne({
@@ -290,7 +314,7 @@ export async function notificationSseHandler(req, res, {
             recipientKind: context.recipientKind,
             recipientId: String(context.recipientId),
         },
-        notificationAuthVersion: context.staffAuthVersion,
+        notificationAuthVersion: context.staffAuthVersion ?? context.ownerAuthVersion,
         notificationRevalidator: revalidateClient,
     }
     addClient(client)
@@ -390,6 +414,8 @@ export async function sseHandler(req, res) {
     let operationalRole = null
     let operationalAuthVersion = null
     let managementAuthVersion = null
+    let ownerIdentity = null
+    let ownerAuthVersion = null
 
     if (!businessId) {
         return res.status(400).end("Missing businessId")
@@ -421,6 +447,20 @@ export async function sseHandler(req, res) {
         }
 
         let currentStaff = null
+        let currentOwner = null
+        if (req.session.user.role === "owner") {
+            try {
+                currentOwner = await resolveCurrentOwner(req)
+            } catch (error) {
+                console.error("[SSE] Failed to verify current Owner session:", error.message)
+                return res.status(500).end("Unable to verify session.")
+            }
+            if (!currentOwner) {
+                return res.status(401).end("Session is no longer valid. Please log in again.")
+            }
+            ownerIdentity = { businessObjectId: String(currentOwner._id) }
+            ownerAuthVersion = currentOwner.ownerAuthVersion
+        }
         if (isStaffSessionUser(req.session.user)) {
             try {
                 currentStaff = await resolveCurrentStaff(req)
@@ -535,6 +575,8 @@ export async function sseHandler(req, res) {
         operationalIdentity,
         operationalRole,
         operationalAuthVersion,
+        ownerIdentity,
+        ownerAuthVersion,
     }
 
     addClient(client)
@@ -588,6 +630,16 @@ export async function sseHandler(req, res) {
                     !currentStaff ||
                     (client.operationalPermission && !currentStaff.permissions?.includes(client.operationalPermission))
                 ) {
+                    res.end()
+                    clearInterval(keepAlive)
+                    removeClient(client)
+                    return
+                }
+            }
+            if (client.ownerIdentity) {
+                const currentOwner = await findCurrentOwnerForClient(client)
+                if (!clients.has(client)) return
+                if (!currentOwner) {
                     res.end()
                     clearInterval(keepAlive)
                     removeClient(client)
@@ -675,6 +727,24 @@ export function disconnectStaffClients({ businessId, staffObjectId, staffId }) {
     return disconnected
 }
 
+/** Close every live stream for the primary Owner of a business. */
+export function disconnectOwnerClients({ businessId }) {
+    let disconnected = 0
+    for (const client of [...clients]) {
+        if (client.businessId !== businessId) continue
+        if (!client.ownerIdentity && client.notificationRole !== "owner") continue
+        try {
+            client.res.end()
+        } catch (error) {
+            console.error("[SSE] Failed to close revoked Owner stream:", error.message)
+        } finally {
+            removeClient(client)
+            disconnected++
+        }
+    }
+    return disconnected
+}
+
 export function disconnectManagementClients({ businessId, staffObjectId, staffId }) {
     let disconnected = 0
     for (const client of [...clients]) {
@@ -742,6 +812,10 @@ export async function broadcastLocal(msg) {
         })
         return
     }
+    if (event === OWNER_ACCESS_REVOKED_EVENT) {
+        disconnectOwnerClients({ businessId })
+        return
+    }
     if (event === MANAGER_ACCESS_REVOKED_EVENT) {
         disconnectManagerClients({
             businessId,
@@ -794,6 +868,7 @@ export async function broadcastLocal(msg) {
     let matched = 0
     const managerAuthorizationByIdentity = new Map()
     const operationalAuthorizationByIdentity = new Map()
+    const ownerAuthorizationByIdentity = new Map()
 
     for (const client of clients) {
         // Business isolation — strict
@@ -881,6 +956,19 @@ export async function broadcastLocal(msg) {
                 !currentStaff ||
                 (client.operationalPermission && !currentStaff.permissions?.includes(client.operationalPermission))
             ) {
+                try { client.res.end() } catch {}
+                removeClient(client)
+                continue
+            }
+        }
+
+        if (client.ownerIdentity) {
+            if (!ownerAuthorizationByIdentity.has(client.businessId)) {
+                ownerAuthorizationByIdentity.set(client.businessId, findCurrentOwnerForClient(client))
+            }
+            const currentOwner = await ownerAuthorizationByIdentity.get(client.businessId)
+            if (!clients.has(client)) continue
+            if (!currentOwner) {
                 try { client.res.end() } catch {}
                 removeClient(client)
                 continue
@@ -1065,6 +1153,11 @@ export async function publishStaffAccessRevocation({ businessId, staffObjectId, 
             staffId: staffId || null,
         },
     )
+}
+
+/** Disconnect primary Owner streams on every app instance after credential changes. */
+export async function publishOwnerAccessRevocation({ businessId }) {
+    return publishEvent(OWNER_ACCESS_REVOKED_EVENT, businessId, null, {})
 }
 
 /** Invalidate one Co-Owner's auth state and close stale management streams. */

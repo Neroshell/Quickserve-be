@@ -121,6 +121,7 @@ test/sessionTouchThrottling.test.js
 !test/reservationPaymentIdempotency.test.js
 !test/hotelReservationConcurrency.integration.test.js
 !test/reservationPrivacy.test.js
+!test/onboardingAuthHardening.test.js
 test/phoneNumber.test.js
 test/googlePlacesService.test.js
 test/ownerOrdersPagination.test.js
