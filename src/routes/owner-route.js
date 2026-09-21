@@ -60,7 +60,8 @@ import {
     deleteReservation,
     resendReservationConfirmation,
     resendReservationPaymentLink,
-    reassignHotelRoom
+    reassignHotelRoom,
+    reassignRestaurantServicePoint
 } from "../controllers/reservationController.js"
 import { cancelOwnerHotelReservation } from "../controllers/reservationCancellationController.js"
 import {
@@ -928,6 +929,11 @@ router.patch("/reservations/:id/status", requirePermission(PERMISSIONS.RESERVATI
  *         description: Room is not available
  */
 router.patch("/reservations/:id/room", requirePermission(PERMISSIONS.RESERVATIONS_MANAGE), reassignHotelRoom)
+router.patch(
+    "/reservations/:id/service-point",
+    requirePermission(PERMISSIONS.RESERVATIONS_MANAGE),
+    reassignRestaurantServicePoint,
+)
 
 /**
  * @openapi

@@ -13,9 +13,10 @@ const [
     buildRestaurantConflictQuery,
     getRestaurantAvailability,
     isRestaurantServicePointEligible,
+    rankRestaurantServicePoints,
     validateRestaurantReservationWindow,
   },
-  { createRestaurantReservation },
+  { createRestaurantReservation, reassignRestaurantReservationServicePoint },
   { getOwnerRestaurantAvailability },
   { getPublicRestaurantAvailability },
   { default: Business },
@@ -268,7 +269,7 @@ test("no-preference, multiple tables and valid end times use the same overlap se
   assert.equal(result.availableDates.includes("2026-09-08"), true);
   assert.equal(capture.servicePointQuery.businessId, "business-a");
   assert.equal(capture.reservationQuery.businessId, "business-a");
-  assert.deepEqual(capture.reservationQuery.status.$in, ["confirmed", "arrived", "seated"]);
+  assert.deepEqual(capture.reservationQuery.status.$in, ["pending", "confirmed", "arrived", "seated"]);
 });
 
 test("ServicePoint options update for the selected date even before a start is chosen", async (t) => {
@@ -456,10 +457,248 @@ test("conflict queries are tenant scoped and use half-open overlap semantics", (
     businessId: "business-a",
     servicePointId: "table-a",
     date: "2026-09-08",
-    status: { $in: ["confirmed", "arrived", "seated"] },
+    status: { $in: ["pending", "confirmed", "arrived", "seated"] },
     startTime: { $lt: "11:00" },
     endTime: { $gt: "10:00" },
   });
+});
+
+test("automatic allocation ranking prefers the smallest adequate table deterministically", () => {
+  const ranked = rankRestaurantServicePoints([
+    createPoint({ servicePointId: "table-z", capacity: 4 }),
+    createPoint({ servicePointId: "table-b", capacity: 2 }),
+    createPoint({ servicePointId: "table-a", capacity: 2 }),
+    createPoint({ servicePointId: "table-unconfigured", capacity: null }),
+  ]);
+  assert.deepEqual(
+    ranked.map((point) => point.servicePointId),
+    ["table-a", "table-b", "table-z", "table-unconfigured"],
+  );
+});
+
+test("new restaurant reservation without a requested table gets a canonical assignment", async (t) => {
+  const date = "2099-07-07";
+  const business = createBusiness({
+    operatingHours: {
+      Tuesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
+    },
+  });
+  const large = createPoint({ servicePointId: "table-large", capacity: 6 });
+  const smallest = createPoint({ servicePointId: "table-small", capacity: 2 });
+  let savedReservation = null;
+
+  t.mock.method(ServicePoint, "find", () => mockQuery([large, smallest]));
+  t.mock.method(ServicePoint, "findOneAndUpdate", (filter) => {
+    assert.equal(filter.businessId, business.businessId);
+    assert.equal(filter.servicePointId, smallest.servicePointId);
+    return mockQuery(smallest);
+  });
+  t.mock.method(Reservation, "find", () => mockQuery([]));
+  t.mock.method(Reservation, "findOne", () => mockQuery(null));
+  t.mock.method(Reservation.prototype, "save", async function () {
+    savedReservation = this;
+  });
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  }));
+
+  const result = await createRestaurantReservation({
+    businessSlug: business.slug,
+    business,
+    customerName: "Automatic Guest",
+    phone: "+15550000001",
+    email: "automatic@example.com",
+    date,
+    startTime: "10:00",
+    endTime: "11:00",
+    durationMinutes: 60,
+    guestCount: 2,
+    source: "dashboard",
+    initialStatus: "confirmed",
+    availabilityPolicy: RESTAURANT_AVAILABILITY_POLICIES.owner,
+    notificationMode: "none",
+  });
+
+  assert.equal(savedReservation.servicePointId, smallest.servicePointId);
+  assert.equal(savedReservation.servicePointLabel, smallest.label);
+  assert.equal(result.reservation.servicePointId, smallest.servicePointId);
+});
+
+test("public creation validates and reserves the exact requested ServicePoint", async (t) => {
+  const date = "2099-07-07";
+  const business = createBusiness({
+    operatingHours: {
+      Tuesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
+    },
+  });
+  const requested = createPoint({
+    servicePointId: "table-requested",
+    label: "Terrace 4",
+    capacity: 4,
+  });
+  let savedReservation = null;
+
+  t.mock.method(ServicePoint, "find", (query) => {
+    assert.equal(query.businessId, business.businessId);
+    assert.equal(query.servicePointId, requested.servicePointId);
+    assert.deepEqual(query.isActive, { $ne: false });
+    assert.deepEqual(query.reservable, { $ne: false });
+    assert.deepEqual(query.$or, [
+      { servicePointType: { $in: ["table", "booth", "other"] } },
+      { servicePointType: { $exists: false } },
+      { servicePointType: null },
+    ]);
+    return mockQuery([requested]);
+  });
+  t.mock.method(ServicePoint, "findOneAndUpdate", (filter) => {
+    assert.equal(filter.businessId, business.businessId);
+    assert.equal(filter.servicePointId, requested.servicePointId);
+    return mockQuery(requested);
+  });
+  t.mock.method(Reservation, "find", () => mockQuery([]));
+  t.mock.method(Reservation, "findOne", () => mockQuery(null));
+  t.mock.method(Reservation.prototype, "save", async function () {
+    savedReservation = this;
+  });
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  }));
+
+  const result = await createRestaurantReservation({
+    businessSlug: business.slug,
+    business,
+    customerName: "Specific Table Guest",
+    phone: "+15550000003",
+    email: "specific@example.com",
+    date,
+    startTime: "10:00",
+    endTime: "11:00",
+    durationMinutes: 60,
+    guestCount: 3,
+    servicePointId: requested.servicePointId,
+    availabilityPolicy: RESTAURANT_AVAILABILITY_POLICIES.public,
+    notificationMode: "none",
+  });
+
+  assert.equal(savedReservation.servicePointId, requested.servicePointId);
+  assert.equal(savedReservation.servicePointLabel, requested.label);
+  assert.equal(result.reservation.servicePointId, requested.servicePointId);
+});
+
+test("an unavailable explicit selection is rejected rather than silently substituted", async (t) => {
+  const business = createBusiness({
+    operatingHours: {
+      Tuesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
+    },
+  });
+  let saveCalls = 0;
+  t.mock.method(ServicePoint, "find", (query) => {
+    assert.equal(query.businessId, business.businessId);
+    assert.equal(query.servicePointId, "table-unavailable");
+    return mockQuery([]);
+  });
+  t.mock.method(Reservation.prototype, "save", async () => { saveCalls += 1; });
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  }));
+
+  await assert.rejects(
+    createRestaurantReservation({
+      businessSlug: business.slug,
+      business,
+      customerName: "Unavailable Table Guest",
+      phone: "+15550000004",
+      email: "unavailable@example.com",
+      date: "2099-07-07",
+      startTime: "10:00",
+      endTime: "11:00",
+      durationMinutes: 60,
+      guestCount: 2,
+      servicePointId: "table-unavailable",
+      availabilityPolicy: RESTAURANT_AVAILABILITY_POLICIES.public,
+      notificationMode: "none",
+    }),
+    (error) => error.statusCode === 400 && /selected service point/i.test(error.message),
+  );
+  assert.equal(saveCalls, 0);
+});
+
+test("no eligible table rejects creation and never persists an unassigned reservation", async (t) => {
+  const business = createBusiness({
+    operatingHours: {
+      Tuesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
+    },
+  });
+  let saveCalls = 0;
+  t.mock.method(ServicePoint, "find", () => mockQuery([]));
+  t.mock.method(Reservation.prototype, "save", async () => { saveCalls += 1; });
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  }));
+
+  await assert.rejects(
+    createRestaurantReservation({
+      businessSlug: business.slug,
+      business,
+      customerName: "No Table Guest",
+      phone: "+15550000002",
+      email: "no-table@example.com",
+      date: "2099-07-07",
+      startTime: "10:00",
+      endTime: "11:00",
+      durationMinutes: 60,
+      guestCount: 2,
+      availabilityPolicy: RESTAURANT_AVAILABILITY_POLICIES.public,
+      notificationMode: "none",
+    }),
+    (error) => error.statusCode === 400 && /No service point/i.test(error.message),
+  );
+  assert.equal(saveCalls, 0);
+});
+
+test("restaurant reassignment reuses the canonical destination availability rules", async (t) => {
+  const destination = createPoint({ servicePointId: "table-destination", label: "Destination" });
+  const reservation = {
+    _id: "reservation-1",
+    businessId: "business-a",
+    date: "2099-07-07",
+    startTime: "10:00",
+    endTime: "11:00",
+    guestCount: 2,
+    status: "confirmed",
+    servicePointId: "table-source",
+    servicePointLabel: "Source",
+    checkInDate: null,
+    checkOutDate: null,
+    async save() {},
+  };
+  t.mock.method(ServicePoint, "find", () => mockQuery([destination]));
+  t.mock.method(ServicePoint, "findOneAndUpdate", () => mockQuery(destination));
+  t.mock.method(Reservation, "find", () => mockQuery([]));
+  t.mock.method(Reservation, "findOne", (query) => {
+    if (query._id === reservation._id) {
+      return { session: async () => reservation };
+    }
+    return mockQuery(null);
+  });
+  const session = {
+    async withTransaction(work) { return work(); },
+    async endSession() {},
+  };
+
+  const result = await reassignRestaurantReservationServicePoint({
+    businessId: reservation.businessId,
+    reservationId: reservation._id,
+    newServicePointId: destination.servicePointId,
+    startSession: async () => session,
+  });
+  assert.equal(result.unchanged, false);
+  assert.equal(reservation.servicePointId, destination.servicePointId);
+  assert.equal(reservation.servicePointLabel, destination.label);
 });
 
 test("final owner creation loses a stale-availability race with 409 and no double booking", async (t) => {
@@ -481,7 +720,7 @@ test("final owner creation loses a stale-availability race with 409 and no doubl
     assert.equal(filter.businessId, business.businessId);
     assert.equal(filter.servicePointId, point.servicePointId);
     assert.deepEqual(update, { $currentDate: { updatedAt: true } });
-    assert.equal(options.new, true);
+    assert.equal(options.returnDocument, "after");
     return mockQuery(point);
   });
   t.mock.method(Reservation, "find", () => {
@@ -537,7 +776,7 @@ test("final owner creation loses a stale-availability race with 409 and no doubl
     (error) => error.statusCode === 409 && /already booked/i.test(error.message),
   );
 
-  assert.equal(reservationFindCalls, 1);
+  assert.equal(reservationFindCalls, 2);
   assert.equal(lockCalls, 1);
   assert.equal(saveCalls, 0);
 });

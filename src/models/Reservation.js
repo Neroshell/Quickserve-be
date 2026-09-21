@@ -108,6 +108,21 @@ const ReservationSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // Durable retry identity for restaurant creation only. Kept optional so
+    // historical rows and hotel flows retain their existing schema semantics.
+    restaurantCreationIdempotencyKey: {
+      type: String,
+      trim: true,
+      maxlength: 200,
+      default: null,
+      select: false,
+    },
+    restaurantCreationFingerprint: {
+      type: String,
+      maxlength: 64,
+      default: null,
+      select: false,
+    },
     roomTypeSnapshot: {
       type: String,
       default: null,
@@ -339,6 +354,16 @@ const ReservationSchema = new mongoose.Schema(
 );
 
 ReservationSchema.index({ businessId: 1, servicePointId: 1, date: 1, status: 1, startTime: 1, endTime: 1 });
+ReservationSchema.index(
+  { businessId: 1, restaurantCreationIdempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      restaurantCreationIdempotencyKey: { $type: "string" },
+    },
+    name: "uniq_restaurant_reservation_creation_request",
+  },
+);
 // Supports authoritative lodging revenue recognition by payment time.
 ReservationSchema.index({ businessId: 1, paymentStatus: 1, paidAt: 1 });
 ReservationSchema.index(

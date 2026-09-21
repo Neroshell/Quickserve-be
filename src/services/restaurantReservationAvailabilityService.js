@@ -8,6 +8,7 @@ import ServicePoint from "../models/ServicePoint.js";
 import { getConfiguredServicePointCapacity } from "./reservationCapacityService.js";
 
 export const RESTAURANT_BLOCKING_STATUSES = Object.freeze([
+  "pending",
   "confirmed",
   "arrived",
   "seated",
@@ -239,7 +240,7 @@ export async function lockRestaurantServicePointForCreation({
   let query = ServicePoint.findOneAndUpdate(
     buildRestaurantServicePointQuery({ businessId, policy, servicePointId }),
     { $currentDate: { updatedAt: true } },
-    { new: true, session },
+    { returnDocument: "after", session },
   ).select("businessId servicePointId label servicePointType capacity reservable isActive");
   query = applySession(query, session);
   const servicePoint = await query.lean();
@@ -278,9 +279,22 @@ export async function assertNoRestaurantReservationConflict({
   }
 }
 
-function hasCapacity(servicePoint, partySize) {
+export function hasRestaurantReservationCapacity(servicePoint, partySize) {
   const capacity = getConfiguredServicePointCapacity(servicePoint);
   return capacity === null || partySize <= capacity;
+}
+
+export function rankRestaurantServicePoints(servicePoints = []) {
+  return [...servicePoints].sort((left, right) => {
+    const leftCapacity = getConfiguredServicePointCapacity(left);
+    const rightCapacity = getConfiguredServicePointCapacity(right);
+    if (leftCapacity !== rightCapacity) {
+      if (leftCapacity === null) return 1;
+      if (rightCapacity === null) return -1;
+      return leftCapacity - rightCapacity;
+    }
+    return String(left.servicePointId).localeCompare(String(right.servicePointId));
+  });
 }
 
 function overlaps(reservation, startTime, endTime) {
@@ -308,9 +322,12 @@ export async function findAvailableRestaurantServicePointsForRange({
   date,
   startTime,
   endTime,
+  excludeReservationId,
   session,
 }) {
-  const candidates = servicePoints.filter((point) => hasCapacity(point, partySize));
+  const candidates = servicePoints.filter((point) =>
+    hasRestaurantReservationCapacity(point, partySize)
+  );
   if (candidates.length === 0) return [];
 
   let query = Reservation.find({
@@ -320,6 +337,7 @@ export async function findAvailableRestaurantServicePointsForRange({
     status: { $in: [...RESTAURANT_BLOCKING_STATUSES] },
     startTime: { $lt: endTime },
     endTime: { $gt: startTime },
+    ...(excludeReservationId ? { _id: { $ne: excludeReservationId } } : {}),
   }).select("businessId servicePointId date startTime endTime status");
   query = applySession(query, session);
   const reservations = (await query.lean()).filter((reservation) =>
@@ -333,6 +351,98 @@ export async function findAvailableRestaurantServicePointsForRange({
     startTime,
     endTime,
   });
+}
+
+/**
+ * Selects and locks one canonical physical resource for a restaurant booking.
+ * Automatic allocation uses one set-based availability read and chooses the
+ * smallest adequate table, with servicePointId as the stable tie-breaker.
+ * The caller must persist the reservation in the same MongoDB transaction.
+ */
+export async function allocateRestaurantServicePoint({
+  businessId,
+  policy,
+  requestedServicePointId,
+  partySize,
+  date,
+  startTime,
+  endTime,
+  excludeReservationId,
+  session,
+}) {
+  const eligibleServicePoints = await findEligibleRestaurantServicePoints({
+    businessId,
+    policy,
+    ...(requestedServicePointId
+      ? { servicePointId: requestedServicePointId }
+      : {}),
+    session,
+  });
+
+  if (requestedServicePointId && eligibleServicePoints.length === 0) {
+    throw availabilityError(
+      "The selected service point is not available for reservations.",
+      400,
+    );
+  }
+
+  const adequateServicePoints = rankRestaurantServicePoints(
+    eligibleServicePoints.filter((point) =>
+      hasRestaurantReservationCapacity(point, partySize)
+    ),
+  );
+  if (adequateServicePoints.length === 0) {
+    throw availabilityError(
+      requestedServicePointId
+        ? "The selected service point cannot accommodate this party."
+        : "No service point can accommodate this party.",
+      400,
+    );
+  }
+
+  const availableServicePoints = await findAvailableRestaurantServicePointsForRange({
+    businessId,
+    servicePoints: adequateServicePoints,
+    partySize,
+    date,
+    startTime,
+    endTime,
+    excludeReservationId,
+    session,
+  });
+  const selected = rankRestaurantServicePoints(availableServicePoints)[0];
+  if (!selected) {
+    throw availabilityError(
+      requestedServicePointId
+        ? "The selected service point is already booked for this time."
+        : "No service point is currently available for this party and time.",
+      409,
+    );
+  }
+
+  const locked = await lockRestaurantServicePointForCreation({
+    businessId,
+    policy,
+    servicePointId: selected.servicePointId,
+    session,
+  });
+  if (!locked || !hasRestaurantReservationCapacity(locked, partySize)) {
+    throw availabilityError(
+      "Restaurant availability changed while the reservation was being saved. Please try again.",
+      409,
+    );
+  }
+
+  await assertNoRestaurantReservationConflict({
+    businessId,
+    servicePointId: locked.servicePointId,
+    date,
+    startTime,
+    endTime,
+    excludeReservationId,
+    session,
+  });
+  return locked;
 }
 
 function generateRangeEndTimes(startMinutes, closeMinutes) {
@@ -501,7 +611,7 @@ export async function getRestaurantAvailability({
     policy,
   });
   const capacityCompatiblePoints = servicePoints.filter((point) =>
-    hasCapacity(point, partySize)
+    hasRestaurantReservationCapacity(point, partySize)
   );
 
   const queryDates = [...new Set([

@@ -11,16 +11,12 @@ import {
   sendReservationRequestReceivedEmail,
 } from "../utils/emailService.js";
 import { dispatchRestaurantReservationEmail } from "./email/emailDispatchService.js";
-import { validateReservationGuestCapacity } from "./reservationCapacityService.js";
 import { EMAIL_JOB_NAMES, enqueueReservationPaymentExpiry } from "../queues/index.js";
 import { getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
 import {
   RESTAURANT_AVAILABILITY_POLICIES,
-  assertNoRestaurantReservationConflict,
+  allocateRestaurantServicePoint,
   assertRestaurantAvailabilityPolicy,
-  findAvailableRestaurantServicePointsForRange,
-  findEligibleRestaurantServicePoints,
-  lockRestaurantServicePointForCreation,
   validateRestaurantPartySize,
   validateRestaurantReservationWindow,
 } from "./restaurantReservationAvailabilityService.js";
@@ -174,6 +170,80 @@ function normalizeHotelAllocationTransactionError(error) {
   return conflict;
 }
 
+function normalizeRestaurantAllocationTransactionError(error) {
+  if (error?.statusCode) return error;
+
+  const transient =
+    error?.hasErrorLabel?.("TransientTransactionError") ||
+    error?.hasErrorLabel?.("UnknownTransactionCommitResult") ||
+    [112, 251].includes(error?.code) ||
+    ["WriteConflict", "NoSuchTransaction"].includes(error?.codeName);
+  if (!transient) return error;
+
+  const conflict = new Error(
+    "Restaurant availability changed while the reservation was being saved. Please try again.",
+  );
+  conflict.statusCode = 409;
+  conflict.code = "RESTAURANT_SERVICE_POINT_ALLOCATION_CONFLICT";
+  conflict.cause = error;
+  return conflict;
+}
+
+export function normalizeRestaurantCreationIdempotencyKey(value) {
+  if (typeof value !== "string") {
+    const error = new Error("A valid Idempotency-Key header is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 200) {
+    const error = new Error(
+      "Idempotency-Key must contain between 1 and 200 characters.",
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+  return normalized;
+}
+
+function restaurantCreationFingerprint(values) {
+  const canonical = {
+    businessId: values.businessId,
+    customerName: String(values.customerName || "").trim(),
+    phone: String(values.phone || "").trim(),
+    email: String(values.email || "").trim().toLowerCase(),
+    date: values.date,
+    startTime: values.startTime,
+    endTime: values.endTime,
+    durationMinutes: values.durationMinutes,
+    guestCount: values.guestCount,
+    seatingPreference: values.seatingPreference || "no_preference",
+    requestedServicePointId: values.requestedServicePointId || null,
+    specialRequest: String(values.specialRequest || "").trim(),
+    source: values.source,
+    initialStatus: values.initialStatus,
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+async function findRestaurantCreationReplay({ businessId, idempotencyKey, session }) {
+  if (!idempotencyKey) return null;
+  const query = Reservation.findOne({
+    businessId,
+    restaurantCreationIdempotencyKey: idempotencyKey,
+  }).select("+restaurantCreationIdempotencyKey +restaurantCreationFingerprint");
+  return session ? query.session(session) : query;
+}
+
+function assertRestaurantCreationReplayMatches(reservation, fingerprint) {
+  if (reservation?.restaurantCreationFingerprint === fingerprint) return;
+  const error = new Error(
+    "Idempotency-Key was already used for another reservation request.",
+  );
+  error.statusCode = 409;
+  throw error;
+}
+
 /**
  * Atomically moves one hotel reservation to another physical room. The
  * destination ServicePoint lock and reservation update commit together.
@@ -257,6 +327,72 @@ export async function reassignHotelReservationRoom({
     });
   } catch (error) {
     throw normalizeHotelAllocationTransactionError(error);
+  } finally {
+    await session.endSession();
+  }
+
+  return { reservation, unchanged };
+}
+
+/**
+ * Atomically moves an active restaurant reservation to another eligible
+ * ServicePoint. This intentionally reuses the same allocator as creation.
+ */
+export async function reassignRestaurantReservationServicePoint({
+  businessId,
+  reservationId,
+  newServicePointId,
+  startSession = () => mongoose.startSession(),
+}) {
+  const session = await startSession();
+  let reservation;
+  let unchanged = false;
+
+  try {
+    await session.withTransaction(async () => {
+      reservation = await Reservation.findOne({
+        _id: reservationId,
+        businessId,
+      }).session(session);
+      if (!reservation) {
+        const error = new Error("Reservation not found.");
+        error.statusCode = 404;
+        throw error;
+      }
+      if (reservation.checkInDate || reservation.checkOutDate) {
+        const error = new Error(
+          "ServicePoint reassignment is only supported for restaurant reservations.",
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+      if (!["pending", "confirmed", "arrived", "seated"].includes(reservation.status)) {
+        const error = new Error("Cannot reassign a terminal reservation.");
+        error.statusCode = 400;
+        throw error;
+      }
+      if (reservation.servicePointId === newServicePointId) {
+        unchanged = true;
+        return;
+      }
+
+      const allocatedServicePoint = await allocateRestaurantServicePoint({
+        businessId,
+        policy: RESTAURANT_AVAILABILITY_POLICIES.owner,
+        requestedServicePointId: newServicePointId,
+        partySize: validateRestaurantPartySize(reservation.guestCount),
+        date: reservation.date,
+        startTime: reservation.startTime,
+        endTime: reservation.endTime,
+        excludeReservationId: reservation._id,
+        session,
+      });
+      reservation.servicePointId = allocatedServicePoint.servicePointId;
+      reservation.servicePointLabel = allocatedServicePoint.label;
+      await reservation.save({ session });
+    });
+  } catch (error) {
+    throw normalizeRestaurantAllocationTransactionError(error);
   } finally {
     await session.endSession();
   }
@@ -610,6 +746,8 @@ export async function createRestaurantReservation({
   staffSnapshot = null,
   availabilityPolicy = RESTAURANT_AVAILABILITY_POLICIES.public,
   notificationMode = "request",
+  idempotencyKey: rawIdempotencyKey = null,
+  startSession = () => mongoose.startSession(),
 }) {
   if (!businessSlug || !customerName || !phone || !email || !date || !startTime || !endTime || !guestCount) {
     const err = new Error("Missing required fields");
@@ -652,87 +790,62 @@ export async function createRestaurantReservation({
     throw err;
   }
 
-  let reservation;
-  let resolvedServicePointLabel = null;
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      let capacityServicePoints;
-      if (servicePointId) {
-        const sp = await lockRestaurantServicePointForCreation({
-          servicePointId,
+  const idempotencyKey = rawIdempotencyKey == null
+    ? null
+    : normalizeRestaurantCreationIdempotencyKey(rawIdempotencyKey);
+  const fingerprint = restaurantCreationFingerprint({
+    businessId: business.businessId,
+    customerName,
+    phone,
+    email,
+    date,
+    startTime,
+    endTime,
+    durationMinutes: duration,
+    guestCount: guests,
+    seatingPreference: "no_preference",
+    requestedServicePointId: servicePointId,
+    specialRequest,
+    source,
+    initialStatus,
+  });
+
+  let reservation = await findRestaurantCreationReplay({
+    businessId: business.businessId,
+    idempotencyKey,
+  });
+  let replayed = Boolean(reservation);
+  if (reservation) assertRestaurantCreationReplayMatches(reservation, fingerprint);
+
+  if (!reservation) {
+    const session = await startSession();
+    try {
+      await session.withTransaction(async () => {
+        const transactionReplay = await findRestaurantCreationReplay({
+          businessId: business.businessId,
+          idempotencyKey,
+          session,
+        });
+        if (transactionReplay) {
+          assertRestaurantCreationReplayMatches(transactionReplay, fingerprint);
+          reservation = transactionReplay;
+          replayed = true;
+          return;
+        }
+
+        const allocatedServicePoint = await allocateRestaurantServicePoint({
           businessId: business.businessId,
           policy: availabilityPolicy,
-          session,
-        });
-        if (!sp) {
-          const err = new Error("The selected service point is not available for reservations.");
-          err.statusCode = 400;
-          throw err;
-        }
-
-        capacityServicePoints = [sp];
-        resolvedServicePointLabel = sp.label;
-        const { capacity, valid } = validateReservationGuestCapacity({
-          guestCount: guests,
-          servicePoints: capacityServicePoints,
-          servicePointId,
-        });
-        if (!valid) {
-          const err = new Error(
-            "This service point accommodates a maximum of " + capacity + " guests.",
-          );
-          err.statusCode = 400;
-          throw err;
-        }
-
-        await assertNoRestaurantReservationConflict({
-          businessId: business.businessId,
-          servicePointId,
-          date,
-          startTime,
-          endTime,
-          session,
-        });
-      } else {
-        capacityServicePoints = await findEligibleRestaurantServicePoints({
-          businessId: business.businessId,
-          policy: availabilityPolicy,
-          session,
-        });
-
-        const { capacity, valid } = validateReservationGuestCapacity({
-          guestCount: guests,
-          servicePoints: capacityServicePoints,
-        });
-        if (!valid) {
-          const err = new Error(
-            "Reservations cannot accommodate more than " + capacity + " guests.",
-          );
-          err.statusCode = 400;
-          throw err;
-        }
-
-        const currentlyAvailableServicePoints = await findAvailableRestaurantServicePointsForRange({
-          businessId: business.businessId,
-          servicePoints: capacityServicePoints,
+          requestedServicePointId: servicePointId,
           partySize: guests,
           date,
           startTime,
           endTime,
           session,
         });
-        if (currentlyAvailableServicePoints.length === 0) {
-          const err = new Error(
-            "No service point is currently available for this party and time.",
-          );
-          err.statusCode = 409;
-          throw err;
-        }
-      }
 
-      const now = new Date();
-      reservation = new Reservation({
+        const now = new Date();
+        reservation = new Reservation({
         businessId: business.businessId,
         businessSlug: business.slug,
         customerName,
@@ -744,9 +857,17 @@ export async function createRestaurantReservation({
         endTime,
         durationMinutes: duration,
         guestCount: guests,
-        seatingPreference,
-        servicePointId,
-        servicePointLabel: resolvedServicePointLabel,
+        // Chillow currently has no supported seating-area taxonomy. Absence of
+        // a preference means automatic assignment, never an unassigned table.
+        seatingPreference: "no_preference",
+        servicePointId: allocatedServicePoint.servicePointId,
+        servicePointLabel: allocatedServicePoint.label,
+        ...(idempotencyKey
+          ? {
+            restaurantCreationIdempotencyKey: idempotencyKey,
+            restaurantCreationFingerprint: fingerprint,
+          }
+          : {}),
         specialRequest,
         status: initialStatus,
         source,
@@ -766,13 +887,29 @@ export async function createRestaurantReservation({
           : {}),
       });
 
-      await reservation.save({ session });
-    });
-  } finally {
-    await session.endSession();
+        await reservation.save({ session });
+      });
+    } catch (error) {
+      const duplicateCreationKey =
+        error?.code === 11000 &&
+        (error?.keyPattern?.restaurantCreationIdempotencyKey ||
+          error?.message?.includes("uniq_restaurant_reservation_creation_request"));
+      if (!duplicateCreationKey || !idempotencyKey) {
+        throw normalizeRestaurantAllocationTransactionError(error);
+      }
+      reservation = await findRestaurantCreationReplay({
+        businessId: business.businessId,
+        idempotencyKey,
+      });
+      if (!reservation) throw normalizeRestaurantAllocationTransactionError(error);
+      assertRestaurantCreationReplayMatches(reservation, fingerprint);
+      replayed = true;
+    } finally {
+      await session.endSession();
+    }
   }
 
-  try {
+  if (!replayed) try {
     const { publishEvent } = await import("../utils/sseManager.js");
     publishEvent("reservation_created", reservation.businessId, ["reservations", "owner"], {
       reservation: {
@@ -852,7 +989,7 @@ export async function createRestaurantReservation({
       }),
     );
   }
-  await Promise.all(deliveries);
+  if (!replayed) await Promise.all(deliveries);
 
   return {
     message: initialStatus === "seated"
@@ -862,6 +999,7 @@ export async function createRestaurantReservation({
         : "Reservation request received.",
     reservationId: reservation._id,
     reservation,
+    replayed,
   };
 }
 
@@ -905,6 +1043,7 @@ export async function createReservationService(data) {
     initialStatus = "pending",
     availabilityPolicy = RESTAURANT_AVAILABILITY_POLICIES.public,
     notificationMode = "request",
+    idempotencyKey = null,
     // Business is pre-loaded by the staff controller (avoid double lookup)
     business: preloadedBusiness = null,
   } = data;
@@ -960,5 +1099,6 @@ export async function createReservationService(data) {
     staffSnapshot,
     availabilityPolicy,
     notificationMode,
+    idempotencyKey,
   });
 }

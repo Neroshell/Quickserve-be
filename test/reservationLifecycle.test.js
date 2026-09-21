@@ -588,7 +588,11 @@ test("restaurant: invalid transitions are rejected", () => {
 
 test("restaurant: staff Mark Arrived writes arrivedAt and arrivalSource=staff", async (t) => {
     mockRestaurantBusiness(t)
-    const reservation = restaurantReservation({ status: "confirmed" })
+    const reservation = restaurantReservation({
+        status: "confirmed",
+        servicePointId: "table-1",
+        servicePointLabel: "Table 1",
+    })
     let captured
     t.mock.method(Reservation, "findOne", async () => reservation)
     t.mock.method(Reservation, "findOneAndUpdate", async (_filter, update) => {
@@ -663,6 +667,8 @@ test("restaurant: seated and completed transitions persist their event timestamp
     let currentReservation = restaurantReservation({
         status: "arrived",
         arrivedAt: new Date(),
+        servicePointId: "table-1",
+        servicePointLabel: "Table 1",
     })
     const updates = []
     t.mock.method(Reservation, "findOne", async () => currentReservation)
@@ -724,8 +730,8 @@ test("restaurant: Today operations derive attention and live table metrics", () 
     assert.deepEqual(result.stats.arrivedToday, { total: 3, percent: 50 })
     assert.deepEqual(result.stats.seatedNow, { reservations: 1, guests: 4 })
     assert.deepEqual(result.stats.tableAvailability, {
-        available: 3,
-        total: 4,
+        available: 2,
+        total: 3,
         occupied: 1,
         reservedLater: 2,
     })

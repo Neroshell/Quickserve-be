@@ -123,9 +123,10 @@ export function buildRestaurantTodayOperations({
   });
 
   const activeServicePoints = servicePoints.filter(
-    (servicePoint) =>
-      servicePoint.isActive !== false &&
-      servicePoint.servicePointType !== "room",
+    (servicePoint) => isRestaurantServicePointEligible(
+      servicePoint,
+      RESTAURANT_AVAILABILITY_POLICIES.owner,
+    ),
   );
   const activeServicePointIds = new Set(
     activeServicePoints.map((servicePoint) => servicePoint.servicePointId),
@@ -181,4 +182,8 @@ export function buildRestaurantTodayOperations({
     },
   };
 }
+import {
+  RESTAURANT_AVAILABILITY_POLICIES,
+  isRestaurantServicePointEligible,
+} from "./restaurantReservationAvailabilityService.js";
 

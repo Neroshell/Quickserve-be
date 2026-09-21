@@ -283,7 +283,10 @@ export async function getBusinessBySlug(req, res) {
   }
 }
 
-import { createReservationService } from "../services/reservationCreationService.js";
+import {
+  createReservationService,
+  normalizeRestaurantCreationIdempotencyKey,
+} from "../services/reservationCreationService.js";
 
 async function createExternalReservationNotification(...args) {
   const { notifyExternalReservationCreated } = await import(
@@ -317,6 +320,17 @@ export async function createReservation(req, res, {
       durationMinutes,
       seatingPreference,
     } = req.body || {};
+    const idempotencyKey = isHotelBooking
+      ? null
+      : normalizeRestaurantCreationIdempotencyKey(
+        req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"],
+      );
+    if (!isHotelBooking && servicePointId != null && typeof servicePointId !== "string") {
+      return res.status(400).json({ error: "A valid ServicePoint ID is required." });
+    }
+    const requestedRestaurantServicePointId = !isHotelBooking && servicePointId
+      ? servicePointId.trim() || null
+      : null;
     const result = await createReservationRequest({
       isHotelBooking,
       businessSlug,
@@ -324,7 +338,11 @@ export async function createReservation(req, res, {
       phone,
       email,
       guestCount,
-      servicePointId,
+      // A guest selection is a request only. Restaurant creation independently
+      // validates and locks it through the canonical transactional allocator.
+      servicePointId: isHotelBooking
+        ? servicePointId
+        : requestedRestaurantServicePointId,
       specialRequest,
       checkInDate,
       checkOutDate,
@@ -332,11 +350,12 @@ export async function createReservation(req, res, {
       startTime,
       endTime,
       durationMinutes,
-      seatingPreference,
+      seatingPreference: isHotelBooking ? seatingPreference : "no_preference",
       source: "online",
+      idempotencyKey,
     });
 
-    try {
+    if (!result.replayed) try {
       await notifyExternalReservation({ reservation: result.reservation });
     } catch (notificationError) {
       console.error("[publicController.createReservation] Notification intent failed", {
@@ -359,7 +378,7 @@ export async function createReservation(req, res, {
       dto.secureToken = result.reservation.secureToken;
     }
 
-    return res.status(201).json(dto);
+    return res.status(result.replayed ? 200 : 201).json(dto);
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ error: error.message });

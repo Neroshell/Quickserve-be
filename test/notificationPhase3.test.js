@@ -268,6 +268,8 @@ test("the public reservation endpoint emits external-created after persistence",
   const response = createResponse();
 
   await createPublicReservation({
+    headers: { "idempotency-key": "restaurant-public-1" },
+    get(name) { return this.headers[name.toLowerCase()]; },
     body: {
       isHotelBooking: false,
       businessSlug: "test-bistro",
@@ -278,6 +280,7 @@ test("the public reservation endpoint emits external-created after persistence",
       date: "2026-09-10",
       startTime: "18:00",
       endTime: "19:00",
+      servicePointId: "table-terrace-4",
     },
   }, response, {
     createReservationRequest: async (input) => {
@@ -293,6 +296,8 @@ test("the public reservation endpoint emits external-created after persistence",
 
   assert.equal(response.statusCode, 201);
   assert.equal(creationInput.source, "online");
+  assert.equal(creationInput.idempotencyKey, "restaurant-public-1");
+  assert.equal(creationInput.servicePointId, "table-terrace-4");
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].reservation._id, created._id);
   assert.equal("reservation" in response.body, false);
@@ -301,7 +306,11 @@ test("the public reservation endpoint emits external-created after persistence",
 test("notification failure never rolls back a successful public reservation", async (t) => {
   t.mock.method(console, "error", () => {});
   const response = createResponse();
-  await createPublicReservation({ body: {} }, response, {
+  await createPublicReservation({
+    headers: { "idempotency-key": "restaurant-public-2" },
+    get(name) { return this.headers[name.toLowerCase()]; },
+    body: {},
+  }, response, {
     createReservationRequest: async () => ({
       message: "Reservation request received.",
       reservationId: "reservation-public-2",

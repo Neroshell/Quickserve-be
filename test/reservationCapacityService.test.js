@@ -7,8 +7,11 @@ import {
   validateReservationGuestCapacity,
 } from "../src/services/reservationCapacityService.js";
 import Business from "../src/models/Business.js";
+import Reservation from "../src/models/Reservation.js";
 import ServicePoint from "../src/models/ServicePoint.js";
 import { createReservation } from "../src/controllers/publicController.js";
+import { createRestaurantReservation } from "../src/services/reservationCreationService.js";
+import { RESTAURANT_AVAILABILITY_POLICIES } from "../src/services/restaurantReservationAvailabilityService.js";
 
 const servicePoints = [
   { servicePointId: "sp_small", capacity: 2 },
@@ -71,6 +74,8 @@ function createResponse() {
 function createRestaurantReservationRequest(overrides = {}) {
   const date = "2099-07-24";
   return {
+    headers: { "idempotency-key": `capacity-${overrides.servicePointId || "automatic"}` },
+    get(name) { return this.headers[name.toLowerCase()]; },
     body: {
       businessSlug: "capacity-restaurant",
       customerName: "Capacity Guest",
@@ -109,24 +114,24 @@ function createBusinessForDate(date) {
   };
 }
 
-test("public reservations reject guest counts above the selected service point capacity", async (t) => {
+test("explicit owner assignments reject guest counts above the selected service point capacity", async (t) => {
   const request = createRestaurantReservationRequest({
     servicePointId: "sp_small",
     servicePointLabel: "Small Table",
   });
   const business = createBusinessForDate(request.body.date);
 
-  t.mock.method(Business, "findOne", () => ({ lean: async () => business }));
-  t.mock.method(ServicePoint, "findOneAndUpdate", () => ({
-    select() { return this; },
-    session() { return this; },
-    lean: async () => ({
+  t.mock.method(ServicePoint, "find", () => ({
+    select: () => ({
+      session() { return this; },
+      lean: async () => [{
       servicePointId: "sp_small",
       businessId: business.businessId,
       servicePointType: "table",
       isActive: true,
       reservable: true,
       capacity: 2,
+      }],
     }),
   }));
   t.mock.method(mongoose, "startSession", async () => ({
@@ -134,11 +139,15 @@ test("public reservations reject guest counts above the selected service point c
     async endSession() {},
   }));
 
-  const response = createResponse();
-  await createReservation(request, response);
-
-  assert.equal(response.statusCode, 400);
-  assert.match(response.body.error, /maximum of 2 guests/i);
+  await assert.rejects(
+    createRestaurantReservation({
+      ...request.body,
+      business,
+      availabilityPolicy: RESTAURANT_AVAILABILITY_POLICIES.owner,
+      notificationMode: "none",
+    }),
+    (error) => error.statusCode === 400 && /cannot accommodate/i.test(error.message),
+  );
 });
 
 test("no-preference reservations reject counts above every configured capacity", async (t) => {
@@ -146,6 +155,11 @@ test("no-preference reservations reject counts above every configured capacity",
   const business = createBusinessForDate(request.body.date);
 
   t.mock.method(Business, "findOne", () => ({ lean: async () => business }));
+  t.mock.method(Reservation, "findOne", () => ({
+    select() { return this; },
+    session() { return this; },
+    then(resolve) { return Promise.resolve(null).then(resolve); },
+  }));
   t.mock.method(ServicePoint, "find", () => ({
     select: () => ({
       session() { return this; },
@@ -164,5 +178,5 @@ test("no-preference reservations reject counts above every configured capacity",
   await createReservation(request, response);
 
   assert.equal(response.statusCode, 400);
-  assert.match(response.body.error, /more than 4 guests/i);
+  assert.match(response.body.error, /No service point can accommodate/i);
 });

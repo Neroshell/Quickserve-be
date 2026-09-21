@@ -23,12 +23,15 @@ import {
   createReservationService,
   createHotelReservation,
   reassignHotelReservationRoom,
+  reassignRestaurantReservationServicePoint,
+  normalizeRestaurantCreationIdempotencyKey,
 } from "../services/reservationCreationService.js";
 import { HOTEL_PAYMENT_WINDOW_MINUTES, getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
 import { resolveBusinessDay } from "../utils/businessDate.js";
 import { buildRestaurantTodayOperations } from "../services/restaurantReservationOperationsService.js";
 import {
   RESTAURANT_AVAILABILITY_POLICIES,
+  RESTAURANT_BLOCKING_STATUSES,
   getRestaurantAvailability,
 } from "../services/restaurantReservationAvailabilityService.js";
 import {
@@ -139,6 +142,8 @@ export function toOwnerReservationResponse(reservation) {
     arrivalTokenHash,
     arrivalIp,
     arrivalUserAgent,
+    restaurantCreationIdempotencyKey,
+    restaurantCreationFingerprint,
     ...safeReservation
   } = source;
   const originalPaidAmountCents =
@@ -686,6 +691,15 @@ export async function updateReservationStatus(req, res) {
 
     // Conflict check when confirming (restaurant/café only — hotels use date-overlap via accepted_awaiting_payment)
     const isHotel = resolveBusinessCapabilities(business).reservations.primaryMode === "stay";
+    if (
+      !isHotel &&
+      RESTAURANT_BLOCKING_STATUSES.includes(status) &&
+      !reservation.servicePointId
+    ) {
+      return res.status(409).json({
+        error: "Assign an available ServicePoint before continuing this legacy reservation.",
+      });
+    }
     if (reservation.activeRefundId) {
       return res.status(409).json({
         error: "A refund operation is currently in progress for this reservation.",
@@ -738,7 +752,7 @@ export async function updateReservationStatus(req, res) {
             businessId: reservation.businessId,
             servicePointId: reservation.servicePointId,
             date: reservation.date,
-            status: { $in: ["confirmed", "arrived", "seated"] },
+            status: { $in: [...RESTAURANT_BLOCKING_STATUSES] },
             startTime: { $lt: reservation.endTime },
             endTime: { $gt: reservation.startTime },
             _id: { $ne: reservation._id }
@@ -1511,6 +1525,9 @@ export async function createStaffReservation(req, res) {
           error: "A service point is required to seat a walk-in guest.",
         });
       }
+      const idempotencyKey = normalizeRestaurantCreationIdempotencyKey(
+        req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"],
+      );
 
       result = await createReservationService({
         isHotelBooking: false,
@@ -1524,7 +1541,7 @@ export async function createStaffReservation(req, res) {
         endTime,
         durationMinutes,
         guestCount,
-        seatingPreference,
+        seatingPreference: "no_preference",
         servicePointId,
         specialRequest,
         source: shouldSeatNow ? "walk_in" : "dashboard",
@@ -1534,14 +1551,15 @@ export async function createStaffReservation(req, res) {
           ? RESTAURANT_AVAILABILITY_POLICIES.ownerWalkIn
           : RESTAURANT_AVAILABILITY_POLICIES.owner,
         notificationMode: shouldSeatNow ? "none" : "confirmed",
+        idempotencyKey,
       });
 
-      if (!shouldSeatNow) {
+      if (!shouldSeatNow && !result.replayed) {
         await tryScheduleArrivalReminder(req, result.reservation, business);
       }
     }
 
-    return res.status(201).json(result);
+    return res.status(result.replayed ? 200 : 201).json(result);
   } catch (error) {
     if (error.statusCode) {
       return res.status(error.statusCode).json({ error: error.message });
@@ -1830,6 +1848,56 @@ export async function reassignHotelRoom(req, res) {
       return res.status(error.statusCode).json({ error: error.message });
     }
     console.error("[reservationController.reassignHotelRoom] Error:", error);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * PATCH /owner/reservations/:id/service-point
+ * Safely reassigns an active restaurant reservation to another table.
+ */
+export async function reassignRestaurantServicePoint(req, res) {
+  try {
+    const sessionUser = req.session?.user;
+    if (!sessionUser?.businessId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const newServicePointId = String(req.body?.servicePointId || "").trim();
+    if (!newServicePointId) {
+      return res.status(400).json({ error: "New ServicePoint ID is required." });
+    }
+
+    const { reservation, unchanged } =
+      await reassignRestaurantReservationServicePoint({
+        businessId: sessionUser.businessId,
+        reservationId: req.params.id,
+        newServicePointId,
+      });
+
+    if (!unchanged) {
+      await publishReservationEvent(
+        "reservation_updated",
+        sessionUser.businessId,
+        ["reservations", "owner"],
+        {
+          reservation: toOwnerReservationResponse(reservation),
+        },
+      );
+    }
+    return res.status(200).json({
+      message: unchanged
+        ? "ServicePoint is already assigned."
+        : "ServicePoint reassigned successfully.",
+      reservation: toOwnerReservationResponse(reservation),
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    console.error(
+      "[reservationController.reassignRestaurantServicePoint] Error:",
+      error,
+    );
     return res.status(500).json({ error: "Server error" });
   }
 }
