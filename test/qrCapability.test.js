@@ -281,17 +281,18 @@ test("QR secrets stay out of schemas, public DTOs, logs, legacy issuance, and vi
     assert.ok(GuestSession.schema.indexes().some(([fields, options]) =>
         fields.expiresAt === 1 && options.expireAfterSeconds === 0))
 
-    const [publicController, servicePointControllerSource, ownerRoutes, qrRoute] =
+    const [publicController, servicePointControllerSource, ownerRoutes, serverSource] =
         await Promise.all([
             readFile(new URL("../src/controllers/publicController.js", import.meta.url), "utf8"),
             readFile(new URL("../src/controllers/servicePointController.js", import.meta.url), "utf8"),
             readFile(new URL("../src/routes/owner-route.js", import.meta.url), "utf8"),
-            readFile(new URL("../src/routes/qr-route.js", import.meta.url), "utf8"),
+            readFile(new URL("../server.js", import.meta.url), "utf8"),
         ])
 
     assert.doesNotMatch(publicController, /PUBLIC_SERVICE_POINT_FIELDS[\s\S]*qrCapability/)
     assert.match(servicePointControllerSource, /delete value\.qrCapabilityVersion/)
     assert.match(ownerRoutes, /qr-capability",\s*requirePermission\(PERMISSIONS\.SERVICE_POINTS_MANAGE\)/)
     assert.match(ownerRoutes, /qr-capability\/rotate",\s*requirePermission\(PERMISSIONS\.SERVICE_POINTS_MANAGE\)/)
-    assert.doesNotMatch(qrRoute, /models\/GuestSession|GuestSession\.create|qrCapability\s*[=:]/)
+    assert.doesNotMatch(serverSource, /routes\/qr-route\.js/)
+    assert.doesNotMatch(serverSource, /app\.use\("\/q"/)
 })

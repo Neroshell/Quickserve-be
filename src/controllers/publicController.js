@@ -193,31 +193,16 @@ export async function getBusinessBySlug(req, res) {
       countryCode: normalizedCountryCode,
     } = normalizePublicBusinessLocator({ businessSlug: slug, countryCode });
 
-    if (normalizedCountryCode) {
-      const cacheKey = cacheKeys.publicBusiness(normalizedCountryCode, normalizedSlug);
-      const cached = await responseCache.get(cacheKey);
-      if (cached.hit && isSafePublicBusinessDto(cached.value, normalizedSlug)) {
-        return res.json(cached.value);
-      }
+    const cacheKey = cacheKeys.publicBusiness(normalizedCountryCode, normalizedSlug);
+    const cached = await responseCache.get(cacheKey);
+    if (cached.hit && isSafePublicBusinessDto(cached.value, normalizedSlug)) {
+      return res.json(cached.value);
     }
 
-    let business;
-    try {
-      ({ business } = await resolvePublicBusiness({
-        businessSlug: normalizedSlug,
-        countryCode: normalizedCountryCode,
-      }));
-    } catch (error) {
-      if (error?.code === "AMBIGUOUS_PUBLIC_BUSINESS_SLUG") {
-        return res.status(300).json({
-          error: "Multiple businesses found. Please use the country-specific link.",
-          redirects: error.candidates.map(
-            (candidate) => `/b/${candidate.countryCode || "mt"}/${candidate.slug}`,
-          ),
-        });
-      }
-      throw error;
-    }
+    const { business } = await resolvePublicBusiness({
+      businessSlug: normalizedSlug,
+      countryCode: normalizedCountryCode,
+    });
 
     if (!business) return res.status(404).json({ error: "Business not found" });
 
@@ -271,13 +256,11 @@ export async function getBusinessBySlug(req, res) {
       servicePoints: servicePoints,
     };
 
-    if (normalizedCountryCode) {
-      await responseCache.set(
-        cacheKeys.publicBusiness(normalizedCountryCode, normalizedSlug),
-        publicDto,
-        CACHE_TTL_SECONDS.TENANT_STABLE,
-      );
-    }
+    await responseCache.set(
+      cacheKey,
+      publicDto,
+      CACHE_TTL_SECONDS.TENANT_STABLE,
+    );
 
     return res.json(publicDto);
   } catch (error) {

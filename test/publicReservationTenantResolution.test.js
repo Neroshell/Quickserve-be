@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import express from "express";
 import mongoose from "mongoose";
 
 process.env.REDIS_URL = "";
@@ -18,6 +19,7 @@ const [
   { default: Reservation },
   { default: ServicePoint },
   { default: Plan },
+  { default: publicRoute },
 ] = await Promise.all([
   import("../src/controllers/publicController.js"),
   import("../src/controllers/reservationController.js"),
@@ -27,6 +29,7 @@ const [
   import("../src/models/Reservation.js"),
   import("../src/models/ServicePoint.js"),
   import("../src/models/Plan.js"),
+  import("../src/routes/public-route.js"),
 ]);
 
 function queryFor(value) {
@@ -101,10 +104,11 @@ function businessModelFor(businesses) {
   };
 }
 
-test("canonical resolver isolates equal slugs by country and fails closed for legacy ambiguity", async () => {
+test("canonical resolver requires and isolates the exact country and slug pair", async () => {
   const businesses = [
     business({ businessId: "restaurant-mt", countryCode: "mt", slug: "same-place" }),
     business({ businessId: "restaurant-gb", countryCode: "gb", slug: "same-place" }),
+    { ...business({ businessId: "restaurant-fr", countryCode: "fr", slug: "same-place" }), status: "disabled" },
   ];
   const businessModel = businessModelFor(businesses);
 
@@ -136,29 +140,50 @@ test("canonical resolver isolates equal slugs by country and fails closed for le
       statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
       businessModel,
     }),
-    (error) => error.statusCode === 409 &&
-      error.code === "AMBIGUOUS_PUBLIC_BUSINESS_SLUG",
+    (error) => error.statusCode === 400 &&
+      error.code === "PUBLIC_BUSINESS_COUNTRY_REQUIRED",
   );
-
-  const unique = await resolvePublicBusiness({
-    businessSlug: "same-place",
-    statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
-    businessModel: businessModelFor([businesses[0]]),
-  });
-  assert.equal(unique.business.businessId, "restaurant-mt");
-  assert.equal(unique.legacy, true);
 
   await assert.rejects(
     resolvePublicBusiness({
       businessSlug: "same-place",
+      countryCode: "malta",
       statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
-      businessModel: businessModelFor([
-        businesses[0],
-        { ...businesses[1], status: "disabled" },
-      ]),
+      businessModel,
     }),
-    (error) => error.code === "AMBIGUOUS_PUBLIC_BUSINESS_SLUG",
+    (error) => error.statusCode === 400 &&
+      error.code === "PUBLIC_BUSINESS_COUNTRY_INVALID",
   );
+
+  const disabled = await resolvePublicBusiness({
+    businessSlug: "same-place",
+    countryCode: "fr",
+    statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
+    businessModel,
+  });
+  assert.equal(disabled.business, null);
+});
+
+test("slug-only public Business lookup is unregistered and falls through to 404", async (t) => {
+  const registeredPaths = publicRoute.stack
+    .map((layer) => layer.route?.path)
+    .filter(Boolean);
+  assert.ok(registeredPaths.includes("/business/:countryCode/:slug"));
+  assert.equal(registeredPaths.includes("/business/:slug"), false);
+
+  const app = express();
+  app.use("/public", publicRoute);
+  app.use((_req, res) => res.status(404).json({ error: "Route not found" }));
+  const server = await new Promise((resolve, reject) => {
+    const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
+    listener.once("error", reject);
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const { port } = server.address();
+  const response = await fetch(`http://127.0.0.1:${port}/public/business/same-place`);
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "Route not found" });
 });
 
 test("public creation derives canonical tenant from country and ignores client businessId", async () => {

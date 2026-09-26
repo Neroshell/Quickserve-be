@@ -5,7 +5,6 @@ import express from "express"
 import cors from "cors"
 import orderRoute from "./src/routes/order-route.js"
 import { connectDB } from "./src/config/db.js"
-import qrRoute from "./src/routes/qr-route.js"
 import kitchenRoute from "./src/routes/kitchen-route.js"
 import waiterRoute from "./src/routes/waitstaff-route.js"
 import sseRoute from "./src/routes/sse-route.js"
@@ -104,7 +103,6 @@ import restaurantScopedRoute from "./src/routes/business-scoped-route.js"
 app.use("/orders", orderRoute)
 app.use("/businesses/:businessId/orders", restaurantScopedRoute)
 app.use("/payments", paymentRoute)
-app.use("/q", qrRoute)
 app.use("/kitchen", kitchenRoute)
 app.use("/bar", barRoute)
 app.use("/waitstaff", waiterRoute)

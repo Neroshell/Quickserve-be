@@ -161,15 +161,15 @@ test("hotel Service Point realtime uses a tenant-scoped content-free invalidatio
     assert.equal(JSON.stringify(calls).includes("reservation"), false)
 })
 
-test("hotel session creation publishes activity while the legacy QR redirect cannot issue authority", async () => {
+test("hotel session creation publishes activity while the legacy backend QR route stays absent", async () => {
     const guestSessionRoute = await readFile(new URL("../src/routes/guest-session-route.js", import.meta.url), "utf8")
-    const qrRoute = await readFile(new URL("../src/routes/qr-route.js", import.meta.url), "utf8")
+    const serverSource = await readFile(new URL("../server.js", import.meta.url), "utf8")
     const servicePointController = await readFile(new URL("../src/controllers/servicePointController.js", import.meta.url), "utf8")
 
     assert.match(guestSessionRoute, /resolveBusinessCapabilities\(business\)\.identity\.shell === "hotel"/)
     assert.match(guestSessionRoute, /publishServicePointsChanged\(\{[\s\S]*?scope: "activity"/)
-    assert.doesNotMatch(qrRoute, /models\/GuestSession|GuestSession\.create|publishServicePointsChanged|randomToken/)
-    assert.match(qrRoute, /frontend QR bootstrap/)
+    assert.doesNotMatch(serverSource, /routes\/qr-route\.js/)
+    assert.doesNotMatch(serverSource, /app\.use\("\/q"/)
     assert.match(servicePointController, /export async function createServicePoint[\s\S]*?scope: "configuration"/)
     assert.match(servicePointController, /export async function updateServicePoint[\s\S]*?scope: "configuration"/)
     assert.match(servicePointController, /export async function toggleServicePoint[\s\S]*?scope: "configuration"/)

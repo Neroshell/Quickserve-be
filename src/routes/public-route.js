@@ -65,13 +65,8 @@ const arrivalLimiter = rateLimit({
  *         description: Business details and preferences
  *       404:
  *         description: Business not found
- *       302:
- *         description: Redirects for legacy requests
  */
 router.get("/business/:countryCode/:slug", getBusinessBySlug);
-
-// Legacy fallback route for backward compatibility
-router.get("/business/:slug", getBusinessBySlug);
 
 /**
  * @openapi
