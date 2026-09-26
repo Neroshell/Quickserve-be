@@ -96,7 +96,20 @@ router.post(
     if (!req.file) {
       return res.status(400).json({ error: "Image file is required" })
     }
-    const folder = req.body.folder || "quickserve/general"
+    const businessId = req.session?.user?.businessId
+    if (!businessId) {
+      return res.status(401).json({ error: "Unauthorized" })
+    }
+    // ARCH-012-D: Derive storage folder server-side. The client may suggest
+    // a category but the full path is always scoped to the authenticated tenant.
+    const requestedCategory = String(req.body.category || req.body.folder || "general").trim()
+    const normalizedCategory = requestedCategory.split("/").pop() || "general"
+    const ALLOWED_UPLOAD_CATEGORIES = new Set([
+      "menu-items", "service-points", "hotel-rooms",
+      "hotel-room-types", "branding", "general",
+    ])
+    const category = ALLOWED_UPLOAD_CATEGORIES.has(normalizedCategory) ? normalizedCategory : "general"
+    const folder = `quickserve/${businessId}/${category}`
     const { secure_url, public_id } = await uploadToCloudinary(
       req.file.buffer,
       folder,
@@ -173,7 +186,7 @@ router.post(
     // Upload new logo
     const { secure_url, public_id } = await uploadToCloudinary(
       req.file.buffer,
-      "quickserve/business-logos",
+      `quickserve/${businessId}/business-logos`,
       req.file.mimetype
     )
 
@@ -251,7 +264,7 @@ router.post(
     const previousPublicId = menuItem.imagePublicId || null
     const { secure_url, public_id } = await uploadToCloudinary(
       req.file.buffer,
-      "quickserve/menu-items",
+      `quickserve/${businessId}/menu-items`,
       req.file.mimetype
     )
 

@@ -14,6 +14,7 @@ import {
   allocateRestaurantServicePoint,
 } from "../src/services/restaurantReservationAvailabilityService.js";
 const {
+  confirmRestaurantReservation,
   createRestaurantReservation,
   reassignRestaurantReservationServicePoint,
 } = await import("../src/services/reservationCreationService.js");
@@ -315,6 +316,73 @@ test("ARC-001 restaurant allocation is serialized by MongoDB", {
         businessId,
         servicePointId: "table-destination",
         status: { $in: [...RESTAURANT_BLOCKING_STATUSES] },
+      }), 1);
+    });
+
+    await t.test("simultaneous confirmation of overlapping pending reservations produces one winner", async () => {
+      const business = await createBusiness();
+      await createTable("table-confirmation-race", 4);
+      const common = {
+        businessId,
+        businessSlug: business.slug,
+        phone: "+15550000123",
+        date: "2037-06-10",
+        time: "19:00",
+        startTime: "19:00",
+        endTime: "21:00",
+        durationMinutes: 120,
+        guestCount: 2,
+        servicePointId: "table-confirmation-race",
+        servicePointLabel: "table-confirmation-race",
+        status: "pending",
+        source: "online",
+      };
+      const [first, second] = await Reservation.create([
+        {
+          ...common,
+          customerName: "Confirmation A",
+          email: "confirm-a@example.test",
+        },
+        {
+          ...common,
+          customerName: "Confirmation B",
+          email: "confirm-b@example.test",
+        },
+      ]);
+
+      const outcomes = await Promise.all(
+        [first, second].map((candidate) =>
+          confirmRestaurantReservation({
+            business,
+            businessId,
+            reservationId: candidate._id,
+            expectedStatus: "pending",
+          })
+            .then((result) => ({ outcome: "confirmed", result }))
+            .catch((error) => ({
+              outcome: error?.statusCode === 409 ? "conflict" : "error",
+              error,
+            }))
+        ),
+      );
+
+      assert.equal(
+        outcomes.filter(({ outcome }) => outcome === "confirmed").length,
+        1,
+      );
+      assert.equal(
+        outcomes.filter(({ outcome }) => outcome === "conflict").length,
+        1,
+      );
+      assert.equal(await Reservation.countDocuments({
+        businessId,
+        servicePointId: "table-confirmation-race",
+        status: "confirmed",
+      }), 1);
+      assert.equal(await Reservation.countDocuments({
+        businessId,
+        servicePointId: "table-confirmation-race",
+        status: "pending",
       }), 1);
     });
   } finally {

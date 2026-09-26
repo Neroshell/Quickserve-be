@@ -7,6 +7,7 @@
 // fall back to default in-memory or in-process behavior.
 
 import Redis from "ioredis"
+import { assertTestNetworkTargetAllowed } from "../utils/testExternalProviderGuard.js"
 
 function createClient(role) {
     const url = process.env.REDIS_URL
@@ -14,6 +15,7 @@ function createClient(role) {
         console.warn(`[Redis] REDIS_URL not set — ${role} client is null (local fallback active)`)
         return null
     }
+    assertTestNetworkTargetAllowed(`Redis ${role}`, url)
 
     const client = new Redis(url, {
         maxRetriesPerRequest: null,      // required for blocking commands; harmless for normal use

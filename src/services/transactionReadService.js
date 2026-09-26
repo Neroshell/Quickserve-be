@@ -1,6 +1,7 @@
 import Order from "../models/order.js"
 import Reservation from "../models/Reservation.js"
 import ReservationRefund from "../models/ReservationRefund.js"
+import { buildSafeSearchRegex } from "../utils/searchUtils.js"
 
 export const TRANSACTION_ORDER_STATUSES = Object.freeze([
     "placed",
@@ -21,9 +22,7 @@ export const TRANSACTION_RESERVATION_STATUSES = Object.freeze([
     "cancelled",
 ])
 
-function escapeSearchExpression(search) {
-    return String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
+
 
 export function buildTransactionFilters({ businessId, createdAt, search = "" }) {
     const orderFilter = {
@@ -38,12 +37,12 @@ export function buildTransactionFilters({ businessId, createdAt, search = "" }) 
         status: { $in: [...TRANSACTION_RESERVATION_STATUSES] },
     }
 
-    if (search) {
-        const searchRegex = new RegExp(escapeSearchExpression(search), "i")
+    const searchRegex = buildSafeSearchRegex(search)
+    if (searchRegex) {
         orderFilter.$or = [
             { orderId: { $regex: searchRegex } },
-            { servicePointLabel: { $regex: searchRegex } },
-            { servicePointLabel: { $regex: searchRegex } },
+            { servicePointId: { $regex: searchRegex } },
+            { displayLabel: { $regex: searchRegex } },
         ]
         reservationFilter.$or = [
             { publicReference: { $regex: searchRegex } },
@@ -56,10 +55,9 @@ export function buildTransactionFilters({ businessId, createdAt, search = "" }) 
 }
 
 export function toOrderTransaction(order) {
-    const servicePointId = order.servicePointId || order.servicePointLabel
     return {
         ...order,
-        ...(servicePointId ? { servicePointId } : {}),
+        ...(order.servicePointId ? { servicePointId: order.servicePointId } : {}),
         sourceType: "order",
         transactionId: order.orderId,
     }

@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { assertTestNetworkTargetAllowed } from "../utils/testExternalProviderGuard.js";
 
 export class BullMqConfigurationError extends Error {
     constructor(message, code) {
@@ -68,6 +69,7 @@ function registerLifecycleLogging(connection, role) {
 function createBullMqConnection({ role, env, maxRetriesPerRequest, retryStrategy }) {
     assertBullMqAvailable(env);
     const redisUrl = env.REDIS_URL.trim();
+    assertTestNetworkTargetAllowed(`BullMQ ${role}`, redisUrl, { env });
 
     // BullMQ intentionally owns dedicated ioredis connections. Session Redis and
     // SSE pub/sub clients have different command and lifecycle requirements and

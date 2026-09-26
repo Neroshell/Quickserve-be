@@ -7,15 +7,14 @@ import {
     toOrderTransaction,
     toReservationTransaction,
 } from "./transactionReadService.js"
+import { buildSafeSearchRegex } from "../utils/searchUtils.js"
 
 export const SOURCE_RANKS = Object.freeze({
     order: 2,
     reservation: 1,
 })
+export const MAX_OWNER_TRANSACTIONS_CURSOR_LENGTH = 512
 
-function escapeSearchExpression(search) {
-    return String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
 
 export function encodeCursor(transactionAt, sourceType, id) {
     const rank = SOURCE_RANKS[sourceType]
@@ -29,14 +28,36 @@ export function encodeCursor(transactionAt, sourceType, id) {
 }
 
 export function decodeCursor(cursorString) {
+    if (
+        typeof cursorString !== "string" ||
+        cursorString.length === 0 ||
+        cursorString.length > MAX_OWNER_TRANSACTIONS_CURSOR_LENGTH ||
+        Buffer.byteLength(cursorString, "utf8") >
+            MAX_OWNER_TRANSACTIONS_CURSOR_LENGTH ||
+        !/^[A-Za-z0-9_-]+$/.test(cursorString)
+    ) {
+        throw new Error("Invalid pagination cursor")
+    }
+
     try {
         const decoded = Buffer.from(cursorString, "base64url").toString("utf-8")
         const parsed = JSON.parse(decoded)
-        if (!parsed.t || !parsed.r || !parsed.i) {
+        const transactionAt = new Date(parsed?.t)
+        if (
+            !parsed ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed) ||
+            typeof parsed.t !== "number" ||
+            !Number.isFinite(parsed.t) ||
+            Number.isNaN(transactionAt.getTime()) ||
+            !Object.values(SOURCE_RANKS).includes(parsed.r) ||
+            typeof parsed.i !== "string" ||
+            !/^[a-fA-F0-9]{24}$/.test(parsed.i)
+        ) {
             throw new Error("Missing cursor fields")
         }
         return {
-            transactionAt: new Date(parsed.t),
+            transactionAt,
             sourceRank: parsed.r,
             id: parsed.i,
         }
@@ -118,11 +139,11 @@ export function buildOwnerTransactionFilters({
         reservationFilter.createdAt = dateRangeBounds
     }
 
-    if (search) {
-        const searchRegex = new RegExp(escapeSearchExpression(search), "i")
+    const searchRegex = buildSafeSearchRegex(search)
+    if (searchRegex) {
         orderFilter.$or = [
             { orderId: { $regex: searchRegex } },
-            { servicePointLabel: { $regex: searchRegex } },
+            { servicePointId: { $regex: searchRegex } },
             { displayLabel: { $regex: searchRegex } },
             { receiptEmail: { $regex: searchRegex } },
             { crmEmail: { $regex: searchRegex } },
@@ -181,7 +202,7 @@ export function buildOwnerTransactionFilters({
         appendConstraint(orderFilter, {
             $or: [
                 { displayLabel: normalizedServicePoint },
-                { servicePointLabel: normalizedServicePoint },
+                { servicePointId: normalizedServicePoint },
             ],
         })
         reservationFilter.servicePointLabel = normalizedServicePoint

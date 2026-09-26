@@ -279,6 +279,58 @@ export async function assertNoRestaurantReservationConflict({
   }
 }
 
+/**
+ * Confirmation-specific conflict arbitration for legacy states where multiple
+ * pending reservations already reference the same physical ServicePoint.
+ *
+ * Non-pending blockers always win. Among overlapping pending contenders, the
+ * stable lowest reservation id may proceed; the ServicePoint write lock makes
+ * concurrent confirmation attempts retry against the committed winner.
+ */
+export async function assertRestaurantConfirmationConflict({
+  businessId,
+  servicePointId,
+  date,
+  startTime,
+  endTime,
+  reservationId,
+  session,
+}) {
+  let query = Reservation.find(buildRestaurantConflictQuery({
+    businessId,
+    servicePointId,
+    date,
+    startTime,
+    endTime,
+    excludeReservationId: reservationId,
+  })).select("_id businessId status");
+  query = applySession(query, session);
+  const conflicts = (await query.lean()).filter((reservation) =>
+    String(reservation.businessId) === String(businessId) &&
+    RESTAURANT_BLOCKING_STATUSES.includes(reservation.status)
+  );
+
+  if (conflicts.some((reservation) => reservation.status !== "pending")) {
+    throw availabilityError(
+      "This service point is already booked for the selected date and time.",
+      409,
+    );
+  }
+
+  const pendingContenders = [
+    String(reservationId),
+    ...conflicts
+      .filter((reservation) => reservation.status === "pending")
+      .map((reservation) => String(reservation._id)),
+  ].sort();
+  if (pendingContenders[0] !== String(reservationId)) {
+    throw availabilityError(
+      "Another pending reservation has priority for this service point and time.",
+      409,
+    );
+  }
+}
+
 export function hasRestaurantReservationCapacity(servicePoint, partySize) {
   const capacity = getConfiguredServicePointCapacity(servicePoint);
   return capacity === null || partySize <= capacity;
@@ -378,6 +430,7 @@ export async function allocateRestaurantServicePoint({
       : {}),
     session,
   });
+  console.log("Eligible SPs:", eligibleServicePoints);
 
   if (requestedServicePointId && eligibleServicePoints.length === 0) {
     throw availabilityError(
@@ -391,6 +444,7 @@ export async function allocateRestaurantServicePoint({
       hasRestaurantReservationCapacity(point, partySize)
     ),
   );
+  console.log("Adequate SPs:", adequateServicePoints);
   if (adequateServicePoints.length === 0) {
     throw availabilityError(
       requestedServicePointId

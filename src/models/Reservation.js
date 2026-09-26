@@ -108,6 +108,20 @@ const ReservationSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // Generic canonical reservation creation idempotency
+    creationIdempotencyKey: {
+      type: String,
+      trim: true,
+      maxlength: 200,
+      default: null,
+      select: false,
+    },
+    creationFingerprint: {
+      type: String,
+      maxlength: 64,
+      default: null,
+      select: false,
+    },
     // Durable retry identity for restaurant creation only. Kept optional so
     // historical rows and hotel flows retain their existing schema semantics.
     restaurantCreationIdempotencyKey: {
@@ -362,6 +376,16 @@ ReservationSchema.index(
       restaurantCreationIdempotencyKey: { $type: "string" },
     },
     name: "uniq_restaurant_reservation_creation_request",
+  },
+);
+ReservationSchema.index(
+  { businessId: 1, creationIdempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      creationIdempotencyKey: { $type: "string" },
+    },
+    name: "uniq_reservation_creation_request",
   },
 );
 // Supports authoritative lodging revenue recognition by payment time.

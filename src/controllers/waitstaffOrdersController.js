@@ -14,6 +14,8 @@ import { buildOrderEstimate, getItemPrepTimeMinutes } from "../utils/orderEstima
 import { normalizeTip } from "../utils/tips.js"
 import { invalidateMenuItems, invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 import { withCanonicalInventoryTransaction } from "../services/canonicalInventoryService.js"
+import { buildCanonicalOrderDraft } from "../services/orderConstructionService.js"
+import { resolveAnalyticsDomainRanges } from "../services/analytics/analyticsRangeService.js"
 import {
   buildInventoryRequestFingerprint,
   releaseInventoryReservationWithinTransaction,
@@ -43,6 +45,7 @@ import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/busines
 import { createOrderLineFulfillmentSnapshot } from "../services/orderFulfillmentService.js"
 import { publishOrderRealtime } from "../services/orderRealtimeService.js"
 import { safelyNotifyInventoryStockTransitions } from "../services/inventoryNotificationIntegrationService.js"
+import { buildSafeSearchRegex } from "../utils/searchUtils.js"
 
 function getOrderIdempotencyKey(req, fallback) {
   const supplied = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"]
@@ -51,63 +54,51 @@ function getOrderIdempotencyKey(req, fallback) {
   return `waitstaff-order:${fallback || crypto.randomUUID()}`
 }
 
-function escapeRegex(value = "") {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
 
 function getHistoryDateRange(business, range = "yesterday", from, to) {
-  const { startUtc, timezone } = resolveBusinessDay(business)
-  const todayStart = DateTime.fromJSDate(startUtc).setZone(timezone)
+  const { foodOperationalRange: todayRange } = resolveAnalyticsDomainRanges({ preset: "today", business })
+  const maxEndJS = todayRange.startUtc
 
-  // Enforce upper bound: Past orders cannot include today's orders
-  const maxEndJS = startUtc
+  let preset = range
+  if (preset === "today" || !preset) {
+    preset = "yesterday"
+  }
 
-  switch (range) {
-    case "today": // Fallback if someone manually passes 'today'
-    case "yesterday": {
-      const yesterdayRes = resolveBusinessDay(business, todayStart.minus({ hours: 1 }).toJSDate())
-      return { startJS: yesterdayRes.startUtc, endJS: maxEndJS }
-    }
-    case "7days": {
-      const pastRes = resolveBusinessDay(business, todayStart.minus({ days: 7 }).toJSDate())
-      return { startJS: pastRes.startUtc, endJS: maxEndJS }
-    }
-    case "thisMonth": {
-      const monthStart = todayStart.startOf("month")
-      const monthStartRes = resolveBusinessDay(business, monthStart.toJSDate())
-      return { startJS: monthStartRes.startUtc, endJS: maxEndJS }
-    }
-    case "custom": {
-      if (!from || !to) {
-        const error = new Error("Missing 'from' or 'to' for custom range")
-        error.statusCode = 400
-        throw error
-      }
+  let finalFrom = from
+  let finalTo = to
+  if (preset === "7days") {
+    const tz = business.timezone || "UTC"
+    const now = DateTime.now().setZone(tz)
+    preset = "custom"
+    finalFrom = now.minus({ days: 7 }).toISODate()
+    finalTo = now.minus({ days: 1 }).toISODate()
+  } else if (preset === "thisMonth") {
+    const tz = business.timezone || "UTC"
+    const now = DateTime.now().setZone(tz)
+    preset = "custom"
+    finalFrom = now.startOf("month").toISODate()
+    finalTo = now.minus({ days: 1 }).toISODate()
+  }
 
-      const customStartDT = DateTime.fromISO(String(from), { zone: timezone }).startOf("day")
-      const customEndDT = DateTime.fromISO(String(to), { zone: timezone }).startOf("day")
+  try {
+    const { foodOperationalRange } = resolveAnalyticsDomainRanges({
+      preset,
+      from: finalFrom,
+      to: finalTo,
+      business,
+    })
 
-      if (!customStartDT.isValid || !customEndDT.isValid) {
-        const error = new Error("Invalid date format for custom range")
-        error.statusCode = 400
-        throw error
-      }
+    let actualEnd = foodOperationalRange.endUtcExclusive
+    let actualStart = foodOperationalRange.startUtc
 
-      const startRes = resolveBusinessDay(business, customStartDT.toJSDate())
-      const endRes = resolveBusinessDay(business, customEndDT.toJSDate())
+    if (actualEnd > maxEndJS) actualEnd = maxEndJS
+    if (actualStart > actualEnd) actualStart = actualEnd
 
-      const customStart = startRes.startUtc
-      const customEnd = endRes.endUtcExclusive
-
-      const actualEnd = customEnd > maxEndJS ? maxEndJS : customEnd
-      const actualStart = customStart > actualEnd ? actualEnd : customStart
-
-      return { startJS: actualStart, endJS: actualEnd }
-    }
-    default: {
-      const yesterdayRes = resolveBusinessDay(business, todayStart.minus({ hours: 1 }).toJSDate())
-      return { startJS: yesterdayRes.startUtc, endJS: maxEndJS }
-    }
+    return { startJS: actualStart, endJS: actualEnd }
+  } catch (err) {
+    const error = new Error(err.message)
+    error.statusCode = 400
+    throw error
   }
 }
 
@@ -198,9 +189,8 @@ export async function waiterPastOrders(req, res) {
       filter.paidVia = "pos_card"
     }
 
-    const trimmedSearch = String(search || "").trim()
-    if (trimmedSearch) {
-      const searchRegex = new RegExp(escapeRegex(trimmedSearch), "i")
+    const searchRegex = buildSafeSearchRegex(search)
+    if (searchRegex) {
       const matchingStaff = await Staff.find(
         {
           businessId,
@@ -217,8 +207,8 @@ export async function waiterPastOrders(req, res) {
         { orderId: { $regex: searchRegex } },
         { receiptEmail: { $regex: searchRegex } },
         { crmEmail: { $regex: searchRegex } },
-        { servicePointLabel: { $regex: searchRegex } },
-        { servicePointLabel: { $regex: searchRegex } },
+        { servicePointId: { $regex: searchRegex } },
+        { displayLabel: { $regex: searchRegex } },
         { paidByName: { $regex: searchRegex } },
         { servedByName: { $regex: searchRegex } },
         { completedBy: { $regex: searchRegex } },
@@ -237,7 +227,7 @@ export async function waiterPastOrders(req, res) {
       _id: 0,
       orderId: 1,
       businessId: 1,
-      servicePointLabel: 1,
+      servicePointId: 1,
       orderType: 1,
       status: 1,
       createdAt: 1,
@@ -308,8 +298,8 @@ export async function waiterPastOrders(req, res) {
     const orders = rawOrders.map((order) => ({
       orderId: order.orderId,
       businessId: order.businessId,
-      servicePointLabel: order.servicePointLabel || order.servicePointLabel,
-      servicePoint: order.servicePointLabel || order.servicePointLabel,
+      servicePointId: order.servicePointId,
+      servicePoint: order.displayLabel || order.servicePointId,
       orderType: order.orderType,
       status: order.status,
       createdAt: order.createdAt,
@@ -420,7 +410,7 @@ export async function waiterOrders(req, res) {
       {
         _id: 0,
         orderId: 1,
-        servicePointLabel: 1,
+        servicePointId: 1,
         orderType: 1,
         status: 1,
         createdAt: 1,
@@ -477,7 +467,7 @@ export async function waiterOrders(req, res) {
         businessId: o.businessId,
         businessId: o.businessId, // legacy alias
         orderId: o.orderId,
-        servicePointLabel: o.servicePointLabel,
+        servicePointId: o.servicePointId,
         orderType: o.orderType,
         status: o.status,
         createdAt: o.createdAt,
@@ -541,7 +531,7 @@ export async function createWaiterOrder(req, res) {
     }
 
     const {
-      servicePointLabel,
+      servicePointId,
       items,
       orderType,
       tipAmount,
@@ -557,8 +547,8 @@ export async function createWaiterOrder(req, res) {
       })
     }
 
-    if (!servicePointLabel || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "servicePointLabel and items are required" })
+    if (!servicePointId || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "servicePointId and items are required" })
     }
     const itemValidationError = getOrderItemsValidationError(items)
     if (itemValidationError) {
@@ -574,7 +564,7 @@ export async function createWaiterOrder(req, res) {
     }
 
     // Verify service point belongs to this business
-    const sp = await ServicePoint.findOne({ servicePointId: servicePointLabel, businessId }).lean()
+    const sp = await ServicePoint.findOne({ servicePointId: servicePointId, businessId }).lean()
     if (!sp || sp.isActive === false) {
       return res.status(403).json({ message: "Invalid service point for this business." })
     }
@@ -630,7 +620,7 @@ export async function createWaiterOrder(req, res) {
       })
     }
 
-    const displayLabel = sp.label || sp.code || servicePointLabel
+    const displayLabel = sp.label || sp.code || servicePointId
     const servicePointQrCode = sp.code || sp.label || displayLabel
 
     const now = new Date()
@@ -683,9 +673,19 @@ export async function createWaiterOrder(req, res) {
 
     const subtotal = Number(calculatedTotal.toFixed(2))
     const totalInCentsForFee = Math.round(subtotal * 100)
+
+    const tip = normalizeTip({
+      tipsEnabled: business.settings?.tipsEnabled === true || business.tipsEnabled === true,
+      subtotal,
+      tipAmount,
+      tipType,
+      tipPercentage,
+    })
+
     const pricing = await calculateOfflinePricing({
       subtotalCents: totalInCentsForFee,
       business,
+      tipAmountCents: Math.round(tip.tipAmount * 100),
     })
     const {
       taxAmount,
@@ -700,22 +700,14 @@ export async function createWaiterOrder(req, res) {
       commissionAmountCents: finalCommissionAmountCents,
     } = pricing
 
-    const tip = normalizeTip({
-      tipsEnabled: business.settings?.tipsEnabled === true,
-      subtotal,
-      tipAmount,
-      tipType,
-      tipPercentage,
-    })
-
-    const finalTotal = Number((subtotal + taxAmount + customerPlatformFeeFloat + tip.tipAmount).toFixed(2))
+    const finalTotal = pricing.total
 
     const estimate = buildOrderEstimate(enrichedItems, now)
 
     const creationIdempotencyKey = getOrderIdempotencyKey(req, orderId)
     const creationRequestFingerprint = buildInventoryRequestFingerprint({
       businessId,
-      servicePointLabel,
+      servicePointId,
       orderType: finalOrderType,
       items: enrichedItems.map(({ menuItemId, quantity, notes, allergies }) => ({
         menuItemId: String(menuItemId),
@@ -730,42 +722,43 @@ export async function createWaiterOrder(req, res) {
       createdByStaffId: staffId,
       paymentMethod,
     })
-    const orderInput = {
+    const draft = buildCanonicalOrderDraft({
+      business,
       orderId,
-      businessId,
-      servicePointLabel,
+      servicePointId,
       displayLabel,
       orderType: finalOrderType,
       sessionId: `waiter_${staffId}_${Date.now()}`,
-      items: enrichedItems,
-      status: "placed",
-      estimatedPrepMinutes: estimate.estimatedPrepMinutes,
-      estimatedReadyAt: estimate.estimatedReadyAt,
+      guestSessionId: null,
+      enrichedItems,
       subtotal,
       taxAmount,
+      tip,
+      total: finalTotal,
+      currency: getBusinessCurrency(business),
       platformFeeTotal: customerPlatformFeeFloat,
-      tipAmount: tip.tipAmount,
-      tipType: tip.tipType,
-      tipPercentage: tip.tipPercentage,
       platformFeeCents: fullPlatformFeeCents,
       customerPlatformFeeCents,
       businessAbsorbedPlatformFeeCents,
       platformFeeMode: mode,
       customerPlatformFeePercent: percent,
-      total: finalTotal,
-      currency: getBusinessCurrency(business),
+      commissionAmountCents: finalCommissionAmountCents,
+      commissionRateApplied,
+      planApplied,
+      estimatedPrepMinutes: estimate.estimatedPrepMinutes,
+      estimatedReadyAt: estimate.estimatedReadyAt,
+      journeyId: null,
+      receiptEmail: null,
+    })
+    const orderInput = {
+      ...draft,
+      status: "placed",
       paymentChannel: "offline",
       paymentStatus: paymentMethod ? "paid" : "unpaid",
       paidVia: paymentMethod,
       paidAt: paymentMethod ? now : null,
       paidByStaffId: paymentMethod ? staffId : null,
       paidByName: paymentMethod ? (req.session?.user?.name || "Staff") : null,
-      planApplied,
-      commissionRateApplied,
-      commissionAmountCents: finalCommissionAmountCents,
-      planAtOrder: planApplied,
-      commissionRateAtOrder: commissionRateApplied,
-      platformFeeRateAtOrder: commissionRateApplied,
       orderSource: "waitstaff",
       createdBy: "staff",
       createdByStaffId: staffId,

@@ -2,7 +2,7 @@ import GuestProfile from "../models/GuestProfile.js";
 import Business from "../models/Business.js";
 import { DateTime } from "luxon";
 import { readOwnerGuestsPage, OwnerGuestsCursorError } from "../services/ownerGuestsReadService.js";
-import { AnalyticsRangeError } from "../services/analytics/analyticsRangeService.js";
+import { AnalyticsRangeError, resolveAnalyticsDomainRanges } from "../services/analytics/analyticsRangeService.js";
 import {
   CrmAnalyticsServiceError,
   crmAnalyticsService,
@@ -80,47 +80,22 @@ export async function getGuests(req, res) {
 
     // Fetch business for timezone
     const business = await Business.findOne({ $or: [{ businessId }, { businessId: businessId }] }).lean();
-    const timezone = business?.timezone || "UTC";
-
-    // Build date-range bounds (requires timezone from Business document)
+    const timezone = business?.timezone || "UTC";    // Build date-range bounds (requires timezone from Business document)
     let dateRangeBounds = null;
     if (dateRange && dateRange !== "all") {
-      const now = DateTime.now().setZone(timezone);
-      let startBound, endBound;
+      const preset = dateRange === "last7" ? "7days" : dateRange;
 
-      switch (dateRange) {
-        case "today":
-          startBound = now.startOf("day");
-          endBound = now.endOf("day");
-          break;
-        case "yesterday":
-          startBound = now.minus({ days: 1 }).startOf("day");
-          endBound = now.minus({ days: 1 }).endOf("day");
-          break;
-        case "last7":
-          startBound = now.minus({ days: 6 }).startOf("day");
-          endBound = now.endOf("day");
-          break;
-        case "thisMonth":
-          startBound = now.startOf("month");
-          endBound = now.endOf("month");
-          break;
-        case "custom":
-          if (startDate) {
-            startBound = DateTime.fromISO(startDate, { zone: timezone }).startOf("day");
-          }
-          if (endDate) {
-            endBound = DateTime.fromISO(endDate, { zone: timezone }).endOf("day");
-          }
-          break;
-      }
+      const { foodOperationalRange } = resolveAnalyticsDomainRanges({
+        preset,
+        from: startDate,
+        to: endDate,
+        business
+      });
 
-      if (startBound || endBound) {
-        dateRangeBounds = {
-          start: startBound ? startBound.toJSDate() : null,
-          end: endBound ? endBound.toJSDate() : null,
-        };
-      }
+      dateRangeBounds = {
+        start: foodOperationalRange.startUtc,
+        end: foodOperationalRange.endUtcExclusive,
+      };
     }
 
     const result = await readOwnerGuestsPage({

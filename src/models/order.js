@@ -141,7 +141,7 @@ const OrderSchema = new mongoose.Schema(
   {
     orderId: { type: String, required: true, unique: true, index: true },
     businessId: { type: String, required: true, index: true },
-    servicePointLabel: { type: String, required: true, index: true }, // internal servicePointId â€” for routing/lookups only
+    servicePointId: { type: String, required: true, index: true },
     displayLabel: { type: String, default: "" }, // human-friendly display label, e.g. "Table 12"
     orderType: { type: String, enum: ["dine-in", "takeout"], default: "dine-in", index: true },
     // Persistent device identity supports same-business historical Order History.

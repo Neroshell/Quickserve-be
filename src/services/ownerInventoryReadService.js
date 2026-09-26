@@ -13,6 +13,7 @@ import {
     toInventoryMovementDTO,
 } from "./canonicalInventoryService.js"
 import { INVENTORY_STOCK_STATUSES } from "./inventoryStockStatusService.js"
+import { escapeRegex } from "../utils/searchUtils.js"
 
 export const OWNER_INVENTORY_DEFAULT_LIMIT = 25
 export const OWNER_INVENTORY_MAX_LIMIT = 100
@@ -34,9 +35,7 @@ export class OwnerInventoryReadError extends Error {
     }
 }
 
-function escapeRegex(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
+
 
 function normalizeLimit(value) {
     if (value === undefined || value === null || value === "") {

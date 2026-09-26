@@ -1,5 +1,6 @@
 import mongoose from "mongoose"
 import Order from "../models/order.js"
+import { buildSafeSearchRegex } from "../utils/searchUtils.js"
 
 export const OWNER_ORDERS_DEFAULT_LIMIT = 25
 export const OWNER_ORDERS_MAX_LIMIT = 25
@@ -13,7 +14,7 @@ const OWNER_ORDER_PROJECTION = {
     _id: 1,
     orderId: 1,
     servicePointId: 1,
-    servicePointLabel: 1,
+    servicePointId: 1,
     displayLabel: 1,
     orderType: 1,
     status: 1,
@@ -49,9 +50,7 @@ export class OwnerOrdersCursorError extends Error {
     }
 }
 
-function escapeRegex(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
+
 
 function normalizeLimit(value) {
     if (value === undefined || value === null || value === "") {
@@ -160,15 +159,14 @@ function buildOrdersFilter({
         servicePointId.trim() &&
         servicePointId.trim() !== "all"
     ) {
-        filter.servicePointLabel = servicePointId.trim()
+        filter.servicePointId = servicePointId.trim()
     }
 
-    const normalizedSearch = typeof search === "string" ? search.trim() : ""
-    if (normalizedSearch) {
-        const searchRegex = new RegExp(escapeRegex(normalizedSearch), "i")
+    const searchRegex = buildSafeSearchRegex(search)
+    if (searchRegex) {
         filter.$or = [
             { orderId: { $regex: searchRegex } },
-            { servicePointLabel: { $regex: searchRegex } },
+            { servicePointId: { $regex: searchRegex } },
             { displayLabel: { $regex: searchRegex } },
         ]
     }
@@ -301,7 +299,7 @@ export async function readOwnerOrdersPage({
                     paymentStatuses: { $addToSet: "$paymentStatus" },
                     servicePoints: {
                         $addToSet: {
-                            id: "$servicePointLabel",
+                            id: "$servicePointId",
                             label: "$displayLabel",
                         },
                     },

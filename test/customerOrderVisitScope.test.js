@@ -126,7 +126,7 @@ test("historical history and current live visit remain separate authorization sc
     {
       orderId: "order-visit-a",
       businessId: "business-a",
-      servicePointLabel: "sp-x",
+      servicePointId: "sp-x",
       displayLabel: "Table X",
       guestSessionId: "guest_visit_a",
       sessionId: "device-a",
@@ -138,7 +138,7 @@ test("historical history and current live visit remain separate authorization sc
     {
       orderId: "order-visit-b",
       businessId: "business-a",
-      servicePointLabel: "sp-x",
+      servicePointId: "sp-x",
       displayLabel: "Table X",
       guestSessionId: "guest_visit_b",
       sessionId: "device-a",
@@ -150,7 +150,7 @@ test("historical history and current live visit remain separate authorization sc
     {
       orderId: "order-visit-c",
       businessId: "business-a",
-      servicePointLabel: "sp-y",
+      servicePointId: "sp-y",
       displayLabel: "Table Y",
       guestSessionId: "guest_visit_c",
       sessionId: "device-a",
@@ -162,7 +162,7 @@ test("historical history and current live visit remain separate authorization sc
     {
       orderId: "legacy-history-only",
       businessId: "business-a",
-      servicePointLabel: "sp-x",
+      servicePointId: "sp-x",
       displayLabel: "Table X",
       sessionId: "device-a",
       status: "completed",

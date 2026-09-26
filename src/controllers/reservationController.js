@@ -22,6 +22,7 @@ import { scheduleReservationArrivalReminder } from "../services/reservationArriv
 import {
   createReservationService,
   createHotelReservation,
+  confirmRestaurantReservation,
   reassignHotelReservationRoom,
   reassignRestaurantReservationServicePoint,
   normalizeRestaurantCreationIdempotencyKey,
@@ -34,11 +35,22 @@ import {
   RESTAURANT_BLOCKING_STATUSES,
   getRestaurantAvailability,
 } from "../services/restaurantReservationAvailabilityService.js";
+import { buildSafeSearchRegex } from "../utils/searchUtils.js";
 import {
   checkoutReservationIntoHousekeeping,
   HousekeepingDomainError,
 } from "../services/housekeepingService.js";
 import { publishHousekeepingChanged } from "../utils/sseManager.js";
+import {
+  PUBLIC_SERVABLE_BUSINESS_STATUSES,
+  resolvePublicBusiness,
+} from "../services/publicBusinessResolverService.js";
+import {
+  BLOCKING_STAY_STATUSES,
+  buildHotelRoomEligibilityQuery,
+  findHotelRoomAvailability,
+  getHotelRoomPricingPreview,
+} from "../services/hotelReservationAvailabilityService.js";
 
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 const ARCHIVABLE_RESERVATION_STATUSES = new Set([
@@ -213,7 +225,10 @@ export async function getReservations(req, res) {
       return res.status(403).json({ error: "Unauthorized access to this business" });
     }
 
-    const limit = parseInt(reqLimit, 10) || 25;
+    const parsedLimit = parseInt(reqLimit, 10);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit >= 1
+      ? Math.min(parsedLimit, 100)
+      : 25;
 
     // Route authorization has already admitted the caller. Resolve the business
     // strictly inside the authenticated tenant for owners, co-owners, and Managers.
@@ -281,18 +296,9 @@ export async function getReservations(req, res) {
       const departuresCheckedOut = departures.filter(r => r.status === "checked_out").length;
       const inHouseGuests = inHouse.reduce((sum, r) => sum + (r.guestCount || 0), 0);
 
-      const { BLOCKING_STAY_STATUSES } = await import("../services/reservationCreationService.js");
-      
-      const totalRooms = await mongoose.model("ServicePoint").countDocuments({
-        businessId,
-        isActive: { $ne: false },
-        reservable: { $ne: false },
-        $or: [
-          { servicePointType: "room" },
-          { servicePointType: { $exists: false } },
-          { servicePointType: null },
-        ]
-      });
+      const totalRooms = await mongoose.model("ServicePoint").countDocuments(
+        buildHotelRoomEligibilityQuery({ businessId }),
+      );
 
       const tomorrowDate = new Date(businessDay);
       tomorrowDate.setDate(tomorrowDate.getDate() + 1);
@@ -399,6 +405,9 @@ export async function getReservations(req, res) {
       }
 
       if (!month) return res.status(400).json({ error: "month (YYYY-MM) or start/endExclusive is required for calendar view" });
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+        return res.status(400).json({ error: "month must be YYYY-MM format with valid month" });
+      }
       const monthStart = `${month}-01`;
       const nextMonthDate = new Date(`${month}-01T00:00:00Z`);
       nextMonthDate.setUTCMonth(nextMonthDate.getUTCMonth() + 1);
@@ -408,6 +417,7 @@ export async function getReservations(req, res) {
         baseQuery.checkInDate  = { $lt: monthEnd };
         baseQuery.checkOutDate = { $gt: monthStart };
       } else {
+        // Month is now validated as YYYY-MM so the prefix match is safe.
         baseQuery.date = { $regex: `^${month}` };
       }
       const reservations = await Reservation.find(baseQuery).lean();
@@ -416,6 +426,13 @@ export async function getReservations(req, res) {
 
     if (view === "day") {
       if (!date) return res.status(400).json({ error: "date (YYYY-MM-DD) is required for day view" });
+      if (!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(date)) {
+        return res.status(400).json({ error: "date must be YYYY-MM-DD format with valid date" });
+      }
+      const parsedDate = new Date(date);
+      if (Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().split("T")[0] !== date) {
+        return res.status(400).json({ error: "date must be a valid calendar day" });
+      }
 
       if (isHotel) {
         baseQuery.checkInDate = { $lte: date };
@@ -442,12 +459,14 @@ export async function getReservations(req, res) {
     }
 
     if (search) {
-      const queryRegex = new RegExp(search, "i");
-      activeQuery.$or = [
-        { customerName: queryRegex },
-        { email: queryRegex },
-        { phone: queryRegex }
-      ];
+      const searchRegex = buildSafeSearchRegex(search);
+      if (searchRegex) {
+        activeQuery.$or = [
+          { customerName: searchRegex },
+          { email: searchRegex },
+          { phone: searchRegex }
+        ];
+      }
     }
 
     if (view === "list") {
@@ -508,17 +527,9 @@ export async function getReservations(req, res) {
       delete stats._id;
 
       if (isHotel) {
-        const { BLOCKING_STAY_STATUSES } = await import("../services/reservationCreationService.js");
-        const totalRooms = await mongoose.model("ServicePoint").countDocuments({
-          businessId,
-          isActive: { $ne: false },
-          reservable: { $ne: false },
-          $or: [
-            { servicePointType: "room" },
-            { servicePointType: { $exists: false } },
-            { servicePointType: null },
-          ]
-        });
+        const totalRooms = await mongoose.model("ServicePoint").countDocuments(
+          buildHotelRoomEligibilityQuery({ businessId }),
+        );
         const occupiedRooms = await Reservation.distinct("servicePointId", {
           businessId,
           status: { $in: [...BLOCKING_STAY_STATUSES] },
@@ -566,13 +577,17 @@ export async function getReservations(req, res) {
         }
       };
 
-      if (previousCursor) {
-        isReversing = true;
-        const c = JSON.parse(Buffer.from(previousCursor, "base64url").toString("utf-8"));
-        cursorMatch = buildCursorMatch(c, true);
-      } else if (cursor) {
-        const c = JSON.parse(Buffer.from(cursor, "base64url").toString("utf-8"));
-        cursorMatch = buildCursorMatch(c, false);
+      try {
+        if (previousCursor) {
+          isReversing = true;
+          const c = JSON.parse(Buffer.from(previousCursor, "base64url").toString("utf-8"));
+          cursorMatch = buildCursorMatch(c, true);
+        } else if (cursor) {
+          const c = JSON.parse(Buffer.from(cursor, "base64url").toString("utf-8"));
+          cursorMatch = buildCursorMatch(c, false);
+        }
+      } catch {
+        return res.status(400).json({ error: "Invalid cursor" });
       }
 
       const pipeline = [
@@ -736,32 +751,24 @@ export async function updateReservationStatus(req, res) {
         error: `Invalid reservation transition: ${previousStatus} -> ${status}`,
       });
     }
+    let restaurantConfirmationApplied = false;
+    let restaurantConfirmationReplayed = false;
     if (status === "confirmed" && !isHotel) {
-      // Operating hours validation
-      const [year, month, day] = (reservation.date || "").split("-").map(Number);
-      if (year && month && day) {
-        const dayOfWeek = new Date(year, month - 1, day).toLocaleDateString('en-US', { weekday: 'long' });
-        const dayConfig = business.operatingHours?.[dayOfWeek];
-
-        if (!dayConfig || !dayConfig.enabled || reservation.startTime < dayConfig.openTime || reservation.endTime > dayConfig.closeTime) {
-          return res.status(400).json({ error: "Reservations are only available during business hours." });
-        }
-
-        if (reservation.servicePointId) {
-          const existingReservation = await Reservation.findOne({
-            businessId: reservation.businessId,
-            servicePointId: reservation.servicePointId,
-            date: reservation.date,
-            status: { $in: [...RESTAURANT_BLOCKING_STATUSES] },
-            startTime: { $lt: reservation.endTime },
-            endTime: { $gt: reservation.startTime },
-            _id: { $ne: reservation._id }
-          }).lean();
-
-          if (existingReservation) {
-            return res.status(409).json({ error: "This place is already booked and confirmed for the selected time." });
-          }
-        }
+      try {
+        const confirmation = await confirmRestaurantReservation({
+          business,
+          businessId: reservation.businessId,
+          reservationId: reservation._id,
+          expectedStatus: previousStatus,
+          actor: buildReservationStaffSnapshot(req.session?.user),
+        });
+        reservation = confirmation.reservation;
+        restaurantConfirmationApplied = true;
+        restaurantConfirmationReplayed = confirmation.replayed;
+      } catch (confirmationError) {
+        return res.status(confirmationError.statusCode || 409).json({
+          error: confirmationError.message,
+        });
       }
     }
 
@@ -809,6 +816,8 @@ export async function updateReservationStatus(req, res) {
       });
       reservation = checkout.reservation;
       housekeepingChanged = !checkout.replayed;
+    } else if (restaurantConfirmationApplied) {
+      // The canonical confirmation transaction already persisted the status.
     } else {
       const now = new Date();
       const actor = buildReservationStaffSnapshot(req.session?.user);
@@ -863,7 +872,8 @@ export async function updateReservationStatus(req, res) {
       }
     }
 
-    const statusChanged = previousStatus !== status;
+    const statusChanged =
+      previousStatus !== status && !restaurantConfirmationReplayed;
     let emailStatus = "not_sent";
     let arrivalReminderStatus = "not_scheduled";
 
@@ -1175,13 +1185,23 @@ export async function deleteReservation(req, res) {
  */
 export async function getAvailableStayServicePoints(req, res) {
   try {
-    const { businessSlug, checkInDate, checkOutDate, guestCount } = req.query;
+    const {
+      businessSlug,
+      countryCode,
+      checkInDate,
+      checkOutDate,
+      guestCount,
+    } = req.query;
 
     if (!businessSlug || !checkInDate || !checkOutDate) {
       return res.status(400).json({ error: "businessSlug, checkInDate, and checkOutDate are required" });
     }
 
-    const business = await Business.findOne({ slug: businessSlug.toLowerCase() }).lean();
+    const { business } = await resolvePublicBusiness({
+      businessSlug,
+      countryCode,
+      statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
+    });
     if (!business || !resolveBusinessCapabilities(business).reservations.modes.includes("stay")) {
       return res.status(404).json({ error: "Hotel not found" });
     }
@@ -1190,83 +1210,22 @@ export async function getAvailableStayServicePoints(req, res) {
       return res.status(403).json({ error: "Reservations are disabled." });
     }
 
-    // A ServicePoint is unavailable when the requested stay overlaps an
-    // existing blocking reservation.
-    const overlappingReservations = await Reservation.find({
-      businessId: business.businessId,
-      status: { $in: ["accepted_awaiting_payment", "confirmed", "checked_in"] }, // blocking statuses
-      checkInDate: { $lt: checkOutDate },
-      checkOutDate: { $gt: checkInDate }
-    }).lean();
+    const { rooms } = await findHotelRoomAvailability({
+      business,
+      checkInDate,
+      checkOutDate,
+      guestCount,
+    });
 
-    const unavailableServicePointIds = overlappingReservations
-      .map((reservation) => reservation.servicePointId)
-      .filter(Boolean);
+    const availableRooms = rooms
+      .filter((room) => room.available && !room.capacityExceeded)
+      .map(({ available: _available, capacityExceeded: _capacityExceeded, ...room }) => room);
 
-    let servicePoints = await ServicePoint.find({
-      businessId: business.businessId,
-      isActive: true,
-      reservable: true
-    }).lean();
-
-    // Filter by capacity if guestCount is provided
-    if (guestCount) {
-      const parsedGuestCount = parseInt(guestCount, 10);
-      if (!isNaN(parsedGuestCount)) {
-        servicePoints = servicePoints.filter(
-          (servicePoint) => !servicePoint.capacity || servicePoint.capacity >= parsedGuestCount
-        );
-      }
-    }
-
-    const availableServicePoints = servicePoints.filter(
-      (servicePoint) => !unavailableServicePointIds.includes(servicePoint.servicePointId)
-    );
-
-    // Compute canonical pricing summary per room so room cards can display
-    // the actual guest-payable total (including tax and platform fees) without
-    // any client-side calculation.
-    const msPerDay = 1000 * 60 * 60 * 24;
-    const numberOfNights = Math.max(
-      1,
-      Math.round((new Date(checkOutDate) - new Date(checkInDate)) / msPerDay),
-    );
-
-    const { calculateOnlinePricing, getCustomerPricingBreakdown } = await import("../services/pricingService.js");
-
-    const roomsWithPricing = await Promise.all(
-      availableServicePoints.map(async (sp) => {
-        if (sp.pricePerNight == null || Number(sp.pricePerNight) <= 0) {
-          return { ...sp, pricingSummary: null };
-        }
-        try {
-          const subtotalCents = Math.round(Number(sp.pricePerNight) * numberOfNights * 100);
-          const pricing = await calculateOnlinePricing({ subtotalCents, business });
-          const breakdown = getCustomerPricingBreakdown(pricing);
-          return {
-            ...sp,
-            pricingSummary: {
-              nights: numberOfNights,
-              subtotal: breakdown.subtotal,
-              taxAmount: breakdown.taxAmount,
-              taxAmountCents: breakdown.taxAmountCents,
-              taxRate: breakdown.taxRate,
-              customerPlatformFeeAmount: breakdown.customerPlatformFeeAmount,
-              customerPlatformFeeCents: breakdown.customerPlatformFeeCents,
-              total: breakdown.total,
-              totalCents: breakdown.totalCents,
-              hasAdditionalCharges: breakdown.taxAmountCents > 0 || breakdown.customerPlatformFeeCents > 0,
-            },
-          };
-        } catch (err) {
-          console.error(`[getAvailableStayServicePoints] pricing failed for ${sp.servicePointId}:`, err);
-          return { ...sp, pricingSummary: null };
-        }
-      }),
-    );
-
-    res.json(roomsWithPricing);
+    res.json(availableRooms);
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
     console.error("[reservationController.getAvailableStayServicePoints] Error:", error);
     res.status(500).json({ error: "Server error" });
   }
@@ -1499,9 +1458,8 @@ export async function createStaffReservation(req, res) {
     } = req.body;
 
     // Phase E: Build staff attribution server-side
-    const staffSnapshot = buildReservationStaffSnapshot(sessionUser);
-
-    let result;
+    const staffSnapshot = buildReservationStaffSnapshot(sessionUser);    let result;
+    const rawIdempotencyKey = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"] || null;
     if (reservationMode === "stay") {
       result = await createHotelReservation({
         business,
@@ -1517,6 +1475,7 @@ export async function createStaffReservation(req, res) {
         paymentMethod,
         checkInNow: Boolean(checkInNow),
         staffSnapshot,
+        idempotencyKey: rawIdempotencyKey,
       });
     } else {
       const shouldSeatNow = seatNow === true;
@@ -1635,108 +1594,39 @@ export async function getHotelRoomAvailability(req, res) {
     if (!checkInDate || !checkOutDate) {
       return res.status(400).json({ error: "checkInDate and checkOutDate are required" });
     }
-    if (checkOutDate <= checkInDate) {
-      return res.status(400).json({ error: "checkOutDate must be after checkInDate" });
-    }
-
     const businessId = sessionUser.businessId;
 
     // Fetch all reservable service points that are room-type (or untyped — backward compat)
-    const servicePoints = await ServicePoint.find({
-      businessId,
-      isActive: { $ne: false },
-      reservable: { $ne: false },
-      $or: [
-        { servicePointType: "room" },
-        { servicePointType: { $exists: false } },
-        { servicePointType: null },
-      ],
-    })
-      .select("servicePointId label displayLabel servicePointType roomType capacity pricePerNight")
-      .lean();
-
-    if (!servicePoints.length) {
-      return res.status(200).json({ rooms: [] });
+    const business = await Business.findOne({ businessId }).lean();
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
     }
+
+    const { rooms: canonicalRooms } = await findHotelRoomAvailability({
+      business,
+      checkInDate,
+      checkOutDate,
+      guestCount,
+    });
 
     // Find all blocking reservations that overlap the requested range
-    const { BLOCKING_STAY_STATUSES } = await import("../services/reservationCreationService.js");
-    const blockedServicePointIds = new Set();
-    const conflicts = await Reservation.find({
-      businessId,
-      servicePointId: { $in: servicePoints.map((sp) => sp.servicePointId) },
-      status: { $in: [...BLOCKING_STAY_STATUSES] },
-      checkInDate: { $lt: checkOutDate },
-      checkOutDate: { $gt: checkInDate },
-    })
-      .select("servicePointId")
-      .lean();
-
-    for (const c of conflicts) {
-      blockedServicePointIds.add(c.servicePointId);
-    }
-
-    const guestCountNum = guestCount ? parseInt(guestCount, 10) : null;
-
-    // Compute canonical pricing summary per room so staff room cards can display
-    // the actual guest-payable total (including tax and platform fees) without
-    // any client-side calculation. Uses the same engine as reservation creation.
-    const msPerDay = 1000 * 60 * 60 * 24;
-    const numberOfNights = Math.max(
-      1,
-      Math.round((new Date(checkOutDate) - new Date(checkInDate)) / msPerDay),
-    );
-
-    const business = await Business.findOne({ businessId }).lean();
-    const { calculateOnlinePricing, getCustomerPricingBreakdown } = await import("../services/pricingService.js");
-
-    const rooms = await Promise.all(
-      servicePoints.map(async (sp) => {
-        const baseRoom = {
-          servicePointId: sp.servicePointId,
-          label: sp.displayLabel || sp.label,
-          servicePointType: sp.servicePointType || "room",
-          roomType: sp.roomType || null,
-          capacity: sp.capacity ?? null,
-          pricePerNight: sp.pricePerNight ?? null,
-          available: !blockedServicePointIds.has(sp.servicePointId),
-          capacityExceeded:
-            guestCountNum != null && sp.capacity != null && guestCountNum > sp.capacity,
-          pricingSummary: null,
-        };
-
-        if (!sp.pricePerNight || Number(sp.pricePerNight) <= 0 || !business) {
-          return baseRoom;
-        }
-
-        try {
-          const subtotalCents = Math.round(Number(sp.pricePerNight) * numberOfNights * 100);
-          const pricing = await calculateOnlinePricing({ subtotalCents, business });
-          const breakdown = getCustomerPricingBreakdown(pricing);
-          return {
-            ...baseRoom,
-            pricingSummary: {
-              nights: numberOfNights,
-              subtotal: breakdown.subtotal,
-              taxAmount: breakdown.taxAmount,
-              taxAmountCents: breakdown.taxAmountCents,
-              taxRate: breakdown.taxRate,
-              customerPlatformFeeAmount: breakdown.customerPlatformFeeAmount,
-              customerPlatformFeeCents: breakdown.customerPlatformFeeCents,
-              total: breakdown.total,
-              totalCents: breakdown.totalCents,
-              hasAdditionalCharges: breakdown.taxAmountCents > 0 || breakdown.customerPlatformFeeCents > 0,
-            },
-          };
-        } catch (err) {
-          console.error(`[getHotelRoomAvailability] pricing failed for ${sp.servicePointId}:`, err);
-          return baseRoom;
-        }
-      }),
-    );
+    const rooms = canonicalRooms.map((room) => ({
+      servicePointId: room.servicePointId,
+      label: room.displayLabel || room.label,
+      servicePointType: room.servicePointType || "room",
+      roomType: room.roomType || null,
+      capacity: room.capacity ?? null,
+      pricePerNight: room.pricePerNight ?? null,
+      available: room.available,
+      capacityExceeded: room.capacityExceeded,
+      pricingSummary: room.pricingSummary,
+    }));
 
     return res.status(200).json({ rooms });
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
     console.error("[reservationController.getHotelRoomAvailability] Error:", error);
     return res.status(500).json({ error: "Server error" });
   }
@@ -1758,45 +1648,24 @@ export async function getHotelPricingPreview(req, res) {
     if (!checkInDate || !checkOutDate || !servicePointId) {
       return res.status(400).json({ error: "checkInDate, checkOutDate, and servicePointId are required" });
     }
-    if (checkOutDate <= checkInDate) {
-      return res.status(400).json({ error: "checkOutDate must be after checkInDate" });
-    }
-
     const businessId = sessionUser.businessId;
     const business = await Business.findOne({ businessId }).lean();
     if (!business) {
       return res.status(404).json({ error: "Business not found" });
     }
 
-    const servicePoint = await ServicePoint.findOne({
-      businessId,
-      servicePointId,
-      isActive: { $ne: false },
-      reservable: { $ne: false }
-    }).lean();
-
-    if (!servicePoint || !servicePoint.pricePerNight) {
-      return res.status(400).json({ error: "Invalid or unavailable room selected." });
-    }
-
-    const msPerDay = 1000 * 60 * 60 * 24;
-    const numberOfNights = Math.round(
-      (new Date(checkOutDate) - new Date(checkInDate)) / msPerDay,
-    );
-
-    const subtotalCents = Math.round(servicePoint.pricePerNight * numberOfNights * 100);
-
-    const { calculateOnlinePricing, getCustomerPricingBreakdown } = await import("../services/pricingService.js");
-
-    const pricing = await calculateOnlinePricing({
-      subtotalCents,
+    const customerPricing = await getHotelRoomPricingPreview({
       business,
+      servicePointId,
+      checkInDate,
+      checkOutDate,
     });
-
-    const customerPricing = getCustomerPricingBreakdown(pricing);
 
     return res.status(200).json(customerPricing);
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
     console.error("[reservationController.getHotelPricingPreview] Error:", error);
     return res.status(500).json({ error: "Server error" });
   }

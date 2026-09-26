@@ -279,7 +279,7 @@ function createWaitstaffOrderRequest(overrides = {}) {
       orderSource: "self",
       createdBy: "customer",
       paymentStatus: "paid",
-      servicePointLabel: "sp_table_a",
+      servicePointId: "sp_table_a",
       orderType: "dine-in",
       items: [{ itemName: "Margherita Pizza", quantity: 1 }],
       ...overrides,
@@ -627,7 +627,8 @@ test("Scenario A: public dine-in order derives tenant, menu pricing, snapshots, 
   assert.equal(capture.orderCreates.length, 1);
   const stored = capture.orderCreates[0];
   assert.equal(stored.businessId, "business-a");
-  assert.equal(stored.servicePointLabel, "sp_table_a");
+  assert.equal(stored.servicePointId, "sp_table_a");
+  assert.equal(stored.servicePointLabel, undefined);
   assert.equal(stored.guestSessionId, "mongo-guest-session-a");
   assert.equal(stored.displayLabel, "Table 7");
   assert.equal(stored.orderType, "dine-in");
@@ -710,7 +711,7 @@ test("waitstaff Send to Kitchen creates one authoritative unpaid staff order", a
   const stored = capture.orderCreates[0];
   assert.equal(stored.businessId, "business-a");
   assert.equal(stored.orderSource, "waitstaff");
-  assert.equal(stored.guestSessionId, undefined);
+  assert.equal(stored.guestSessionId, null);
   assert.equal(stored.createdBy, "staff");
   assert.equal(stored.createdByStaffId, "staff-a");
   assert.equal(stored.paymentChannel, "offline");
@@ -853,7 +854,8 @@ test("takeout preserves the order type while keeping the current ServicePoint as
 
   assert.equal(res.statusCode, 201);
   assert.equal(capture.orderCreates[0].orderType, "takeout");
-  assert.equal(capture.orderCreates[0].servicePointLabel, "sp_table_a");
+  assert.equal(capture.orderCreates[0].servicePointId, "sp_table_a");
+  assert.equal(capture.orderCreates[0].servicePointLabel, undefined);
   assert.equal(capture.orderCreates[0].displayLabel, "Table 7");
 });
 
@@ -986,7 +988,7 @@ test("Scenario D: manipulated tenant, ServicePoint, and item identifiers cannot 
   await createOrder(
     createPublicOrderRequest({
       businessId: "business-b",
-      servicePointLabel: "sp_table_b",
+      servicePointId: "sp_table_b",
     }),
     wrongPointRes,
   );
@@ -1612,7 +1614,8 @@ test("Scenario B: online checkout ignores client price/currency and persists the
   const stripeConfig = capture.stripeConfigs[0];
   assert.equal(pending.businessId, "business-a");
   assert.equal(pending.guestSessionId, "mongo-guest-session-a");
-  assert.equal(pending.servicePointLabel, "sp_table_a");
+  assert.equal(pending.servicePointId, "sp_table_a");
+  assert.equal(pending.servicePointLabel, undefined);
   assert.equal(pending.displayLabel, "Table 7");
   assert.equal(pending.items[0].lineTotal, 25);
   assert.equal(pending.subtotal, 25);

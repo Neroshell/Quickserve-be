@@ -23,8 +23,13 @@ import {
   resolveReservationConfirmationAccess,
   resolveReservationPaymentAccess,
 } from "../services/reservationPublicAccessService.js";
+import {
+  PUBLIC_SERVABLE_BUSINESS_STATUSES,
+  PublicBusinessResolutionError,
+  normalizePublicBusinessLocator,
+  resolvePublicBusiness,
+} from "../services/publicBusinessResolverService.js";
 
-const SERVABLE_STATUSES = ["active", "onboarding", "draft"];
 const RESERVATION_CONFIRMATION_SESSION_HEADER =
   "x-reservation-confirmation-session";
 const PUBLIC_BUSINESS_FIELDS = new Set([
@@ -108,7 +113,7 @@ export async function getPublicBusinessConfig(req, res) {
       $or: [{ businessId }, { restaurantId: businessId }],
     }).lean();
 
-    if (!business || !SERVABLE_STATUSES.includes(business.status)) {
+    if (!business || !PUBLIC_SERVABLE_BUSINESS_STATUSES.includes(business.status)) {
       return res.status(404).json({ error: "Business not found" });
     }
 
@@ -183,11 +188,10 @@ export async function getPublicBusinessConfig(req, res) {
 export async function getBusinessBySlug(req, res) {
   try {
     const { slug, countryCode } = req.params;
-    if (!slug) return res.status(400).json({ error: "Slug is required" });
-
-    const normalizedSlug = slug.trim().toLowerCase();
-    const normalizedCountryCode = countryCode?.trim().toLowerCase();
-    if (!normalizedSlug) return res.status(400).json({ error: "Slug is required" });
+    const {
+      businessSlug: normalizedSlug,
+      countryCode: normalizedCountryCode,
+    } = normalizePublicBusinessLocator({ businessSlug: slug, countryCode });
 
     if (normalizedCountryCode) {
       const cacheKey = cacheKeys.publicBusiness(normalizedCountryCode, normalizedSlug);
@@ -198,27 +202,26 @@ export async function getBusinessBySlug(req, res) {
     }
 
     let business;
-
-
-    if (normalizedCountryCode) {
-      business = await Business.findOne({ slug: normalizedSlug, countryCode: normalizedCountryCode }).lean();
-    } else {
-      // Legacy route: find all matching slugs
-      const businesses = await Business.find({ slug: normalizedSlug }).lean();
-      if (businesses.length === 1) {
-        business = businesses[0];
-        redirectUrl = `/b/${business.countryCode || 'mt'}/${business.slug}`;
-      } else if (businesses.length > 1) {
+    try {
+      ({ business } = await resolvePublicBusiness({
+        businessSlug: normalizedSlug,
+        countryCode: normalizedCountryCode,
+      }));
+    } catch (error) {
+      if (error?.code === "AMBIGUOUS_PUBLIC_BUSINESS_SLUG") {
         return res.status(300).json({
           error: "Multiple businesses found. Please use the country-specific link.",
-          redirects: businesses.map(b => `/b/${b.countryCode || 'mt'}/${b.slug}`)
+          redirects: error.candidates.map(
+            (candidate) => `/b/${candidate.countryCode || "mt"}/${candidate.slug}`,
+          ),
         });
       }
+      throw error;
     }
 
     if (!business) return res.status(404).json({ error: "Business not found" });
 
-    if (!["active", "onboarding", "draft"].includes(business.status)) {
+    if (!PUBLIC_SERVABLE_BUSINESS_STATUSES.includes(business.status)) {
       return res.status(404).json({ error: "Business is not available" });
     }
 
@@ -278,6 +281,9 @@ export async function getBusinessBySlug(req, res) {
 
     return res.json(publicDto);
   } catch (error) {
+    if (error instanceof PublicBusinessResolutionError) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
     console.error("[publicController.getBusinessBySlug] Error:", error);
     res.status(500).json({ error: "Server error" });
   }
@@ -285,8 +291,10 @@ export async function getBusinessBySlug(req, res) {
 
 import {
   createReservationService,
-  normalizeRestaurantCreationIdempotencyKey,
+  normalizeCreationIdempotencyKey,
 } from "../services/reservationCreationService.js";
+// backward-compat alias – publicController still references this name
+const normalizeRestaurantCreationIdempotencyKey = normalizeCreationIdempotencyKey;
 
 async function createExternalReservationNotification(...args) {
   const { notifyExternalReservationCreated } = await import(
@@ -301,11 +309,13 @@ async function createExternalReservationNotification(...args) {
 export async function createReservation(req, res, {
   createReservationRequest = createReservationService,
   notifyExternalReservation = createExternalReservationNotification,
+  resolveBusinessRequest = resolvePublicBusiness,
 } = {}) {
   try {
     const {
       isHotelBooking,
       businessSlug,
+      countryCode,
       customerName,
       phone,
       email,
@@ -320,20 +330,30 @@ export async function createReservation(req, res, {
       durationMinutes,
       seatingPreference,
     } = req.body || {};
-    const idempotencyKey = isHotelBooking
-      ? null
-      : normalizeRestaurantCreationIdempotencyKey(
-        req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"],
-      );
+    const rawKey = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"];
+    // ARCH-006: idempotency applies to both hotel and restaurant public bookings
+    const idempotencyKey = rawKey
+      ? normalizeCreationIdempotencyKey(rawKey)
+      : null;
     if (!isHotelBooking && servicePointId != null && typeof servicePointId !== "string") {
       return res.status(400).json({ error: "A valid ServicePoint ID is required." });
     }
     const requestedRestaurantServicePointId = !isHotelBooking && servicePointId
       ? servicePointId.trim() || null
       : null;
+    const { business } = await resolveBusinessRequest({
+      businessSlug,
+      countryCode,
+      statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
+    });
+    if (!business) {
+      return res.status(404).json({ error: "Business not found or inactive" });
+    }
     const result = await createReservationRequest({
       isHotelBooking,
-      businessSlug,
+      businessSlug: business.slug,
+      countryCode: business.countryCode,
+      business,
       customerName,
       phone,
       email,
@@ -400,11 +420,11 @@ export async function getPublicRestaurantAvailability(req, res) {
       return res.status(400).json({ error: "businessSlug is required" });
     }
 
-    const business = await Business.findOne({
-      slug: businessSlug,
-      ...(countryCode ? { countryCode } : {}),
-      status: { $in: SERVABLE_STATUSES },
-    }).lean();
+    const { business } = await resolvePublicBusiness({
+      businessSlug,
+      countryCode,
+      statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
+    });
     if (
       !business ||
       resolveBusinessCapabilities(business).reservations.primaryMode !== "timeslot"

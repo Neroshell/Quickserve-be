@@ -45,6 +45,8 @@ function restaurantBusiness() {
     _id: "business-1",
     businessId: "business-1",
     businessType: "restaurant",
+    slug: "test-bistro",
+    countryCode: "mt",
     modules: ["foodService"],
     status: "active",
   };
@@ -272,6 +274,7 @@ test("the public reservation endpoint emits external-created after persistence",
     get(name) { return this.headers[name.toLowerCase()]; },
     body: {
       isHotelBooking: false,
+      countryCode: "MT",
       businessSlug: "test-bistro",
       customerName: "External Guest",
       phone: "+15550000000",
@@ -292,12 +295,18 @@ test("the public reservation endpoint emits external-created after persistence",
       };
     },
     notifyExternalReservation: async (input) => { notifications.push(input); },
+    resolveBusinessRequest: async ({ businessSlug, countryCode }) => {
+      assert.equal(businessSlug, "test-bistro");
+      assert.equal(countryCode, "MT");
+      return { business: restaurantBusiness() };
+    },
   });
 
   assert.equal(response.statusCode, 201);
   assert.equal(creationInput.source, "online");
   assert.equal(creationInput.idempotencyKey, "restaurant-public-1");
   assert.equal(creationInput.servicePointId, "table-terrace-4");
+  assert.equal(creationInput.business.businessId, "business-1");
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].reservation._id, created._id);
   assert.equal("reservation" in response.body, false);
@@ -309,7 +318,10 @@ test("notification failure never rolls back a successful public reservation", as
   await createPublicReservation({
     headers: { "idempotency-key": "restaurant-public-2" },
     get(name) { return this.headers[name.toLowerCase()]; },
-    body: {},
+    body: {
+      countryCode: "mt",
+      businessSlug: "test-bistro",
+    },
   }, response, {
     createReservationRequest: async () => ({
       message: "Reservation request received.",
@@ -322,6 +334,7 @@ test("notification failure never rolls back a successful public reservation", as
     notifyExternalReservation: async () => {
       throw new Error("temporary notification failure");
     },
+    resolveBusinessRequest: async () => ({ business: restaurantBusiness() }),
   });
 
   assert.equal(response.statusCode, 201);

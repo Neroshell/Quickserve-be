@@ -851,12 +851,10 @@ export async function broadcastLocal(msg) {
     }
 
     // The table this event belongs to, if any. Orders and waiter calls carry the
-    // identity used to scope customer streams below. Waiter calls use only the
-    // canonical servicePointId; the order fallback remains unchanged.
+    // canonical identity used to scope customer streams below.
     const msgTableId =
         payload?.servicePointId ||
         payload?.order?.servicePointId ||
-        payload?.order?.servicePointLabel ||
         payload?.call?.servicePointId ||
         null
     const msgGuestSessionId =

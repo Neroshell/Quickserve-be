@@ -81,7 +81,6 @@ export function createOwnerAnalyticsService({
             preset: range,
             from,
             to,
-            timezone: business.timezone,
             now: generatedAt,
             business,
         })

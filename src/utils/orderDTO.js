@@ -83,12 +83,20 @@ export function toOrderDTO(
         items: o.status === "placed" ? (o.items || []) : fulfillmentItems,
     }, customerProgressOptions)
 
+    const displayLabel = o.displayLabel || o.tableLabel || (
+        typeof o.servicePointLabel === "string" &&
+        !o.servicePointLabel.startsWith("sp_")
+            ? o.servicePointLabel
+            : ""
+    )
+
     return {
         orderId: o.orderId,
         sessionId: o.sessionId,
-         servicePointId: o.servicePointLabel, //
-        servicePointLabel: o.servicePointLabel, // kept for internal reference only
-        displayLabel: o.displayLabel || o.tableLabel || o.servicePointLabel, // display this — falls back to systemId for legacy orders
+        servicePointId: o.servicePointId || null,
+        // Transitional presentation alias. It must never carry technical identity.
+        servicePointLabel: displayLabel,
+        displayLabel,
         orderType: o.orderType || "dine-in",
         status: o.status,
         createdAt: o.createdAt,

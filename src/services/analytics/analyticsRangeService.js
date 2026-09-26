@@ -292,7 +292,9 @@ export function resolveAnalyticsRange({
 }
 
 export function resolveAnalyticsDomainRanges(options = {}) {
-    const timezone = resolveAnalyticsTimezone(options.timezone)
+    const timezone = resolveAnalyticsTimezone(
+        options.timezone ?? options.business?.timezone
+    )
     const sharedOptions = {
         ...options,
         timezone,

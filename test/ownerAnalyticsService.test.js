@@ -126,6 +126,89 @@ function createService(business) {
     return { service, calls }
 }
 
+test("owner analytics service derives non-UTC domain ranges from the loaded Business", async (t) => {
+    async function resolveFor({ business, now, range = "today", from, to }) {
+        const service = createOwnerAnalyticsService({
+            businessModel: createBusinessModel(business, []),
+            capabilityResolver: () => ({ analytics: { sections: [] } }),
+            clock: () => now,
+        })
+        return service({
+            businessId: business.businessId,
+            range,
+            from,
+            to,
+        })
+    }
+
+    await t.test("Europe/Malta today keeps food operational and lodging calendar days distinct", async () => {
+        const result = await resolveFor({
+            business: {
+                businessId: "biz_malta_endpoint",
+                businessType: "restaurant",
+                modules: [],
+                timezone: "Europe/Malta",
+                currency: "EUR",
+                operatingHours: {
+                    Tuesday: { openTime: "09:00", closeTime: "02:00" },
+                    Wednesday: { openTime: "09:00", closeTime: "23:00" },
+                },
+            },
+            now: new Date("2026-09-15T22:30:00.000Z"),
+        })
+        assert.equal(result.range.timezone, "Europe/Malta")
+        assert.equal(result.range.foodOperationalRange.from, "2026-09-15")
+        assert.equal(result.range.lodgingCalendarRange.from, "2026-09-16")
+    })
+
+    await t.test("America/New_York 7days retains the tenant timezone", async () => {
+        const result = await resolveFor({
+            business: {
+                businessId: "biz_ny_endpoint",
+                businessType: "restaurant",
+                modules: [],
+                timezone: "America/New_York",
+                currency: "USD",
+                operatingHours: {
+                    Monday: { openTime: "09:00", closeTime: "02:00" },
+                    Tuesday: { openTime: "09:00", closeTime: "22:00" },
+                },
+            },
+            now: new Date("2026-07-28T05:30:00.000Z"),
+            range: "7days",
+        })
+        assert.equal(result.range.timezone, "America/New_York")
+        assert.equal(result.range.foodOperationalRange.from, "2026-07-21")
+        assert.equal(result.range.foodOperationalRange.to, "2026-07-27")
+        assert.equal(result.range.lodgingCalendarRange.from, "2026-07-22")
+        assert.equal(result.range.lodgingCalendarRange.to, "2026-07-28")
+    })
+
+    await t.test("America/New_York custom lodging day spans the DST fall-back", async () => {
+        const result = await resolveFor({
+            business: {
+                businessId: "biz_ny_dst_endpoint",
+                businessType: "hotel",
+                modules: [],
+                timezone: "America/New_York",
+                currency: "USD",
+            },
+            now: fixedGeneratedAt,
+            range: "custom",
+            from: "2026-11-01",
+            to: "2026-11-01",
+        })
+        assert.equal(
+            result.range.lodgingCalendarRange.startUtc,
+            "2026-11-01T04:00:00.000Z",
+        )
+        assert.equal(
+            result.range.lodgingCalendarRange.endUtcExclusive,
+            "2026-11-02T05:00:00.000Z",
+        )
+    })
+})
+
 for (const businessType of [
     "restaurant",
     "bar_lounge",
@@ -166,7 +249,6 @@ for (const businessType of [
                 preset: "today",
                 from: undefined,
                 to: undefined,
-                timezone: "Europe/Berlin",
                 now: fixedGeneratedAt,
                 business,
             },

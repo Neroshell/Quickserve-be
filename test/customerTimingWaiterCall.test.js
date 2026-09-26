@@ -37,9 +37,10 @@ function customerRequest(overrides = {}) {
   return {
     body: {
       token: "valid-table-token",
-      businessId: "spoofed-business",
-      servicePointId: "spoofed-service-point",
+      businessId: "trusted-business",
+      servicePointId: "sp-trusted",
       servicePointLabel: "Table 7",
+      sessionId: "device-a",
       reason: "Delayed order",
       ...overrides,
     },
@@ -49,12 +50,19 @@ function customerRequest(overrides = {}) {
 }
 
 function mockTrustedCustomerIdentity(t) {
-  t.mock.method(GuestSession, "findOne", () => queryResult({
-    _id: "guest-session-1",
-    businessId: "trusted-business",
-    servicePointId: "sp-trusted",
-    expiresAt: new Date(Date.now() + 60_000),
-  }))
+  t.mock.method(GuestSession, "findOne", (filter) => {
+    assert.deepEqual(filter, {
+      token: "valid-table-token",
+      businessId: "trusted-business",
+    })
+    return queryResult({
+      _id: "guest-session-1",
+      businessId: "trusted-business",
+      servicePointId: "sp-trusted",
+      boundSessionId: "device-a",
+      expiresAt: new Date(Date.now() + 60_000),
+    })
+  })
 }
 
 test("server rejects waiter calls when the business setting is disabled", async (t) => {
@@ -97,7 +105,7 @@ test("server rejects waiter calls while the restaurant is closed", async (t) => 
   assert.equal(res.body.code, "BUSINESS_CLOSED")
 })
 
-test("valid table token is authoritative for tenant and service-point scope", async (t) => {
+test("valid current visit is authoritative for tenant and service-point scope", async (t) => {
   mockTrustedCustomerIdentity(t)
   t.mock.method(Business, "findOne", () => queryResult({
     businessId: "trusted-business",

@@ -1,8 +1,8 @@
 import ServiceRequest from "../models/ServiceRequest.js"
 import ServicePoint from "../models/ServicePoint.js"
-import GuestSession from "../models/GuestSession.js"
 import Business from "../models/Business.js"
 import { publishEvent } from "../utils/sseManager.js"
+import { resolveCurrentCustomerVisit } from "../services/customerOrderAccessService.js"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 import { normalizeFoodServiceRequestCategory } from "../services/serviceRequestClassificationService.js"
 import {
@@ -94,12 +94,13 @@ export async function createOrGetActiveWaiterCall({
 }
 
 /**
- * Resolve the businessId for a waiter-call request from a TRUSTED source:
+ * Resolve waiter-call access from a TRUSTED source:
  *   - an authenticated staff session, or
- *   - a valid (non-expired) table-session token presented by a customer device.
- * Never from a client-supplied businessId. Returns { businessId } or { error, status }.
+ *   - the canonical current-visit authority used by customer orders and SSE.
+ * Client-provided business and ServicePoint identifiers are only expected-scope
+ * assertions; the returned GuestSession remains authoritative.
  */
-async function resolveCallBusinessId(req, token) {
+async function resolveCallAccess(req, { businessId, servicePointId, sessionId }) {
   if (req.session?.user?.businessId) {
     return {
       businessId: req.session.user.businessId,
@@ -108,18 +109,20 @@ async function resolveCallBusinessId(req, token) {
       servicePointId: null,
     }
   }
-  if (!token) {
-    return { error: "Missing table session token", status: 401 }
-  }
-  const ts = await GuestSession.findOne({ token }).lean()
-  if (!ts || !ts.expiresAt || ts.expiresAt < new Date()) {
-    return { error: "Invalid or expired table session", status: 403 }
+  const access = await resolveCurrentCustomerVisit({
+    req,
+    businessId,
+    servicePointId,
+    sessionId,
+  })
+  if (!access.guestSession) {
+    return { error: access.message, status: access.statusCode }
   }
   return {
-    businessId: ts.businessId,
+    businessId: access.guestSession.businessId,
     contextType: "table_session",
-    guestSessionId: String(ts._id),
-    servicePointId: ts.servicePointId,
+    guestSessionId: access.guestSessionId,
+    servicePointId: access.guestSession.servicePointId,
   }
 }
 
@@ -146,10 +149,23 @@ function getRelativeTime(date) {
 export async function createWaiterCall(req, res) {
   try {
     const staffId = getWaiterId(req) // can be empty for customer calls (that's fine)
-    const { servicePointId = "", servicePointLabel = "", servicePointQrCode = "", reason = "", note = "", userDeviceId = "", token } = req.body || {}
+    const {
+      businessId: requestedBusinessId = "",
+      servicePointId = "",
+      servicePointLabel = "",
+      servicePointQrCode = "",
+      reason = "",
+      note = "",
+      userDeviceId = "",
+      sessionId = "",
+    } = req.body || {}
 
     // businessId comes from the staff session or a valid table token — never the body.
-    const resolved = await resolveCallBusinessId(req, token)
+    const resolved = await resolveCallAccess(req, {
+      businessId: String(requestedBusinessId).trim(),
+      servicePointId: String(servicePointId).trim(),
+      sessionId: String(sessionId).trim(),
+    })
     if (resolved.error) {
       return res.status(resolved.status).json({ error: resolved.error })
     }
@@ -305,10 +321,19 @@ export async function createWaiterCall(req, res) {
 
 export async function listWaiterCalls(req, res) {
   try {
-    const { status = "active", token } = req.query
+    const {
+      status = "active",
+      businessId: requestedBusinessId = "",
+      servicePointId = "",
+      sessionId = "",
+    } = req.query
 
     // businessId comes from the staff session or a valid table token — never the query.
-    const resolved = await resolveCallBusinessId(req, token)
+    const resolved = await resolveCallAccess(req, {
+      businessId: String(requestedBusinessId).trim(),
+      servicePointId: String(servicePointId).trim(),
+      sessionId: String(sessionId).trim(),
+    })
     if (resolved.error) {
       return res.status(resolved.status).json({ error: resolved.error })
     }

@@ -18,8 +18,8 @@ const WaiterCallSchema = new mongoose.Schema(
     },
     reservationId: { type: String, default: null, index: true },
     guestSessionId: { type: String, default: null, index: true },
-    servicePointId: { type: String, default: null, index: true },
-    servicePointLabel: { type: String, required: true, index: true },
+    servicePointId: { type: String, required: true, index: true },
+    displayLabel: { type: String, default: "" },
     servicePointQrCode: { type: String, default: "" },
     // Present only while the request is active. The partial unique index makes
     // simultaneous requests for one tenant/service point converge on one row.

@@ -77,6 +77,7 @@ function createRestaurantReservationRequest(overrides = {}) {
     headers: { "idempotency-key": `capacity-${overrides.servicePointId || "automatic"}` },
     get(name) { return this.headers[name.toLowerCase()]; },
     body: {
+      countryCode: "mt",
       businessSlug: "capacity-restaurant",
       customerName: "Capacity Guest",
       phone: "+35600000000",
@@ -100,6 +101,7 @@ function createBusinessForDate(date) {
   return {
     businessId: "business-1",
     slug: "capacity-restaurant",
+    countryCode: "mt",
     status: "active",
     businessType: "restaurant",
     modules: ["foodService"],

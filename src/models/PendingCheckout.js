@@ -53,7 +53,7 @@ const PendingCheckoutSchema = new mongoose.Schema(
             type: String,
             required() { return this.checkoutType === "order" },
         },
-        servicePointLabel: {
+        servicePointId: {
             type: String,
             required() { return this.checkoutType === "order" },
         },

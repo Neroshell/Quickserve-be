@@ -20,6 +20,7 @@ import {
     ReservationPaymentAttemptError,
 } from "../services/reservationPaymentAttemptService.js";
 import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
+import { buildCanonicalOrderDraft } from "../services/orderConstructionService.js";
 import { normalizeTip } from "../utils/tips.js";
 import {
     INVENTORY_PROVIDER_CREATION_REPAIR_DELAY_MS,
@@ -97,6 +98,7 @@ async function enqueueInventoryRepairSafely(payload, req) {
 export async function createCheckoutSession(req, res) {
     try {
         const {
+            servicePointId: requestedServicePointId,
             servicePointLabel,
             items,
             sessionId,
@@ -108,6 +110,16 @@ export async function createCheckoutSession(req, res) {
             tipPercentage,
             journeyId,
         } = req.body;
+        const servicePointId = String(
+            requestedServicePointId || servicePointLabel || "",
+        ).trim();
+        if (
+            requestedServicePointId &&
+            servicePointLabel &&
+            String(requestedServicePointId).trim() !== String(servicePointLabel).trim()
+        ) {
+            return res.status(400).json({ message: "Conflicting ServicePoint identity" });
+        }
 
         // This is the customer Stripe boundary. Ambient staff cookies do not
         // authorize checkout or alter customer provenance.
@@ -115,8 +127,8 @@ export async function createCheckoutSession(req, res) {
             return res.status(400).json({ message: "sessionId is required" });
         if (!tableSessionToken)
             return res.status(400).json({ message: "tableSessionToken is required" });
-        if (!servicePointLabel || !Array.isArray(items) || items.length === 0)
-            return res.status(400).json({ message: "servicePointLabel and items are required" });
+        if (!servicePointId || !Array.isArray(items) || items.length === 0)
+            return res.status(400).json({ message: "servicePointId and items are required" });
         const itemValidationError = getOrderItemsValidationError(items);
         if (itemValidationError)
             return res.status(400).json({ message: itemValidationError });
@@ -133,7 +145,7 @@ export async function createCheckoutSession(req, res) {
             return res.status(403).json({ message: "Invalid or expired table session." });
         if (ts.expiresAt.getTime() < Date.now())
             return res.status(403).json({ message: "Session expired." });
-        if (ts.servicePointId !== servicePointLabel)
+        if (ts.servicePointId !== servicePointId)
             return res.status(403).json({ message: "Table session mismatch." });
 
         // Bind session to first device ATOMICALLY
@@ -180,7 +192,7 @@ export async function createCheckoutSession(req, res) {
         }
 
         const sp = await ServicePoint.findOne({
-            servicePointId: servicePointLabel,
+            servicePointId,
             businessId: businessIdToUse,
         }).lean();
         if (!sp || sp.isActive === false) {
@@ -253,9 +265,9 @@ export async function createCheckoutSession(req, res) {
         }
 
         // --- Resolve service point label for display ---
-        // servicePointLabel is the internal servicePointId (e.g. sp_xxxx); we resolve the
-        // human-friendly label once here so the webhook can copy it without a second lookup.
-        const displayLabel = sp?.label || sp?.code || servicePointLabel;
+        // Resolve the human-friendly label once so the webhook can copy it
+        // without reinterpreting a display field as technical identity.
+        const displayLabel = sp?.label || sp?.code || servicePointId;
         const servicePointQrCode = sp?.code || sp?.label || displayLabel;
 
         // --- Save cart data temporarily (not an Order yet) ---
@@ -317,7 +329,7 @@ export async function createCheckoutSession(req, res) {
             journeyId: journeyId || null,
             tableSessionToken,
             sessionId,
-            servicePointId: servicePointLabel,
+            servicePointId,
             orderType: finalOrderType,
         });
         const resolvedJourneyId = journey?.journeyId || null;
@@ -341,7 +353,7 @@ export async function createCheckoutSession(req, res) {
         );
         const requestFingerprint = buildInventoryRequestFingerprint({
             businessId: businessIdToUse,
-            servicePointLabel,
+            servicePointId,
             orderType: finalOrderType,
             sessionId,
             guestSessionId: String(ts._id),
@@ -375,8 +387,8 @@ export async function createCheckoutSession(req, res) {
                 transfer_data: { destination: business.stripeAccountId },
                 metadata: { orderId, businessId: businessIdToUse },
             },
-            success_url: `${FRONTEND_BASE_URL}/s/${servicePointLabel}/confirmation?payment=success&orderId=${orderId}&businessId=${businessIdToUse}`,
-            cancel_url: `${FRONTEND_BASE_URL}/s/${servicePointLabel}/order?payment=cancelled&businessId=${businessIdToUse}`,
+            success_url: `${FRONTEND_BASE_URL}/s/${servicePointId}/confirmation?payment=success&orderId=${orderId}&businessId=${businessIdToUse}`,
+            cancel_url: `${FRONTEND_BASE_URL}/s/${servicePointId}/order?payment=cancelled&businessId=${businessIdToUse}`,
             ...(receiptEmail ? { customer_email: receiptEmail } : {}),
         };
 
@@ -409,25 +421,38 @@ export async function createCheckoutSession(req, res) {
                     return existing;
                 }
 
-                const [created] = await PendingCheckout.create([{
-                    _id: pendingCheckoutId,
-                    businessId: businessIdToUse,
+                const checkoutDraft = buildCanonicalOrderDraft({
+                    business: { ...business, businessId: businessIdToUse },
                     orderId,
-                    servicePointLabel,
+                    servicePointId,
                     displayLabel,
                     orderType: finalOrderType,
                     sessionId,
                     guestSessionId: String(ts._id),
-                    items: enrichedItems,
+                    enrichedItems,
                     subtotal,
                     taxAmount,
-                    tipAmount: tip.tipAmount,
-                    tipType: tip.tipType,
-                    tipPercentage: tip.tipPercentage,
+                    tip,
                     total: pricing.total,
                     currency: finalCurrency.toUpperCase(),
-                    receiptEmail: receiptEmail || null,
+                    platformFeeTotal: 0,
+                    platformFeeCents: commissionAmountCents,
+                    customerPlatformFeeCents,
+                    businessAbsorbedPlatformFeeCents,
+                    platformFeeMode,
+                    customerPlatformFeePercent,
+                    commissionAmountCents,
+                    commissionRateApplied,
+                    planApplied,
+                    estimatedPrepMinutes: null,
+                    estimatedReadyAt: null,
                     journeyId: resolvedJourneyId,
+                    receiptEmail,
+                });
+
+                const [created] = await PendingCheckout.create([{
+                    _id: pendingCheckoutId,
+                    ...checkoutDraft,
                     orderSource: "self",
                     createdBy: "customer",
                     createdByStaffId: null,

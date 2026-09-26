@@ -8,8 +8,7 @@ node_modules/
 # =========================
 .env
 .env.*
-
-.env.example
+!.env.example
 # =========================
 # Logs
 # =========================
@@ -72,6 +71,7 @@ test/*
 !test/orderFulfillmentService.test.js
 !test/orderFulfillment.integration.test.js
 !test/customerTimingWaiterCall.test.js
+!test/waiterCallCurrentVisit.test.js
 !test/inventoryPhase5B.test.js
 !test/inventoryPhase5B.integration.test.js
 !test/inventoryPhase6B.test.js
@@ -126,3 +126,25 @@ test/sessionTouchThrottling.test.js
 test/phoneNumber.test.js
 test/googlePlacesService.test.js
 test/ownerOrdersPagination.test.js
+!test/arch006ReservationIdempotency.integration.test.js
+!test/arch007OrderConstruction.test.js
+!test/arch008AnalyticsRange.test.js
+!test/arch010RuntimeReadiness.test.js
+!test/hotelReservationAvailabilityService.test.js
+!test/publicReservationTenantResolution.test.js
+!test/searchUtils.test.js
+!test/staffLegacyWaiterIndexMigration.test.js
+!test/testEnvironment.js
+!test/testExternalProviderGuard.test.js
+!test/ownerTransactionsPaginationCount.test.js
+!test/sessionTouchThrottling.test.js
+
+# Local architecture verification reports and disposable probes.
+/arch001_012_full_verification_report.md
+/arch001_012_remediation_report.md
+/arch001_012_clean_candidate_recertification_report.md
+/arch010_final_report.md
+/arch011_tests.mjs
+/test_redis_error.js
+/test_session_middleware.js
+/scratch/

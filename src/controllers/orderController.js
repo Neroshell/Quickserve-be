@@ -38,6 +38,7 @@ import { dispatchAutomaticOrderReceipt } from "../services/email/emailDispatchSe
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 import { invalidateMenuItems } from "../services/cacheInvalidationService.js"
 import { withCanonicalInventoryTransaction } from "../services/canonicalInventoryService.js"
+import { buildCanonicalOrderDraft } from "../services/orderConstructionService.js"
 import {
   buildInventoryRequestFingerprint,
   reserveInventoryForSource,
@@ -94,7 +95,7 @@ function getRequestIdempotencyKey(req, fallback) {
 
 export async function listOrders(req, res) {
   try {
-    const { sessionId, servicePointLabel } = req.query
+    const { sessionId, servicePointId } = req.query
     const businessId = resolveBusinessId(req)
 
     if (!businessId) {
@@ -108,9 +109,9 @@ export async function listOrders(req, res) {
     const filter = { businessId }
     if (isStaff) {
       if (sessionId) filter.sessionId = sessionId
-      if (servicePointLabel) filter.servicePointLabel = servicePointLabel
-      if (!sessionId && !servicePointLabel) {
-        return res.status(400).json({ message: "Provide sessionId or servicePointLabel" })
+      if (servicePointId) filter.servicePointId = servicePointId
+      if (!sessionId && !servicePointId) {
+        return res.status(400).json({ message: "Provide sessionId or servicePointId" })
       }
     } else {
       if (!sessionId) {
@@ -127,8 +128,8 @@ export async function listOrders(req, res) {
 
     // Hydrate table labels for service points
     for (const order of orders) {
-      if (order.servicePointLabel && order.servicePointLabel.startsWith("sp_")) {
-        const sp = await ServicePoint.findOne({ servicePointId: order.servicePointLabel, businessId }).lean()
+      if (order.servicePointId && order.servicePointId.startsWith("sp_")) {
+        const sp = await ServicePoint.findOne({ servicePointId: order.servicePointId, businessId }).lean()
         if (sp) {
           order.tableLabel = sp.label || sp.code
         }
@@ -165,7 +166,7 @@ export async function listCurrentOrders(req, res) {
     const filter = {
       businessId,
       guestSessionId: access.guestSessionId,
-      servicePointLabel: access.guestSession.servicePointId,
+      servicePointId: access.guestSession.servicePointId,
     }
     const [orders, business] = await Promise.all([
       Order.find(filter).sort({ createdAt: -1 }).lean(),
@@ -183,7 +184,7 @@ export async function listCurrentOrders(req, res) {
 export async function createOrder(req, res) {
   try {
     const {
-      servicePointLabel, items, sessionId, tableSessionToken, orderType,
+      servicePointId, items, sessionId, tableSessionToken, orderType,
       receiptEmail, tipAmount, tipType, tipPercentage, journeyId
     } = req.body
 
@@ -199,8 +200,8 @@ export async function createOrder(req, res) {
     if (!tableSessionToken) {
       return res.status(400).json({ message: "tableSessionToken is required" })
     }
-    if (!servicePointLabel || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "servicePointLabel and items are required" })
+    if (!servicePointId || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "servicePointId and items are required" })
     }
     const itemValidationError = getOrderItemsValidationError(items)
     if (itemValidationError) {
@@ -228,7 +229,7 @@ export async function createOrder(req, res) {
     }
 
     // Table must match
-    if (ts.servicePointId !== servicePointLabel) {
+    if (ts.servicePointId !== servicePointId) {
       return res.status(403).json({ message: "Table session mismatch. Please rescan the correct table QR." })
     }
 
@@ -278,14 +279,14 @@ export async function createOrder(req, res) {
     }
 
     // Resolve human-friendly label for display (stored once, no need to look up later)
-    const sp = await ServicePoint.findOne({ servicePointId: servicePointLabel, businessId }).lean()
+    const sp = await ServicePoint.findOne({ servicePointId: servicePointId, businessId }).lean()
     if (!sp || sp.isActive === false) {
       return res.status(400).json({
         message: "This ServicePoint is not active for the selected business.",
       })
     }
-    const displayLabel = sp?.label || sp?.code || servicePointLabel
-    const tableCode = sp?.code || sp?.label || servicePointLabel
+    const displayLabel = sp?.label || sp?.code || servicePointId
+    const tableCode = sp?.code || sp?.label || servicePointId
 
     const now = new Date()
     const orderId = generateOrderId(tableCode, now)
@@ -384,7 +385,7 @@ export async function createOrder(req, res) {
     const creationIdempotencyKey = getRequestIdempotencyKey(req, orderId)
     const creationRequestFingerprint = buildInventoryRequestFingerprint({
       businessId,
-      servicePointLabel,
+      servicePointId,
       orderType: finalOrderType,
       sessionId,
       guestSessionId: String(ts._id),
@@ -400,42 +401,40 @@ export async function createOrder(req, res) {
       tip,
       paymentChannel: "offline",
     })
-    const orderInput = {
+    const draft = buildCanonicalOrderDraft({
+      business,
       orderId,
-      businessId,
-      servicePointLabel,
+      servicePointId,
       displayLabel,
       orderType: finalOrderType,
       sessionId,
       guestSessionId: String(ts._id),
-      items: enrichedItems,
-      status: "placed",
-      estimatedPrepMinutes: estimate.estimatedPrepMinutes,
-      estimatedReadyAt: estimate.estimatedReadyAt,
+      enrichedItems,
       subtotal,
       taxAmount,
+      tip,
+      total: finalTotal,
+      currency: getBusinessCurrency(business),
       platformFeeTotal: customerPlatformFeeFloat,
-      tipAmount: tip.tipAmount,
-      tipType: tip.tipType,
-      tipPercentage: tip.tipPercentage,
       platformFeeCents: fullPlatformFeeCents,
       customerPlatformFeeCents,
       businessAbsorbedPlatformFeeCents,
       platformFeeMode: mode,
       customerPlatformFeePercent: percent,
-      total: finalTotal,
-      currency: getBusinessCurrency(business),
+      commissionAmountCents: finalCommissionAmountCents,
+      commissionRateApplied,
+      planApplied,
+      estimatedPrepMinutes: estimate.estimatedPrepMinutes,
+      estimatedReadyAt: estimate.estimatedReadyAt,
+      journeyId: resolvedJourneyId,
+      receiptEmail,
+    })
+    const orderInput = {
+      ...draft,
+      status: "placed",
       paymentChannel: "offline",
       paymentStatus: "unpaid",
       paidVia: null,
-      receiptEmail: receiptEmail || null,
-      journeyId: resolvedJourneyId,
-      planApplied,
-      commissionRateApplied,
-      commissionAmountCents: finalCommissionAmountCents,
-      planAtOrder: planApplied,
-      commissionRateAtOrder: commissionRateApplied,
-      platformFeeRateAtOrder: commissionRateApplied,
       orderSource: "self",
       createdBy: "customer",
       createdByStaffId: null,
@@ -566,7 +565,7 @@ export async function getOrderById(req, res) {
           req,
           businessId,
           sessionId: requesterSessionId,
-          servicePointId: order.servicePointLabel,
+          servicePointId: order.servicePointId,
         })
         if (!access.guestSession) {
           return res.status(access.statusCode).json({ message: access.message })
@@ -583,8 +582,8 @@ export async function getOrderById(req, res) {
     }
 
     // Hydrate display name (fallback for legacy orders missing displayLabel)
-    if (order.servicePointLabel && order.servicePointLabel.startsWith("sp_")) {
-      const sp = await ServicePoint.findOne({ servicePointId: order.servicePointLabel, businessId }).lean()
+    if (order.servicePointId && order.servicePointId.startsWith("sp_")) {
+      const sp = await ServicePoint.findOne({ servicePointId: order.servicePointId, businessId }).lean()
       if (sp) {
         order.displayLabel = sp.label || sp.code
       }

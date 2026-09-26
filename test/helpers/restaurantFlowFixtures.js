@@ -137,7 +137,7 @@ export function createOrderDocument(overrides = {}) {
     _id: "mongo-order-a",
     orderId: "ORDER-A-001",
     businessId: "business-a",
-    servicePointLabel: "sp_table_a",
+    servicePointId: "sp_table_a",
     displayLabel: "Table 7",
     orderType: "dine-in",
     sessionId: "device-a",
@@ -215,7 +215,7 @@ export function createPublicOrderRequest(overrides = {}) {
   return {
     body: {
       businessId: "attacker-controlled-business",
-      servicePointLabel: "sp_table_a",
+      servicePointId: "sp_table_a",
       sessionId: "device-a",
       tableSessionToken: "table-token-a",
       orderType: "dine-in",

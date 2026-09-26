@@ -48,6 +48,11 @@ function semanticSnapshot(item) {
   return semantic
 }
 
+function stableCustomerProgress(progress) {
+  const { assistanceAvailableAt: _assistanceAvailableAt, ...stable } = progress
+  return stable
+}
+
 async function seedParityRestaurant() {
   const alwaysOpen = Object.fromEntries(
     ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -135,7 +140,7 @@ async function seedParityRestaurant() {
 function customerRequest({ token, sessionId, items, idempotencyKey, stripe }) {
   return {
     body: {
-      servicePointLabel: "sp_phase5_parity",
+      servicePointId: "sp_phase5_parity",
       tableSessionToken: token,
       sessionId,
       orderType: "dine-in",
@@ -222,7 +227,7 @@ test("simultaneous Kitchen and Bar transitions preserve both stations and do not
     await Order.create({
       orderId: "ord_phase5_concurrent",
       businessId: "biz_phase5",
-      servicePointLabel: "sp_phase5",
+      servicePointId: "sp_phase5",
       status: "placed",
       paymentChannel: "online",
       paymentStatus: "paid",
@@ -424,6 +429,9 @@ test("offline and Stripe orders preserve equivalent frozen fulfilment snapshots 
     assert.equal(pending.orderSource, "self")
     assert.equal(pending.createdBy, "customer")
     assert.equal(pending.createdByStaffId, null)
+    assert.equal(pending.servicePointId, "sp_phase5_parity")
+    assert.equal(pending.displayLabel, "Table 5")
+    assert.equal(pending.servicePointLabel, undefined)
     assert.deepEqual(pending.items.map(semanticSnapshot), offlineOrder.items.map(semanticSnapshot))
 
     // The PendingCheckout, not the live MenuItem, remains authoritative.
@@ -442,10 +450,13 @@ test("offline and Stripe orders preserve equivalent frozen fulfilment snapshots 
     assert.equal(onlineOrder.orderSource, "self")
     assert.equal(onlineOrder.createdBy, "customer")
     assert.equal(onlineOrder.createdByStaffId, null)
+    assert.equal(onlineOrder.servicePointId, "sp_phase5_parity")
+    assert.equal(onlineOrder.displayLabel, "Table 5")
+    assert.equal(onlineOrder.servicePointLabel, undefined)
     assert.deepEqual(onlineOrder.items.map(semanticSnapshot), offlineOrder.items.map(semanticSnapshot))
     assert.deepEqual(
-      toOrderDTO(onlineOrder).customerProgress,
-      toOrderDTO(offlineOrder).customerProgress,
+      stableCustomerProgress(toOrderDTO(onlineOrder).customerProgress),
+      stableCustomerProgress(toOrderDTO(offlineOrder).customerProgress),
     )
     assert.deepEqual(lineSnapshot(onlineOrder.items[0]), {
       orderLineId: pending.items[0].orderLineId,
@@ -513,7 +524,7 @@ test("offline and Stripe orders preserve equivalent frozen fulfilment snapshots 
     await Order.create({
       businessId: recoveryPending.businessId,
       orderId: recoveryPending.orderId,
-      servicePointLabel: recoveryPending.servicePointLabel,
+      servicePointId: recoveryPending.servicePointId,
       displayLabel: recoveryPending.displayLabel,
       orderType: recoveryPending.orderType,
       sessionId: recoveryPending.sessionId,
@@ -600,7 +611,7 @@ test("offline and Stripe orders preserve equivalent frozen fulfilment snapshots 
     await Order.create({
       businessId: canonicalPending.businessId,
       orderId: canonicalPending.orderId,
-      servicePointLabel: canonicalPending.servicePointLabel,
+      servicePointId: canonicalPending.servicePointId,
       displayLabel: canonicalPending.displayLabel,
       orderType: canonicalPending.orderType,
       sessionId: canonicalPending.sessionId,

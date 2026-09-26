@@ -4,6 +4,7 @@ import {
   CRM_DORMANT_DAYS,
   CRM_REENGAGEMENT_DAYS,
 } from "../constants/crm.js"
+import { buildSafeSearchRegex } from "../utils/searchUtils.js"
 
 export const OWNER_GUESTS_DEFAULT_LIMIT = 25
 export const OWNER_GUESTS_MAX_LIMIT = 25
@@ -25,9 +26,7 @@ export class OwnerGuestsCursorError extends Error {
   }
 }
 
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
+
 
 function normalizeLimit(value) {
   if (value === undefined || value === null || value === "") {
@@ -181,9 +180,8 @@ function buildGuestsFilter({ businessId, filterBy, dateRangeBounds, search }) {
   }
 
   // Search
-  const normalizedSearch = typeof search === "string" ? search.trim() : ""
-  if (normalizedSearch) {
-    const searchRegex = new RegExp(escapeRegex(normalizedSearch), "i")
+  const searchRegex = buildSafeSearchRegex(search)
+  if (searchRegex) {
     query.$or = [
       { email: { $regex: searchRegex } },
       { name: { $regex: searchRegex } }

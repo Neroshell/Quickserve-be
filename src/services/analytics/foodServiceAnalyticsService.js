@@ -419,7 +419,7 @@ function buildFoodServiceOrderPipeline({
                     },
                     {
                         $group: {
-                            _id: "$servicePointLabel",
+                            _id: "$servicePointId",
                             displayLabel: {
                                 $first: "$displayLabel",
                             },

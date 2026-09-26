@@ -22,7 +22,7 @@ export async function publishOrderRealtime(event, order, { action, customerNotif
     : payloadExtra
   const visitScope = {
     businessId: order.businessId,
-    servicePointId: order.servicePointLabel,
+    servicePointId: order.servicePointId,
     guestSessionId: order.guestSessionId || null,
     orderId: order.orderId,
   }

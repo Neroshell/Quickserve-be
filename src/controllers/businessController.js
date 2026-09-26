@@ -1668,7 +1668,10 @@ export async function getAdminDashboardStats(req, res) {
 
 export async function getCategories(req, res) {
     try {
-        const businessId = req.query.businessId || req.query.businessId || req.user?.businessId || req.user?.businessId
+        // ARCH-012-E: Derive businessId strictly from the authenticated session.
+        // Never trust req.query.businessId on owner routes — it would allow
+        // cross-tenant category reads.
+        const businessId = req.session?.user?.businessId
         if (!businessId) {
             return res.status(400).json({ message: "businessId is required" })
         }

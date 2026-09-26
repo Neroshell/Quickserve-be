@@ -1,10 +1,10 @@
+import { resolveAnalyticsDomainRanges } from "../services/analytics/analyticsRangeService.js"
 import { DateTime } from "luxon"
 import Feedback from "../models/Feedback.js"
 import Order from "../models/order.js"
 import ServicePoint from "../models/ServicePoint.js"
 import Business from "../models/Business.js"
 
-import { resolveAnalyticsDateRange } from "../utils/businessDate.js"
 import { classifyFeedbackSentiment, isLowFeedbackRating } from "../services/feedbackRatingService.js"
 
 async function createLowRatingNotification(...args) {
@@ -32,6 +32,11 @@ export async function submitFeedback(req, res, {
 
         if (!orderId || !businessId || !overallRating) {
             return res.status(400).json({ error: "Missing required fields: orderId, businessId, overallRating" });
+        }
+        // ARCH-012-H: Validate rating boundary before hitting domain logic
+        const numericRating = Number(overallRating);
+        if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
+            return res.status(400).json({ error: "overallRating must be an integer between 1 and 5" });
         }
         if (!sessionId) {
             return res.status(400).json({ error: "sessionId is required" });
@@ -66,7 +71,7 @@ export async function submitFeedback(req, res, {
                 sentiment,
                 wouldRecommend,
                 orderType: order.orderType,
-                servicePointId: order.servicePointLabel,
+                servicePointId: order.servicePointId,
                 orderValue: order.total || 0
             });
         } catch (dbErr) {
@@ -96,6 +101,10 @@ export async function submitFeedback(req, res, {
         return res.status(201).json({ message: "Feedback submitted successfully" });
     } catch (error) {
         console.error("[submitFeedback error]", error);
+        // ARCH-012-J: Catch Mongoose schema errors instead of crashing to 500
+        if (error.name === "ValidationError" || error.name === "CastError") {
+            return res.status(400).json({ error: "Invalid feedback data provided" });
+        }
         return res.status(500).json({ error: "Failed to submit feedback" });
     }
 }
@@ -114,7 +123,9 @@ export async function getOwnerFeedbackAnalytics(req, res) {
             return res.status(404).json({ error: "Business not found" });
         }
 
-        const { startDateJS, endDateJS } = resolveAnalyticsDateRange(business, range, from, to);
+        const { foodOperationalRange } = resolveAnalyticsDomainRanges({ preset: range, from, to, business });
+        const startDateJS = foodOperationalRange.startUtc;
+        const endDateJS = foodOperationalRange.endUtcExclusive;
 
         const dateFilter = { businessId, createdAt: { $gte: startDateJS, $lt: endDateJS } };
 

@@ -326,7 +326,7 @@ test("processed payment with a missing receipt surfaces provider failure and ret
   const existingOrder = createOrderDocument({
     businessId: "business-123",
     orderId: "ORDER-123",
-    servicePointLabel: "sp_123",
+    servicePointId: "sp_123",
     displayLabel: "Table 7",
     orderType: "dine-in",
     items: [{ itemName: "Margherita Pizza", quantity: 1, lineTotal: 10 }],
@@ -410,7 +410,7 @@ test("paid food-order webhook creates one paid order and sends exactly one recei
     _id: "pending_123",
     businessId: "business-123",
     orderId: "ORDER-123",
-    servicePointLabel: "sp_123",
+    servicePointId: "sp_123",
     displayLabel: "Table 7",
     orderType: "dine-in",
     sessionId: "guest-session-123",
@@ -521,6 +521,8 @@ test("paid food-order webhook creates one paid order and sends exactly one recei
   assert.equal(storedOrder.receiptSent, true);
   assert.ok(storedOrder.receiptSentAt instanceof Date);
   assert.equal(storedOrder.displayLabel, "Table 7");
+  assert.equal(storedOrder.servicePointId, "sp_123");
+  assert.equal(storedOrder.servicePointLabel, undefined);
   assert.equal(storedOrder.subtotal, 10);
   assert.equal(storedOrder.taxAmount, 1);
   assert.equal(storedOrder.total, 12.34);

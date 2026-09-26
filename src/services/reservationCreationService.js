@@ -1,7 +1,5 @@
 import mongoose from "mongoose";
-import { DateTime } from "luxon";
 import crypto from "crypto";
-import Business from "../models/Business.js";
 import Reservation from "../models/Reservation.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { getCustomerReservationPricing, buildReservationPricingSnapshot } from "./reservationPricingService.js";
@@ -16,140 +14,40 @@ import { getHotelPaymentExpiresAt } from "../constants/hotelConstants.js";
 import {
   RESTAURANT_AVAILABILITY_POLICIES,
   allocateRestaurantServicePoint,
+  assertRestaurantConfirmationConflict,
   assertRestaurantAvailabilityPolicy,
+  hasRestaurantReservationCapacity,
+  lockRestaurantServicePointForCreation,
   validateRestaurantPartySize,
   validateRestaurantReservationWindow,
 } from "./restaurantReservationAvailabilityService.js";
+import {
+  PUBLIC_SERVABLE_BUSINESS_STATUSES,
+  resolvePublicBusiness,
+} from "./publicBusinessResolverService.js";
+import {
+  assertNoRoomConflict,
+  lockHotelRoomForReservation,
+  validateHotelStayWindow,
+} from "./hotelReservationAvailabilityService.js";
+
+export {
+  BLOCKING_STAY_STATUSES,
+  assertNoRoomConflict,
+  lockHotelRoomForReservation,
+  resolveHotelRoom,
+} from "./hotelReservationAvailabilityService.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PHASE C — Business-timezone date helper
 // Returns the business-local calendar date as a "YYYY-MM-DD" string.
 // Never use new Date().toISOString().split("T")[0] for hotel date checks.
 // ─────────────────────────────────────────────────────────────────────────────
-function getBusinessLocalDate(business) {
-  const tz = business.timezone || "UTC";
-  return DateTime.now().setZone(tz).toISODate(); // "YYYY-MM-DD"
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // INVENTORY-BLOCKING STATUSES
 // Any reservation in these statuses blocks the room for its date range.
 // Must stay in sync with conflict checks everywhere.
 // ─────────────────────────────────────────────────────────────────────────────
-export const BLOCKING_STAY_STATUSES = Object.freeze([
-  "pending",
-  "accepted_awaiting_payment",
-  "confirmed",
-  "checked_in",
-]);
-
-/**
- * Validates that a servicePoint is a reservable room belonging to the business.
- * Returns the servicePoint document or throws a statusCode-annotated error.
- */
-export async function resolveHotelRoom({ servicePointId, businessId, session } = {}) {
-  const sp = await ServicePoint.findOne({
-    servicePointId,
-    businessId,
-    isActive: { $ne: false },
-    reservable: { $ne: false },
-  })
-    .session(session ?? null)
-    .lean();
-
-  if (!sp) {
-    const err = new Error("The selected room is not available for booking.");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  // Phase I rule 5: servicePointType must be room
-  if (sp.servicePointType && sp.servicePointType !== "room") {
-    const err = new Error(
-      `The selected service point is of type "${sp.servicePointType}", not a room.`,
-    );
-    err.statusCode = 400;
-    throw err;
-  }
-
-  return sp;
-}
-
-/**
- * Acquires the canonical room document as the transaction's allocation lock.
- * Concurrent transactions for the same physical room cannot both pass the
- * subsequent overlap check and commit.
- */
-export async function lockHotelRoomForReservation({
-  servicePointId,
-  businessId,
-  session,
-}) {
-  const sp = await ServicePoint.findOneAndUpdate(
-    {
-      servicePointId,
-      businessId,
-      isActive: { $ne: false },
-      reservable: { $ne: false },
-    },
-    { $currentDate: { updatedAt: true } },
-    { returnDocument: "after", session },
-  ).lean();
-
-  if (!sp) {
-    const err = new Error("The selected room is not available for booking.");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (sp.servicePointType && sp.servicePointType !== "room") {
-    const err = new Error(
-      `The selected service point is of type "${sp.servicePointType}", not a room.`,
-    );
-    err.statusCode = 400;
-    throw err;
-  }
-
-  return sp;
-}
-
-/**
- * Checks for overlapping blocking reservations for the given room and date range.
- * On a mutating allocation path, call this after acquiring the room's
- * ServicePoint write lock in the same MongoDB transaction.
- * Throws a 409 if a conflict is found.
- */
-export async function assertNoRoomConflict({
-  businessId,
-  servicePointId,
-  checkInDate,
-  checkOutDate,
-  excludeReservationId = null,
-  session,
-}) {
-  const query = {
-    businessId,
-    servicePointId,
-    status: { $in: [...BLOCKING_STAY_STATUSES] },
-    checkInDate: { $lt: checkOutDate },
-    checkOutDate: { $gt: checkInDate },
-  };
-
-  if (excludeReservationId) {
-    query._id = { $ne: excludeReservationId };
-  }
-
-  const conflict = await Reservation.findOne(query)
-    .session(session ?? null)
-    .lean();
-
-  if (conflict) {
-    const err = new Error("This room is already booked for the selected dates.");
-    err.statusCode = 409;
-    throw err;
-  }
-}
-
 function normalizeHotelAllocationTransactionError(error) {
   if (error?.statusCode) return error;
 
@@ -189,7 +87,7 @@ function normalizeRestaurantAllocationTransactionError(error) {
   return conflict;
 }
 
-export function normalizeRestaurantCreationIdempotencyKey(value) {
+export function normalizeCreationIdempotencyKey(value) {
   if (typeof value !== "string") {
     const error = new Error("A valid Idempotency-Key header is required.");
     error.statusCode = 400;
@@ -205,6 +103,15 @@ export function normalizeRestaurantCreationIdempotencyKey(value) {
   }
   return normalized;
 }
+
+/**
+ * Backward-compatible alias kept so that existing controller imports do not
+ * need to change at the same time as this service.  Both names normalise
+ * identically; the generic form is now canonical.
+ * @deprecated Use normalizeCreationIdempotencyKey instead.
+ */
+export const normalizeRestaurantCreationIdempotencyKey = normalizeCreationIdempotencyKey;
+
 
 function restaurantCreationFingerprint(values) {
   const canonical = {
@@ -226,17 +133,38 @@ function restaurantCreationFingerprint(values) {
   return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
-async function findRestaurantCreationReplay({ businessId, idempotencyKey, session }) {
+function hotelCreationFingerprint(values) {
+  const canonical = {
+    businessId: values.businessId,
+    customerName: String(values.customerName || "").trim(),
+    phone: String(values.phone || "").trim(),
+    email: String(values.email || "").trim().toLowerCase(),
+    checkInDate: values.checkInDate,
+    checkOutDate: values.checkOutDate,
+    guestCount: values.guestCount,
+    servicePointId: values.servicePointId,
+    specialRequest: String(values.specialRequest || "").trim(),
+    source: values.source,
+    paymentMethod: values.paymentMethod || null,
+    checkInNow: Boolean(values.checkInNow),
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+async function findCreationReplay({ businessId, idempotencyKey, session }) {
   if (!idempotencyKey) return null;
   const query = Reservation.findOne({
     businessId,
-    restaurantCreationIdempotencyKey: idempotencyKey,
-  }).select("+restaurantCreationIdempotencyKey +restaurantCreationFingerprint");
+    $or: [
+      { creationIdempotencyKey: idempotencyKey },
+      { restaurantCreationIdempotencyKey: idempotencyKey }
+    ]
+  }).select("+creationIdempotencyKey +creationFingerprint +restaurantCreationIdempotencyKey +restaurantCreationFingerprint");
   return session ? query.session(session) : query;
 }
 
-function assertRestaurantCreationReplayMatches(reservation, fingerprint) {
-  if (reservation?.restaurantCreationFingerprint === fingerprint) return;
+function assertCreationReplayMatches(reservation, fingerprint) {
+  if (reservation?.creationFingerprint === fingerprint || reservation?.restaurantCreationFingerprint === fingerprint) return;
   const error = new Error(
     "Idempotency-Key was already used for another reservation request.",
   );
@@ -400,6 +328,123 @@ export async function reassignRestaurantReservationServicePoint({
   return { reservation, unchanged };
 }
 
+/**
+ * Confirms a restaurant reservation inside the same ServicePoint lock,
+ * conflict recheck, and status-update transaction used by canonical
+ * allocation. Controller availability reads remain advisory.
+ */
+export async function confirmRestaurantReservation({
+  business,
+  businessId = business?.businessId,
+  reservationId,
+  expectedStatus,
+  actor = null,
+  startSession = () => mongoose.startSession(),
+}) {
+  if (!businessId || !reservationId || !business) {
+    const error = new Error("Business and reservation are required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const session = await startSession();
+  let reservation;
+  let replayed = false;
+  let previousStatus = null;
+
+  try {
+    await session.withTransaction(async () => {
+      reservation = await Reservation.findOne({
+        _id: reservationId,
+        businessId,
+      }).session(session);
+      if (!reservation) {
+        const error = new Error("Reservation not found.");
+        error.statusCode = 404;
+        throw error;
+      }
+      if (reservation.checkInDate || reservation.checkOutDate) {
+        const error = new Error(
+          "Restaurant confirmation cannot be used for a stay reservation.",
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+
+      previousStatus = reservation.status;
+      if (reservation.status === "confirmed") {
+        replayed = true;
+        return;
+      }
+      if (expectedStatus && reservation.status !== expectedStatus) {
+        const error = new Error(
+          "The reservation was updated elsewhere. Refresh and try again.",
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+      if (!reservation.servicePointId) {
+        const error = new Error(
+          "Assign an available ServicePoint before confirming this reservation.",
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      validateRestaurantReservationWindow({
+        business,
+        date: reservation.date,
+        startTime: reservation.startTime,
+        endTime: reservation.endTime,
+        policy: RESTAURANT_AVAILABILITY_POLICIES.owner,
+      });
+
+      const lockedServicePoint = await lockRestaurantServicePointForCreation({
+        businessId,
+        policy: RESTAURANT_AVAILABILITY_POLICIES.owner,
+        servicePointId: reservation.servicePointId,
+        session,
+      });
+      if (
+        !lockedServicePoint ||
+        !hasRestaurantReservationCapacity(
+          lockedServicePoint,
+          validateRestaurantPartySize(reservation.guestCount),
+        )
+      ) {
+        const error = new Error(
+          "Restaurant availability changed while the reservation was being confirmed.",
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      await assertRestaurantConfirmationConflict({
+        businessId,
+        servicePointId: lockedServicePoint.servicePointId,
+        date: reservation.date,
+        startTime: reservation.startTime,
+        endTime: reservation.endTime,
+        reservationId: reservation._id,
+        session,
+      });
+
+      reservation.status = "confirmed";
+      if (!reservation.confirmedAt) reservation.confirmedAt = new Date();
+      if (actor && !reservation.confirmedBy) reservation.confirmedBy = actor;
+      reservation.servicePointLabel =
+        lockedServicePoint.label || reservation.servicePointLabel;
+      await reservation.save({ session });
+    });
+  } catch (error) {
+    throw normalizeRestaurantAllocationTransactionError(error);
+  } finally {
+    await session.endSession();
+  }
+
+  return { reservation, previousStatus, replayed };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HOTEL BOOKING — canonical creation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -446,280 +491,259 @@ export async function createHotelReservation({
   guestCount,
   servicePointId,
   specialRequest,
-  source = "public_hub",
+  source = 'public_hub',
   paymentMethod = null,
   checkInNow = false,
   staffSnapshot = null,
+  idempotencyKey: rawIdempotencyKey = null,
+  sideEffects = {},
 }) {
-  // ── Phase I: Validation ──────────────────────────────────────────────────
-
+  // Phase I: Validation
   if (!customerName || !phone || !email || !checkInDate || !checkOutDate || !guestCount || !servicePointId) {
-    const err = new Error("Missing required fields.");
+    const err = new Error('Missing required fields.');
     err.statusCode = 400;
     throw err;
   }
 
-  // Phase C: Use business-local date for "today"
-  const businessToday = getBusinessLocalDate(business);
-
-  if (checkInDate < businessToday) {
-    const err = new Error("Check-in date cannot be in the past.");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (checkOutDate <= checkInDate) {
-    const err = new Error("Check-out must be after check-in.");
-    err.statusCode = 400;
-    throw err;
-  }
+  const { businessToday, numberOfNights } = validateHotelStayWindow({
+    business,
+    checkInDate,
+    checkOutDate,
+  });
 
   const guests = parseInt(guestCount, 10);
   if (isNaN(guests) || guests < 1 || guests > 50) {
-    const err = new Error("Guest count must be between 1 and 50.");
+    const err = new Error('Guest count must be between 1 and 50.');
     err.statusCode = 400;
     throw err;
   }
 
   if (specialRequest && specialRequest.length > 500) {
-    const err = new Error("Special request is too long (max 500 characters).");
+    const err = new Error('Special request is too long (max 500 characters).');
     err.statusCode = 400;
     throw err;
   }
 
-  // Phase I rule 10: Walk-in payment method validation
-  const isWalkIn = source === "walk_in";
+  const isWalkIn = source === 'walk_in';
   if (isWalkIn) {
-    const VALID_WALK_IN_PAYMENT = ["cash", "pos_card"];
+    const VALID_WALK_IN_PAYMENT = ['cash', 'pos_card'];
     if (!paymentMethod || !VALID_WALK_IN_PAYMENT.includes(paymentMethod)) {
-      const err = new Error(
-        'Walk-in payment method must be "cash" or "pos_card".',
-      );
+      const err = new Error('Walk-in payment method must be "cash" or "pos_card".');
       err.statusCode = 400;
       throw err;
     }
   }
 
-  const session = await mongoose.startSession();
-  let hotelReservation;
+  // ARCH-006: Idempotency normalisation and pre-transaction replay lookup
+  const idempotencyKey = rawIdempotencyKey == null
+    ? null
+    : normalizeCreationIdempotencyKey(rawIdempotencyKey);
 
-  try {
-    await session.withTransaction(async () => {
-      // Phase I rules 4–8 inside transaction for concurrency safety
-      const sp = await lockHotelRoomForReservation({
-        servicePointId,
-        businessId: business.businessId,
-        session,
-      });
+  const fingerprint = hotelCreationFingerprint({
+    businessId: business.businessId,
+    customerName, phone, email,
+    checkInDate, checkOutDate,
+    guestCount: guests,
+    servicePointId, specialRequest,
+    source, paymentMethod, checkInNow,
+  });
 
-      // Phase I rule 7: capacity check
-      if (sp.capacity != null && guests > sp.capacity) {
-        const err = new Error(
-          `This room accommodates a maximum of ${sp.capacity} guests.`,
-        );
-        err.statusCode = 400;
-        throw err;
-      }
+  let hotelReservation = await findCreationReplay({ businessId: business.businessId, idempotencyKey });
+  let replayed = Boolean(hotelReservation);
+  if (hotelReservation) assertCreationReplayMatches(hotelReservation, fingerprint);
 
-      // Phase B/I rule 8: atomic conflict check
-      await assertNoRoomConflict({
-        businessId: business.businessId,
-        servicePointId,
-        checkInDate,
-        checkOutDate,
-        session,
-      });
-
-      const msPerDay = 1000 * 60 * 60 * 24;
-      const numberOfNights = Math.round(
-        (new Date(checkOutDate) - new Date(checkInDate)) / msPerDay,
-      );
-      const pricePerNight = sp.pricePerNight || 0;
-
-      const now = new Date();
-
-      // ── Phase I rule 12: Derive status and payment fields server-side ────
-      let reservationStatus = "pending";
-      let paymentStatus = "pending";
-      let paymentChannel = null;
-      let paidVia = null;
-      let paidAt = null;
-      let confirmedAt = null;
-      let confirmedBy = null;
-      let checkedInAt = null;
-      let checkedInBy = null;
-      let amountPaidCents = undefined;
-      let secureToken = null;
-      let paymentExpiresAt = null;
-      const bookingMode = business.hotelSettings?.onlineBookingConfirmationMode || "instant";
-
-      if (isWalkIn) {
-        // Walk-ins are always paid immediately
-        reservationStatus = "confirmed";
-        paymentStatus = "paid";
-        paymentChannel = "offline";
-        paidVia = paymentMethod; // "cash" or "pos_card"
-        paidAt = now;
-        confirmedAt = now;
-        confirmedBy = staffSnapshot;
-
-        // Phase J/K: Check-in immediately only when check-in date is today
-        // AND checkInNow flag is explicitly set
-        if (checkInNow && checkInDate === businessToday) {
-          reservationStatus = "checked_in";
-          checkedInAt = now;
-          checkedInBy = staffSnapshot;
+  if (!hotelReservation) {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        // In-transaction serialization boundary replay check
+        const transactionReplay = await findCreationReplay({ businessId: business.businessId, idempotencyKey, session });
+        if (transactionReplay) {
+          assertCreationReplayMatches(transactionReplay, fingerprint);
+          hotelReservation = transactionReplay;
+          replayed = true;
+          return;
         }
-      } else if (bookingMode === "instant") {
-        reservationStatus = "accepted_awaiting_payment";
-        secureToken = crypto.randomBytes(32).toString("hex");
-        paymentExpiresAt = getHotelPaymentExpiresAt(now);
-      }
 
-      hotelReservation = new Reservation({
-        businessId: business.businessId,
-        businessSlug: business.slug,
-        customerName,
-        phone,
-        email,
-        checkInDate,
-        checkOutDate,
-        guestCount: guests,
-        servicePointId: sp.servicePointId,
-        servicePointLabel: sp.displayLabel || sp.label,
-        roomTypeSnapshot: sp.roomType || null,
-        specialRequest,
-        pricePerNight,
-        numberOfNights,
-        currency: business.currency || "eur",
-        // Phase D: Canonical source value
-        source,
-        // Phase E: Staff attribution — only for staff-created reservations
-        createdBy: staffSnapshot ?? null,
-        // Phase I rule 12 derived fields:
-        status: reservationStatus,
-        paymentStatus,
-        paymentChannel,
-        paidVia,
-        paidAt,
-        confirmedAt,
-        confirmedBy,
-        checkedInAt,
-        checkedInBy,
-        ...(amountPaidCents != null ? { amountPaidCents } : {}),
-        ...(secureToken != null ? { secureToken } : {}),
-        ...(paymentExpiresAt != null ? { paymentExpiresAt } : {}),
-      });
+        // Phase I rules 4-8: lock room, capacity, conflict
+        const sp = await lockHotelRoomForReservation({ servicePointId, businessId: business.businessId, session });
 
-      // Phase G: Canonical pricing snapshot from existing pricing service
-      try {
-        const snapshot = await buildReservationPricingSnapshot({
-          reservation: hotelReservation,
-          business,
-        });
-        Object.assign(hotelReservation, snapshot);
-
-        // For walk-ins, record the final amount paid in cents
-        if (isWalkIn && hotelReservation.grossAmountCents) {
-          hotelReservation.amountPaidCents = hotelReservation.grossAmountCents;
+        if (sp.capacity != null && guests > sp.capacity) {
+          const err = new Error('This room accommodates a maximum of ' + sp.capacity + ' guests.');
+          err.statusCode = 400;
+          throw err;
         }
-      } catch (pricingErr) {
-        console.error(
-          "[createHotelReservation] Pricing snapshot failed:",
-          pricingErr,
-        );
-        // Non-fatal: save without full snapshot, can be recomputed later
-      }
 
-      await hotelReservation.save({ session });
-    });
-  } catch (error) {
-    throw normalizeHotelAllocationTransactionError(error);
-  } finally {
-    await session.endSession();
+        await assertNoRoomConflict({ businessId: business.businessId, servicePointId, checkInDate, checkOutDate, session });
+
+        const pricePerNight = sp.pricePerNight || 0;
+        const now = new Date();
+
+        let reservationStatus = 'pending';
+        let paymentStatus = 'pending';
+        let paymentChannel = null;
+        let paidVia = null;
+        let paidAt = null;
+        let confirmedAt = null;
+        let confirmedBy = null;
+        let checkedInAt = null;
+        let checkedInBy = null;
+        let amountPaidCents = undefined;
+        let secureToken = null;
+        let paymentExpiresAt = null;
+        const bookingMode = business.hotelSettings && business.hotelSettings.onlineBookingConfirmationMode || 'instant';
+
+        if (isWalkIn) {
+          reservationStatus = 'confirmed';
+          paymentStatus = 'paid';
+          paymentChannel = 'offline';
+          paidVia = paymentMethod;
+          paidAt = now;
+          confirmedAt = now;
+          confirmedBy = staffSnapshot;
+          if (checkInNow && checkInDate === businessToday) {
+            reservationStatus = 'checked_in';
+            checkedInAt = now;
+            checkedInBy = staffSnapshot;
+          }
+        } else if (bookingMode === 'instant') {
+          reservationStatus = 'accepted_awaiting_payment';
+          secureToken = crypto.randomBytes(32).toString('hex');
+          paymentExpiresAt = getHotelPaymentExpiresAt(now);
+        }
+
+        const docFields = {
+          businessId: business.businessId,
+          businessSlug: business.slug,
+          customerName, phone, email,
+          checkInDate, checkOutDate,
+          guestCount: guests,
+          servicePointId: sp.servicePointId,
+          servicePointLabel: sp.displayLabel || sp.label,
+          roomTypeSnapshot: sp.roomType || null,
+          specialRequest, pricePerNight, numberOfNights,
+          currency: business.currency || 'eur',
+          source,
+          createdBy: staffSnapshot != null ? staffSnapshot : null,
+          status: reservationStatus,
+          paymentStatus, paymentChannel, paidVia, paidAt,
+          confirmedAt, confirmedBy, checkedInAt, checkedInBy,
+        };
+        if (amountPaidCents != null) docFields.amountPaidCents = amountPaidCents;
+        if (secureToken != null) docFields.secureToken = secureToken;
+        if (paymentExpiresAt != null) docFields.paymentExpiresAt = paymentExpiresAt;
+        // ARCH-006: hotel reservations use only generic idempotency fields
+        if (idempotencyKey) {
+          docFields.creationIdempotencyKey = idempotencyKey;
+          docFields.creationFingerprint = fingerprint;
+        }
+
+        hotelReservation = new Reservation(docFields);
+
+        try {
+          const snapshot = await buildReservationPricingSnapshot({ reservation: hotelReservation, business });
+          Object.assign(hotelReservation, snapshot);
+          if (isWalkIn && hotelReservation.grossAmountCents) {
+            hotelReservation.amountPaidCents = hotelReservation.grossAmountCents;
+          }
+        } catch (pricingErr) {
+          console.error('[createHotelReservation] Pricing snapshot failed:', pricingErr);
+        }
+
+        await hotelReservation.save({ session });
+      });
+    } catch (error) {
+      const duplicateCreationKey =
+        error && error.code === 11000 &&
+        (error.keyPattern && error.keyPattern.creationIdempotencyKey ||
+          error.message && error.message.includes('uniq_reservation_creation_request'));
+      if (!duplicateCreationKey || !idempotencyKey) {
+        throw normalizeHotelAllocationTransactionError(error);
+      }
+      hotelReservation = await findCreationReplay({ businessId: business.businessId, idempotencyKey });
+      if (!hotelReservation) throw normalizeHotelAllocationTransactionError(error);
+      assertCreationReplayMatches(hotelReservation, fingerprint);
+      replayed = true;
+    } finally {
+      await session.endSession();
+    }
   }
 
-  if (!isWalkIn && business.hotelSettings?.onlineBookingConfirmationMode !== "confirmation_required") {
-    enqueueReservationPaymentExpiry({
+  // Post-save side-effects: only on FIRST creation, never on replay
+  if (!replayed && !isWalkIn && !(business.hotelSettings && business.hotelSettings.onlineBookingConfirmationMode === 'confirmation_required')) {
+    const enqueuePaymentExpiry =
+      sideEffects.enqueueReservationPaymentExpiry ||
+      enqueueReservationPaymentExpiry;
+    enqueuePaymentExpiry({
       businessId: business.businessId,
       reservationId: String(hotelReservation._id),
       expectedPaymentExpiry: hotelReservation.paymentExpiresAt,
-    }).catch(err => console.error("[createHotelReservation] Enqueue expiry failed:", err));
+    }).catch(function(err) { console.error('[createHotelReservation] Enqueue expiry failed:', err); });
   }
 
-  // ── Post-save: SSE notification ─────────────────────────────────────────
-  try {
-    const { publishEvent } = await import("../utils/sseManager.js");
-    const eventName =
-      hotelReservation.status === "checked_in"
-        ? "reservation_checked_in"
-        : "reservation_created";
-    publishEvent(eventName, hotelReservation.businessId, ["reservations", "owner"], {
-      reservation: {
-        id: String(hotelReservation._id),
-        status: hotelReservation.status,
-        customerName: hotelReservation.customerName,
-        guestCount: hotelReservation.guestCount,
-        checkInDate: hotelReservation.checkInDate,
-        checkOutDate: hotelReservation.checkOutDate,
-        servicePointLabel: hotelReservation.servicePointLabel || null,
-        source: hotelReservation.source,
-        type: "hotel",
-      },
-    });
-  } catch (err) {
-    console.error("[createHotelReservation] SSE publish failed:", err);
+  if (!replayed) {
+    try {
+      const publishEvent = sideEffects.publishEvent ||
+        (await import('../utils/sseManager.js')).publishEvent;
+      const eventName = hotelReservation.status === 'checked_in' ? 'reservation_checked_in' : 'reservation_created';
+      publishEvent(eventName, hotelReservation.businessId, ['reservations', 'owner'], {
+        reservation: {
+          id: String(hotelReservation._id),
+          status: hotelReservation.status,
+          customerName: hotelReservation.customerName,
+          guestCount: hotelReservation.guestCount,
+          checkInDate: hotelReservation.checkInDate,
+          checkOutDate: hotelReservation.checkOutDate,
+          servicePointLabel: hotelReservation.servicePointLabel || null,
+          source: hotelReservation.source,
+          type: 'hotel',
+        },
+      });
+    } catch (err) {
+      console.error('[createHotelReservation] SSE publish failed:', err);
+    }
   }
 
-  // ── Post-save: Email notifications ───────────────────────────────────────
   const reservationObj = hotelReservation.toObject();
   const businessDisplayName = business.displayName || business.name;
   const targetEmail = business.contactEmail || business.ownerEmail;
+  const bookingMode2 = business.hotelSettings && business.hotelSettings.onlineBookingConfirmationMode || 'instant';
+  const isInstant = !isWalkIn && bookingMode2 === 'instant';
 
-  // For online (guest-initiated) bookings, notify the owner and guest.
-  // Walk-in bookings don't use the public pending-request email.
-  const bookingMode = business.hotelSettings?.onlineBookingConfirmationMode || "instant";
-  const isInstant = !isWalkIn && bookingMode === "instant";
-
-  if (!isWalkIn && !isInstant) {
+  if (!replayed && !isWalkIn && !isInstant) {
     if (targetEmail) {
-      sendReservationRequestEmail({
-        to: targetEmail,
-        businessName: businessDisplayName,
-        reservation: reservationObj,
-      }).catch((err) =>
-        console.error("[createHotelReservation] Owner email failed:", err),
-      );
+      const sendOwnerRequest =
+        sideEffects.sendReservationRequestEmail ||
+        sendReservationRequestEmail;
+      sendOwnerRequest({ to: targetEmail, businessName: businessDisplayName, reservation: reservationObj })
+        .catch(function(err) { console.error('[createHotelReservation] Owner email failed:', err); });
     }
     if (reservationObj.email) {
-      sendReservationRequestReceivedEmail({
+      const sendGuestRequest =
+        sideEffects.sendReservationRequestReceivedEmail ||
+        sendReservationRequestReceivedEmail;
+      sendGuestRequest({
         to: reservationObj.email,
         businessName: businessDisplayName,
-        businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
-        primaryColor: business.branding?.primaryColor,
+        businessLogoUrl: business.branding && business.branding.logoUrl || business.logoUrl,
+        primaryColor: business.branding && business.branding.primaryColor,
         reservation: reservationObj,
-      }).catch((err) =>
-        console.error("[createHotelReservation] Customer email failed:", err),
-      );
+      }).catch(function(err) { console.error('[createHotelReservation] Customer email failed:', err); });
     }
   }
 
   return {
     message: isWalkIn
-      ? hotelReservation.status === "checked_in"
-        ? "Walk-in booked and guest checked in."
-        : "Walk-in booking confirmed and paid."
-      : isInstant 
-        ? "Hotel booking created and awaiting payment." 
-        : "Hotel booking request received.",
+      ? (hotelReservation.status === 'checked_in' ? 'Walk-in booked and guest checked in.' : 'Walk-in booking confirmed and paid.')
+      : (isInstant ? 'Hotel booking created and awaiting payment.' : 'Hotel booking request received.'),
     reservationId: hotelReservation._id,
     pricing: getCustomerReservationPricing(hotelReservation),
     reservation: hotelReservation.toObject(),
-    bookingMode: isWalkIn ? "walk_in" : bookingMode
+    bookingMode: isWalkIn ? 'walk_in' : bookingMode2,
+    replayed,
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // RESTAURANT / BAR BOOKING — unchanged from prior refactor
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -729,6 +753,7 @@ export async function createHotelReservation({
  */
 export async function createRestaurantReservation({
   businessSlug,
+  countryCode,
   business: preloadedBusiness = null,
   customerName,
   phone,
@@ -748,6 +773,7 @@ export async function createRestaurantReservation({
   notificationMode = "request",
   idempotencyKey: rawIdempotencyKey = null,
   startSession = () => mongoose.startSession(),
+  sideEffects = {},
 }) {
   if (!businessSlug || !customerName || !phone || !email || !date || !startTime || !endTime || !guestCount) {
     const err = new Error("Missing required fields");
@@ -763,10 +789,11 @@ export async function createRestaurantReservation({
     throw err;
   }
 
-  const business = preloadedBusiness || await Business.findOne({
-    slug: businessSlug.toLowerCase(),
-    status: { $in: ["active", "onboarding", "draft"] },
-  }).lean();
+  const business = preloadedBusiness || (await resolvePublicBusiness({
+    businessSlug,
+    countryCode,
+    statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
+  })).business;
   if (!business) {
     const err = new Error("Business not found or inactive");
     err.statusCode = 404;
@@ -792,7 +819,7 @@ export async function createRestaurantReservation({
 
   const idempotencyKey = rawIdempotencyKey == null
     ? null
-    : normalizeRestaurantCreationIdempotencyKey(rawIdempotencyKey);
+    : normalizeCreationIdempotencyKey(rawIdempotencyKey);
   const fingerprint = restaurantCreationFingerprint({
     businessId: business.businessId,
     customerName,
@@ -810,24 +837,24 @@ export async function createRestaurantReservation({
     initialStatus,
   });
 
-  let reservation = await findRestaurantCreationReplay({
+  let reservation = await findCreationReplay({
     businessId: business.businessId,
     idempotencyKey,
   });
   let replayed = Boolean(reservation);
-  if (reservation) assertRestaurantCreationReplayMatches(reservation, fingerprint);
+  if (reservation) assertCreationReplayMatches(reservation, fingerprint);
 
   if (!reservation) {
     const session = await startSession();
     try {
       await session.withTransaction(async () => {
-        const transactionReplay = await findRestaurantCreationReplay({
+        const transactionReplay = await findCreationReplay({
           businessId: business.businessId,
           idempotencyKey,
           session,
         });
         if (transactionReplay) {
-          assertRestaurantCreationReplayMatches(transactionReplay, fingerprint);
+          assertCreationReplayMatches(transactionReplay, fingerprint);
           reservation = transactionReplay;
           replayed = true;
           return;
@@ -864,6 +891,8 @@ export async function createRestaurantReservation({
         servicePointLabel: allocatedServicePoint.label,
         ...(idempotencyKey
           ? {
+            creationIdempotencyKey: idempotencyKey,
+            creationFingerprint: fingerprint,
             restaurantCreationIdempotencyKey: idempotencyKey,
             restaurantCreationFingerprint: fingerprint,
           }
@@ -892,104 +921,112 @@ export async function createRestaurantReservation({
     } catch (error) {
       const duplicateCreationKey =
         error?.code === 11000 &&
-        (error?.keyPattern?.restaurantCreationIdempotencyKey ||
+        (error?.keyPattern?.creationIdempotencyKey ||
+          error?.keyPattern?.restaurantCreationIdempotencyKey ||
+          error?.message?.includes("uniq_reservation_creation_request") ||
           error?.message?.includes("uniq_restaurant_reservation_creation_request"));
       if (!duplicateCreationKey || !idempotencyKey) {
         throw normalizeRestaurantAllocationTransactionError(error);
       }
-      reservation = await findRestaurantCreationReplay({
+      reservation = await findCreationReplay({
         businessId: business.businessId,
         idempotencyKey,
       });
       if (!reservation) throw normalizeRestaurantAllocationTransactionError(error);
-      assertRestaurantCreationReplayMatches(reservation, fingerprint);
+      assertCreationReplayMatches(reservation, fingerprint);
       replayed = true;
     } finally {
       await session.endSession();
     }
   }
 
-  if (!replayed) try {
-    const { publishEvent } = await import("../utils/sseManager.js");
-    publishEvent("reservation_created", reservation.businessId, ["reservations", "owner"], {
-      reservation: {
-        id: String(reservation._id),
-        status: reservation.status,
-        customerName: reservation.customerName,
-        guestCount: reservation.guestCount,
-        date: reservation.date,
-        startTime: reservation.startTime,
-        endTime: reservation.endTime,
-        servicePointLabel: reservation.servicePointLabel || null,
-        type: "restaurant",
-      },
-    });
-  } catch (err) {
-    console.error("[createRestaurantReservation] SSE publish failed:", err);
-  }
+  if (!replayed) {
+    try {
+      const publishEvent = sideEffects.publishEvent ||
+        (await import("../utils/sseManager.js")).publishEvent;
+      publishEvent("reservation_created", reservation.businessId, ["reservations", "owner"], {
+        reservation: {
+          id: String(reservation._id),
+          status: reservation.status,
+          customerName: reservation.customerName,
+          guestCount: reservation.guestCount,
+          date: reservation.date,
+          startTime: reservation.startTime,
+          endTime: reservation.endTime,
+          servicePointLabel: reservation.servicePointLabel || null,
+          type: "restaurant",
+        },
+      });
+    } catch (err) {
+      console.error("[createRestaurantReservation] SSE publish failed:", err);
+    }
 
-  const reservationObj = reservation.toObject();
-  const businessDisplayName = business.displayName || business.name;
-  const deliveryVersion = reservation.createdAt || new Date();
-  const deliveries = [];
+    const reservationObj = reservation.toObject();
+    const businessDisplayName = business.displayName || business.name;
+    const deliveryVersion = reservation.createdAt || new Date();
+    const deliveries = [];
+    const dispatchReservationEmail =
+      sideEffects.dispatchRestaurantReservationEmail ||
+      dispatchRestaurantReservationEmail;
 
-  const targetEmail = business.contactEmail || business.ownerEmail;
-  if (notificationMode === "request" && targetEmail) {
-    deliveries.push(
-      dispatchRestaurantReservationEmail({
-        jobName: EMAIL_JOB_NAMES.RESERVATION_REQUEST_OWNER,
-        businessId: reservation.businessId,
-        reservationId: reservation._id,
-        deliveryVersion,
-        waitForDirect: false,
-        directSend: () =>
-          sendReservationRequestEmail({
-            to: targetEmail,
-            businessName: businessDisplayName,
-            reservation: reservationObj,
-          }),
-      }),
-    );
-  }
+    const targetEmail = business.contactEmail || business.ownerEmail;
+    if (notificationMode === "request" && targetEmail) {
+      deliveries.push(
+        dispatchReservationEmail({
+          jobName: EMAIL_JOB_NAMES.RESERVATION_REQUEST_OWNER,
+          businessId: reservation.businessId,
+          reservationId: reservation._id,
+          deliveryVersion,
+          waitForDirect: false,
+          directSend: () =>
+            sendReservationRequestEmail({
+              to: targetEmail,
+              businessName: businessDisplayName,
+              reservation: reservationObj,
+            }),
+        }),
+      );
+    }
 
-  if (notificationMode === "request" && reservationObj.email) {
-    deliveries.push(
-      dispatchRestaurantReservationEmail({
-        jobName: EMAIL_JOB_NAMES.RESERVATION_REQUEST_GUEST,
-        businessId: reservation.businessId,
-        reservationId: reservation._id,
-        deliveryVersion,
-        waitForDirect: false,
-        directSend: () =>
-          sendReservationRequestReceivedEmail({
-            to: reservationObj.email,
-            businessName: businessDisplayName,
-            businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
-            primaryColor: business.branding?.primaryColor,
-            reservation: reservationObj,
-          }),
-      }),
-    );
-  } else if (notificationMode === "confirmed" && reservationObj.email) {
-    deliveries.push(
-      dispatchRestaurantReservationEmail({
-        jobName: EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CONFIRMED,
-        businessId: reservation.businessId,
-        reservationId: reservation._id,
-        deliveryVersion: reservation.confirmedAt || deliveryVersion,
-        waitForDirect: false,
-        directSend: () =>
-          sendReservationConfirmedEmail({
-            to: reservationObj.email,
-            businessName: businessDisplayName,
-            businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
-            primaryColor: business.branding?.primaryColor,
-            reservation: reservationObj,
-          }),
-      }),
-    );
+    if (notificationMode === "request" && reservationObj.email) {
+      deliveries.push(
+        dispatchReservationEmail({
+          jobName: EMAIL_JOB_NAMES.RESERVATION_REQUEST_GUEST,
+          businessId: reservation.businessId,
+          reservationId: reservation._id,
+          deliveryVersion,
+          waitForDirect: false,
+          directSend: () =>
+            sendReservationRequestReceivedEmail({
+              to: reservationObj.email,
+              businessName: businessDisplayName,
+              businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
+              primaryColor: business.branding?.primaryColor,
+              reservation: reservationObj,
+            }),
+        }),
+      );
+    } else if (notificationMode === "confirmed" && reservationObj.email) {
+      deliveries.push(
+        dispatchReservationEmail({
+          jobName: EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CONFIRMED,
+          businessId: reservation.businessId,
+          reservationId: reservation._id,
+          deliveryVersion: reservation.confirmedAt || deliveryVersion,
+          waitForDirect: false,
+          directSend: () =>
+            sendReservationConfirmedEmail({
+              to: reservationObj.email,
+              businessName: businessDisplayName,
+              businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
+              primaryColor: business.branding?.primaryColor,
+              reservation: reservationObj,
+            }),
+        }),
+      );
+    }
+    await Promise.all(deliveries);
   }
-  if (!replayed) await Promise.all(deliveries);
 
   return {
     message: initialStatus === "seated"
@@ -1019,6 +1056,7 @@ export async function createReservationService(data) {
     // Determine path
     isHotelBooking,
     businessSlug,
+    countryCode,
     // Common fields
     customerName,
     phone,
@@ -1044,24 +1082,23 @@ export async function createReservationService(data) {
     availabilityPolicy = RESTAURANT_AVAILABILITY_POLICIES.public,
     notificationMode = "request",
     idempotencyKey = null,
+    sideEffects = {},
     // Business is pre-loaded by the staff controller (avoid double lookup)
     business: preloadedBusiness = null,
   } = data;
 
+  const business = preloadedBusiness || (await resolvePublicBusiness({
+    businessSlug,
+    countryCode,
+    statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
+  })).business;
+  if (!business) {
+    const err = new Error("Business not found or inactive");
+    err.statusCode = 404;
+    throw err;
+  }
+
   if (isHotelBooking) {
-    // Staff callers pre-load the business; public callers provide businessSlug
-    const business = preloadedBusiness
-      ?? await Business.findOne({
-        slug: String(businessSlug).toLowerCase(),
-        status: { $in: ["active", "onboarding", "draft"] },
-      }).lean();
-
-    if (!business) {
-      const err = new Error("Business not found or inactive");
-      err.statusCode = 404;
-      throw err;
-    }
-
     return createHotelReservation({
       business,
       customerName,
@@ -1076,13 +1113,16 @@ export async function createReservationService(data) {
       paymentMethod,
       checkInNow,
       staffSnapshot,
+      idempotencyKey,
+      sideEffects,
     });
   }
 
   // ── Restaurant path ───────────────────────────────────────────────────────
   return createRestaurantReservation({
-    businessSlug,
-    business: preloadedBusiness,
+    businessSlug: business.slug,
+    countryCode: business.countryCode,
+    business,
     customerName,
     phone,
     email,
@@ -1100,5 +1140,6 @@ export async function createReservationService(data) {
     availabilityPolicy,
     notificationMode,
     idempotencyKey,
+    sideEffects,
   });
 }

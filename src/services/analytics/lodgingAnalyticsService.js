@@ -234,7 +234,7 @@ function buildLodgingPipeline({
                             _id: "$servicePointId",
                             displayLabel: {
                                 $first:
-                                    "$servicePointLabel",
+                                    "$servicePointId",
                             },
                             paidBookingCount: { $sum: 1 },
                             paidRevenueCents: {

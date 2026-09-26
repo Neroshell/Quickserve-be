@@ -24,9 +24,16 @@ function readBoolean(primary, fallback, defaultValue = true) {
   return defaultValue;
 }
 
+export const MAX_ORDER_ITEMS = 100;
+export const MAX_ITEM_QUANTITY = 99;
+
 export function getOrderItemsValidationError(items) {
   if (!Array.isArray(items) || items.length === 0) {
     return "At least one item is required";
+  }
+
+  if (items.length > MAX_ORDER_ITEMS) {
+    return `An order cannot contain more than ${MAX_ORDER_ITEMS} distinct items.`;
   }
 
   for (const item of items) {
@@ -35,8 +42,8 @@ export function getOrderItemsValidationError(items) {
     }
 
     const quantity = Number(item.quantity);
-    if (!Number.isSafeInteger(quantity) || quantity < 1) {
-      return `Item '${String(item.itemName).trim()}' quantity must be a positive whole number`;
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > MAX_ITEM_QUANTITY) {
+      return `Item '${String(item.itemName).trim()}' quantity must be an integer between 1 and ${MAX_ITEM_QUANTITY}`;
     }
   }
 

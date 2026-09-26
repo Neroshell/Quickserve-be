@@ -7,6 +7,7 @@ export function getGuestSessionToken(req) {
     req.query?.tableSessionToken ||
     req.query?.token ||
     req.body?.tableSessionToken ||
+    req.body?.token ||
     "",
   ).trim()
 }

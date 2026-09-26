@@ -78,3 +78,11 @@ test("menu image replacement saves the new reference before deleting the old ass
     assert.match(source, /await deleteFromCloudinary\(public_id\)/)
     assert.match(source, /MenuItem\.findOne\(\{ _id: menuItemId, businessId, archivedAt: null \}\)/)
 })
+
+test("authenticated dedicated uploads use authoritative tenant-scoped folders", async () => {
+    const source = await readFile(new URL("../src/routes/upload-route.js", import.meta.url), "utf8")
+    assert.match(source, /quickserve\/\$\{businessId\}\/business-logos/)
+    assert.match(source, /quickserve\/\$\{businessId\}\/menu-items/)
+    assert.doesNotMatch(source, /["']quickserve\/business-logos["']/)
+    assert.doesNotMatch(source, /["']quickserve\/menu-items["']/)
+})

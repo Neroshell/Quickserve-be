@@ -17,6 +17,7 @@ import ReservationArrivalReminderEmail from "../../emails/ReservationArrivalRemi
 import Business from "../models/Business.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { getCustomerReservationPricing } from "../services/reservationPricingService.js";
+import { assertTestExternalProviderAllowed } from "./testExternalProviderGuard.js";
 
 dotenv.config();
 
@@ -90,7 +91,7 @@ export async function getReceiptServicePointLabel(order) {
     return cachedDisplayLabel;
   }
 
-  const storedServicePointValue = String(order?.servicePointLabel || "").trim();
+  const storedServicePointValue = String(order?.servicePointId || order?.servicePointLabel || "").trim();
   if (!isInternalServicePointId(storedServicePointValue)) {
     return storedServicePointValue || "Service Point";
   }
@@ -167,6 +168,10 @@ export async function sendEmailWithResult({
 }) {
   const message = { from, to, subject, html };
   const requestOptions = idempotencyKey ? { idempotencyKey } : undefined;
+  assertTestExternalProviderAllowed("Resend", {
+    mocked: emailClient !== resend || Boolean(globalThis.fetch?.mock),
+    target: "email send",
+  });
 
   try {
     const { data, error } = await withProviderTimeout(

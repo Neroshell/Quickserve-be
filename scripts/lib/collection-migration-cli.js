@@ -26,7 +26,13 @@ export function formatSafeCliError(error) {
     return `[${code}] ${message}`
 }
 
-export async function withMongoCollectionStore(task, { env = process.env } = {}) {
+export async function withMongoCollectionStore(
+    task,
+    {
+        env = process.env,
+        createStore = createMongoCollectionMigrationStore,
+    } = {},
+) {
     if (!env.MONGODB_URI) {
         throw new CollectionMigrationError(
             "MONGODB_URI_MISSING",
@@ -44,7 +50,7 @@ export async function withMongoCollectionStore(task, { env = process.env } = {})
     }
 
     try {
-        const store = createMongoCollectionMigrationStore(mongoose.connection.db)
+        const store = createStore(mongoose.connection.db)
         return await task(store)
     } finally {
         await mongoose.disconnect()

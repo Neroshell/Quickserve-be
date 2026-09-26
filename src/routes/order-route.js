@@ -30,7 +30,7 @@ const receiptLimiter = rateLimit({
  *         schema:
  *           type: string
  *       - in: query
- *         name: servicePointLabel
+ *         name: servicePointId
  *         schema:
  *           type: string
  *       - in: query
@@ -58,12 +58,12 @@ router.get("/", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW
  *             type: object
  *             required:
  *               - businessId
- *               - servicePointLabel
+ *               - servicePointId
  *               - items
  *             properties:
  *               businessId:
  *                 type: string
- *               servicePointLabel:
+ *               servicePointId:
  *                 type: string
  *               items:
  *                 type: array

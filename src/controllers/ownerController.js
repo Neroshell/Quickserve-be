@@ -1,3 +1,4 @@
+import { resolveAnalyticsDomainRanges } from "../services/analytics/analyticsRangeService.js"
 import { DateTime } from "luxon"
 import Order from "../models/order.js"
 import { resolveSubscriptionEntitlements } from "../services/subscriptionEntitlementService.js"
@@ -20,7 +21,7 @@ import {
     invalidatePublicBusinessConfig,
     invalidatePublicBusinessRoute,
 } from "../services/cacheInvalidationService.js"
-import { resolveBusinessDay, resolveAnalyticsDateRange } from "../utils/businessDate.js"
+import { resolveBusinessDay } from "../utils/businessDate.js"
 
 // GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...&orderType=...&paymentStatus=...&servicePointId=...&cursor=...&direction=next|previous&limit=25
 export async function ownerOrders(req, res) {
@@ -52,7 +53,9 @@ export async function ownerOrders(req, res) {
             return res.status(404).json({ error: "Business not found" })
         }
 
-        const { startDateJS, endDateJS } = resolveAnalyticsDateRange(business, range, from, to)
+        const { foodOperationalRange } = resolveAnalyticsDomainRanges({ preset: range, from, to, business });
+        const startDateJS = foodOperationalRange.startUtc;
+        const endDateJS = foodOperationalRange.endUtcExclusive;
 
         const { rawOrders, counts, summary, filterOptions, pagination } = await readOwnerOrdersPage({
             businessId,
@@ -86,8 +89,8 @@ export async function ownerOrders(req, res) {
 
             return {
                 orderId: o.orderId,
-                servicePointId: o.servicePointId || o.servicePointLabel || "",
-                servicePointLabel: o.displayLabel || o.servicePointLabel || "",
+                servicePointId: o.servicePointId || "",
+                servicePointLabel: o.displayLabel || "",
                 orderType: o.orderType,
                 status: o.status,
                 createdAt: o.createdAt,
@@ -231,7 +234,9 @@ export async function getDashboardData(req, res) {
         const business = await Business.findOne({ businessId }).lean()
         if (!business) return res.status(404).json({ error: "Business not found" })
 
-        const { startDateJS: todayStartJS, endDateJS: todayEndJS } = resolveAnalyticsDateRange(business, "today")
+        const { foodOperationalRange: todayOperationalRange } = resolveAnalyticsDomainRanges({ preset: "today", business });
+        const todayStartJS = todayOperationalRange.startUtc;
+        const todayEndJS = todayOperationalRange.endUtcExclusive;
         const dateFilter = { businessId, createdAt: { $gte: todayStartJS, $lt: todayEndJS } }
 
         // Expire stale waiter calls before querying
@@ -255,7 +260,7 @@ export async function getDashboardData(req, res) {
             Order.find({
                 ...dateFilter,
                 status: { $in: ["placed", "in_progress", "ready", "completed"] }
-            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, servicePointLabel: 1, orderType: 1, paymentChannel: 1, tipAmount: 1 }).lean(),
+            }, { total: 1, status: 1, paymentStatus: 1, createdAt: 1, orderId: 1, servicePointId: 1, displayLabel: 1, orderType: 1, paymentChannel: 1, tipAmount: 1 }).lean(),
 
             Feedback.find({ businessId })
                 .sort({ createdAt: -1 })
@@ -288,7 +293,7 @@ export async function getDashboardData(req, res) {
 
         const tableIds = sessions.map(s => s._id)
         // Also collect service point IDs from today's orders so the activity feed can resolve labels
-        const orderSpIds = [...new Set(todayOrdersRaw.map(o => o.servicePointLabel).filter(Boolean))]
+        const orderSpIds = [...new Set(todayOrdersRaw.map(o => o.servicePointId).filter(Boolean))]
         const allSpIds = [...new Set([...tableIds, ...orderSpIds])]
         const servicePoints = await ServicePoint.find({ servicePointId: { $in: allSpIds } }, "servicePointId label").lean()
         const labelMap = {}
@@ -390,8 +395,8 @@ export async function getDashboardData(req, res) {
             .slice(0, 8)
 
         for (const o of latestOrders) {
-            const rawSpId = o.servicePointLabel || ""
-            const label = labelMap[rawSpId] || rawSpId
+            const rawSpId = o.servicePointId || ""
+            const label = o.displayLabel || labelMap[rawSpId] || ""
             if (o.paymentStatus === "paid") {
                 recentActivity.push({ type: "payment", icon: "💳", message: `Order ${o.orderId} paid`, sub: label, time: o.createdAt })
             } else {
@@ -601,7 +606,9 @@ export async function ownerTransactions(req, res) {
         if (!business) {
             return res.status(404).json({ error: "Business not found" })
         }
-        const { startDateJS, endDateJS } = resolveAnalyticsDateRange(business, range, from, to)
+        const { foodOperationalRange } = resolveAnalyticsDomainRanges({ preset: range, from, to, business });
+        const startDateJS = foodOperationalRange.startUtc;
+        const endDateJS = foodOperationalRange.endUtcExclusive;
 
         const dateRangeBounds = { $gte: startDateJS, $lt: endDateJS }
 
@@ -635,7 +642,6 @@ export async function ownerTransactions(req, res) {
                 ...transaction,
                 servicePointLabel:
                     transaction.displayLabel ||
-                    transaction.servicePointLabel ||
                     "",
             }
         })

@@ -224,15 +224,15 @@ async function processCanonicalInventoryCheckout({
     let displayLabel = pending.displayLabel || "";
     if (!displayLabel) {
         const servicePoint = await ServicePoint.findOne({
-            servicePointId: pending.servicePointLabel,
+            servicePointId: pending.servicePointId,
             businessId,
         }).lean();
-        displayLabel = servicePoint?.label || servicePoint?.code || pending.servicePointLabel;
+        displayLabel = servicePoint?.label || servicePoint?.code || pending.servicePointId;
     }
     const orderCreatedAt = new Date();
     const estimate = buildOrderEstimate(pending.items, orderCreatedAt);
     const orderInput = {
-        servicePointLabel: pending.servicePointLabel,
+        servicePointId: pending.servicePointId,
         displayLabel,
         orderType: pending.orderType,
         sessionId: pending.sessionId,
@@ -1256,15 +1256,15 @@ export async function handleStripeWebhook(req, res) {
             // Fall back to a live ServicePoint lookup for older pending docs missing it.
             let displayLabel = pending.displayLabel || "";
             if (!displayLabel) {
-                const sp = await ServicePoint.findOne({ servicePointId: pending.servicePointLabel, businessId }).lean();
-                displayLabel = sp?.label || sp?.code || pending.servicePointLabel;
+                const sp = await ServicePoint.findOne({ servicePointId: pending.servicePointId, businessId }).lean();
+                displayLabel = sp?.label || sp?.code || pending.servicePointId;
             }
 
             console.log(`[webhook] Creating new Order for orderId=${orderId}, subtotal=${pending.subtotal}, taxAmount=${pending.taxAmount}, tipAmount=${pending.tipAmount}, total=${pending.total}`);
             order = await Order.create({
                 businessId,
                 orderId,
-                servicePointLabel: pending.servicePointLabel,
+                servicePointId: pending.servicePointId,
                 displayLabel: displayLabel,
                 orderType: pending.orderType,
                 sessionId: pending.sessionId,

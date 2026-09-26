@@ -160,6 +160,14 @@ test("transaction filters escape search input and preserve source status rules",
     assert.ok(reservationFilter.status.$in.includes("checked_in"))
 })
 
+test("transaction search input is bounded before regex construction", () => {
+    const { orderFilter } = buildTransactionFilters({
+        businessId: "business-1",
+        search: "a".repeat(150),
+    })
+    assert.equal(orderFilter.$or[0].orderId.$regex.source, "a".repeat(100))
+})
+
 test("the combined read model is sorted by latest update without changing source DTOs", () => {
     const transactions = createTransactionReadModel({
         orders: [{

@@ -1,4 +1,6 @@
 import "dotenv/config"
+import { assertEnvironment } from "./src/config/envValidation.js";
+assertEnvironment("api");
 import express from "express"
 import cors from "cors"
 import orderRoute from "./src/routes/order-route.js"
@@ -22,6 +24,7 @@ import internalRoute from "./src/routes/internal-route.js"
 import guestProfileRoute from "./src/routes/guestProfileRoutes.js"
 import onboardingRoute from "./src/routes/onboarding-route.js"
 import housekeepingRoute from "./src/routes/housekeeping-route.js"
+import healthRoute from "./src/routes/health-route.js"
 import { startRealtimeBus } from "./src/utils/realtimeBus.js"
 import helmet from "helmet"
 import { sessionMiddleware } from "./src/config/session.js"
@@ -31,6 +34,8 @@ import { setupSwagger } from "./src/config/swagger.js"
 import { validateOrigin } from "./src/middleware/originValidation.js"
 import { requireAuth, requirePermission, requireRole } from "./src/middleware/authMiddleware.js"
 import { PERMISSIONS } from "./src/constants/permissions.js"
+import { handleSessionStoreUnavailable } from "./src/middleware/sessionStoreAvailability.js"
+import { startApiRuntime } from "./src/services/apiStartupService.js"
 
 const app = express()
 app.set("trust proxy", 1) // required for secure cookies behind proxies like vercel
@@ -80,7 +85,12 @@ const origins = [
 // Platform admin backoffice (separate app/origin). Uses Authorization Bearer, not cookies.
 if (process.env.BACKOFFICE_BASE_URL) origins.push(process.env.BACKOFFICE_BASE_URL)
 app.use(cors({ origin: origins, credentials: true }))
+app.use(healthRoute)
 app.use(sessionMiddleware)
+
+// ARCH-009: Intercept session store infrastructure failures to fail-closed with 503
+// instead of treating users as unauthenticated or returning unhandled 500s.
+app.use(handleSessionStoreUnavailable)
 
 // CSRF defense-in-depth: reject state-changing requests whose browser Origin/Referer
 // isn't in our allowlist. Runs after the Stripe webhook (registered above), which is
@@ -128,17 +138,22 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Internal Server Error" });
 });
 
-// Start server (DB first, then Redis bus, then HTTP)
+// Start server after Mongo; session Redis reconnects in the background.
 async function start() {
-  await connectDB()
-  await connectSessionRedis()
-  startRealtimeBus()
-  app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`)
+  return startApiRuntime({
+    connectDatabase: connectDB,
+    listen: () => app.listen(PORT, () => {
+      console.log(`Server is running on http://localhost:${PORT}`)
+    }),
+    connectSessionStore: connectSessionRedis,
+    startRealtime: startRealtimeBus,
   })
 }
 
-start()
+start().catch((error) => {
+  console.error("[Startup] API failed to start:", error)
+  process.exitCode = 1
+})
 
 
 
