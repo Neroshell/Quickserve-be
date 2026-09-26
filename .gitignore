@@ -130,6 +130,7 @@ test/ownerOrdersPagination.test.js
 !test/arch007OrderConstruction.test.js
 !test/arch008AnalyticsRange.test.js
 !test/arch010RuntimeReadiness.test.js
+!test/transactionExecution.test.js
 !test/hotelReservationAvailabilityService.test.js
 !test/publicReservationTenantResolution.test.js
 !test/searchUtils.test.js

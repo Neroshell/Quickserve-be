@@ -882,7 +882,7 @@ test("fulfilment cannot advance when required inventory consumption fails", asyn
     assert.equal(order.saveCount, 0)
 })
 
-test("a transient transaction retry leaves one logical consumption and one fulfilment transition", async () => {
+test("a driver-managed transaction callback replay leaves one logical consumption and one fulfilment transition", async () => {
     const createAttemptOrder = () => ({
         orderId: "ord_transaction_retry",
         businessId: "biz_phase5b",
@@ -900,20 +900,22 @@ test("a transient transaction retry leaves one logical consumption and one fulfi
     const committedConsumptions = []
     let activeAttempt = -1
     let sessionCount = 0
+    let transactionCallbackCount = 0
     const startSession = async () => {
-        activeAttempt = sessionCount
         sessionCount += 1
         const stagedConsumptions = []
         return {
             stagedConsumptions,
             async withTransaction(work) {
+                activeAttempt = 0
+                transactionCallbackCount += 1
                 await work()
-                if (activeAttempt === 0) {
-                    const error = new Error("Write conflict")
-                    error.hasErrorLabel = (label) => label === "TransientTransactionError"
-                    throw error
-                }
+                stagedConsumptions.length = 0
+                activeAttempt = 1
+                transactionCallbackCount += 1
+                const result = await work()
                 committedConsumptions.push(...stagedConsumptions)
+                return result
             },
             async endSession() {},
         }
@@ -934,7 +936,8 @@ test("a transient transaction retry leaves one logical consumption and one fulfi
         now: () => new Date("2026-09-05T12:00:00.000Z"),
     })
 
-    assert.equal(sessionCount, 2)
+    assert.equal(sessionCount, 1)
+    assert.equal(transactionCallbackCount, 2)
     assert.deepEqual(committedConsumptions, ["line_transaction_retry"])
     assert.equal(result.order, attemptOrders[1])
     assert.equal(result.order.status, "in_progress")

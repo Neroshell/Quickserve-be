@@ -1,5 +1,3 @@
-import mongoose from "mongoose"
-
 import {
   CUSTOMER_FULFILLMENT_EVENTS,
   FULFILLMENT_ACTIONS,
@@ -14,9 +12,9 @@ import { consumeReservedInventoryForFulfillment } from "./inventoryReservationSe
 import { safelyNotifyInventoryStockTransitions } from "./inventoryNotificationIntegrationService.js"
 import { resolveOrderStartAssistanceDelayMinutes } from "../utils/customerOrderTiming.js"
 import { generateOrderLineId } from "../utils/orderLineId.js"
+import { withCanonicalTransaction } from "../utils/transactionExecution.js"
 
 const TERMINAL_ORDER_STATUSES = new Set(["completed", "cancelled"])
-const MAX_TRANSACTION_ATTEMPTS = 3
 const STATION_ROLES = Object.freeze({
   kitchen: new Set(["kitchen", "manager", "owner", "co_owner", "admin"]),
   bar: new Set(["bartender", "manager", "owner", "co_owner", "admin"]),
@@ -641,37 +639,6 @@ function actorSnapshot(actor = {}) {
   }
 }
 
-function isTransientTransactionError(error) {
-  return Boolean(
-    error?.hasErrorLabel?.("TransientTransactionError") ||
-    error?.hasErrorLabel?.("UnknownTransactionCommitResult"),
-  )
-}
-
-async function withFulfillmentTransaction(work, { startSession = () => mongoose.startSession() } = {}) {
-  let lastError
-  for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
-    const session = await startSession()
-    try {
-      let result
-      await session.withTransaction(async () => {
-        result = await work(session)
-      }, {
-        readConcern: { level: "snapshot" },
-        writeConcern: { w: "majority" },
-        maxCommitTimeMS: 10_000,
-      })
-      return result
-    } catch (error) {
-      lastError = error
-      if (!isTransientTransactionError(error) || attempt === MAX_TRANSACTION_ATTEMPTS) throw error
-    } finally {
-      await session.endSession()
-    }
-  }
-  throw lastError
-}
-
 function selectedStationLines(order, station, orderLineIds) {
   const stationLines = (order.items || []).filter((item) => item.fulfillmentStation === station)
   if (stationLines.length === 0) {
@@ -709,7 +676,7 @@ export async function transitionOrderFulfillment({
   }
 
   const OrderModel = dependencies.OrderModel || Order
-  const runTransaction = dependencies.runTransaction || ((work) => withFulfillmentTransaction(work, dependencies))
+  const runTransaction = dependencies.runTransaction || ((work) => withCanonicalTransaction(work, dependencies))
   const consumeInventory = dependencies.consumeReservedInventoryForFulfillment ||
     consumeReservedInventoryForFulfillment
   const nowFactory = dependencies.now || (() => new Date())
@@ -891,7 +858,7 @@ export async function transitionOrderFulfillment({
 
 export async function completeOrderForWaitstaff({ businessId, orderId, actor }, dependencies = {}) {
   const OrderModel = dependencies.OrderModel || Order
-  const runTransaction = dependencies.runTransaction || ((work) => withFulfillmentTransaction(work, dependencies))
+  const runTransaction = dependencies.runTransaction || ((work) => withCanonicalTransaction(work, dependencies))
   const nowFactory = dependencies.now || (() => new Date())
   const performedBy = actorSnapshot(actor)
   if (!HANDOFF_ROLES.has(performedBy.role)) {

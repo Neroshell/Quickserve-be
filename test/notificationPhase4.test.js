@@ -510,6 +510,60 @@ test("fulfilment commits inventory before notification and remains successful wh
     }
 })
 
+test("fulfilment does not notify inventory transitions when the transaction fails", async () => {
+    const failure = new Error("transaction failed")
+    let notificationCalls = 0
+    const order = {
+        orderId: "order-fulfilment-failure",
+        businessId: "biz-alpha",
+        status: "placed",
+        inventoryReservationId: "inventory-reservation-failure",
+        items: [{
+            orderLineId: "line-failure",
+            itemName: "Prepared meal",
+            quantity: 1,
+            fulfillmentStation: "kitchen",
+            fulfillmentBehavior: "prepared",
+            fulfillmentStatus: "pending",
+            fulfillmentStartedAt: null,
+            fulfillmentStartedBy: null,
+            fulfillmentReadyAt: null,
+            fulfillmentReadyBy: null,
+        }],
+        async save() { return this },
+    }
+
+    await assert.rejects(transitionOrderFulfillment({
+        businessId: "biz-alpha",
+        orderId: order.orderId,
+        station: "kitchen",
+        action: "start",
+        actor: { staffId: "staff-1", role: "kitchen", name: "Kitchen" },
+    }, {
+        OrderModel: { findOne: async () => order },
+        runTransaction: async (work) => {
+            await work({ id: "session-failure" })
+            throw failure
+        },
+        consumeReservedInventoryForFulfillment: async () => ({
+            changed: true,
+            movements: [movement({
+                movementId: "ingredient-fulfilment-failure",
+                type: INVENTORY_MOVEMENT_TYPES.CONSUME,
+                onHandBefore: 10,
+                onHandAfter: 4,
+            })],
+            inventoryItems: [stockItem()],
+        }),
+        notifyInventoryTransitions: async () => {
+            notificationCalls += 1
+        },
+        now: () => new Date("2026-09-08T13:00:00.000Z"),
+    }), (error) => error === failure)
+
+    assert.equal(notificationCalls, 0)
+})
+
 test("Feedback and Inventory events use canonical owner/co-owner/manager recipient resolution", async () => {
     const OWNER = "507f1f77bcf86cd799439101"
     const CO_OWNER = "507f1f77bcf86cd799439102"

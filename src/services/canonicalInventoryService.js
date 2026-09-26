@@ -9,6 +9,7 @@ import {
 } from "../constants/inventory.js"
 import InventoryItem, { generateInventoryItemId } from "../models/InventoryItem.js"
 import InventoryMovement, { generateInventoryMovementId } from "../models/InventoryMovement.js"
+import { withCanonicalTransaction } from "../utils/transactionExecution.js"
 import {
     getInventoryTrackingUnitDefinition,
     normalizeInventoryQuantity,
@@ -56,8 +57,6 @@ const BALANCE_FIELDS = new Set([
 ])
 const WASTE_REASON_SET = new Set(INVENTORY_WASTE_REASONS)
 const ADJUSTMENT_REASON_SET = new Set(INVENTORY_ADJUSTMENT_REASONS)
-const MAX_TRANSACTION_ATTEMPTS = 3
-
 export class InventoryDomainError extends Error {
     constructor(message, { code = "INVENTORY_ERROR", statusCode = 400, details = null } = {}) {
         super(message)
@@ -744,40 +743,7 @@ function normalizeMovementOperation({ operation, input, item, actor }) {
     }
 }
 
-function isTransientTransactionError(error) {
-    return Boolean(
-        error?.hasErrorLabel?.("TransientTransactionError") ||
-        error?.hasErrorLabel?.("UnknownTransactionCommitResult"),
-    )
-}
-
-export async function withCanonicalInventoryTransaction(work, {
-    startSession = () => mongoose.startSession(),
-} = {}) {
-    let lastError
-    for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
-        const session = await startSession()
-        try {
-            let result
-            await session.withTransaction(async () => {
-                result = await work(session)
-            }, {
-                readConcern: { level: "snapshot" },
-                writeConcern: { w: "majority" },
-                maxCommitTimeMS: 10_000,
-            })
-            return result
-        } catch (error) {
-            lastError = error
-            if (!isTransientTransactionError(error) || attempt === MAX_TRANSACTION_ATTEMPTS) {
-                throw error
-            }
-        } finally {
-            await session.endSession()
-        }
-    }
-    throw lastError
-}
+export { withCanonicalTransaction as withCanonicalInventoryTransaction }
 
 function buildMovementResult({ item, movement, replayed }) {
     return {
@@ -905,7 +871,7 @@ async function executeMovement({
     }
 
     try {
-        return await withCanonicalInventoryTransaction(applyWithinTransaction, { startSession })
+        return await withCanonicalTransaction(applyWithinTransaction, { startSession })
     } catch (error) {
         // Concurrent requests with the same key can race before the unique index
         // is observed. The losing transaction is aborted, then resolved here.

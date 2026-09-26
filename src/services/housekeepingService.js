@@ -4,9 +4,10 @@ import HousekeepingOperation, { generateHousekeepingOperationId } from "../model
 import Reservation from "../models/Reservation.js"
 import ServicePoint from "../models/ServicePoint.js"
 import { PERMISSIONS } from "../constants/permissions.js"
+import { withCanonicalTransaction } from "../utils/transactionExecution.js"
 import { resolveBusinessCapabilities } from "./businessCapabilityService.js"
 
-const MAX_TRANSACTION_ATTEMPTS = 3
+export { withCanonicalTransaction as withHousekeepingTransaction }
 
 export class HousekeepingDomainError extends Error {
     constructor(message, { code = "HOUSEKEEPING_ERROR", statusCode = 400 } = {}) {
@@ -54,39 +55,6 @@ export function isManagementActor(actor) {
 function canPerformHousekeeping(actor) {
     if (["owner", "restaurant_owner", "admin", "co_owner"].includes(actor?.role)) return true
     return Array.isArray(actor?.permissions) && actor.permissions.includes(PERMISSIONS.HOUSEKEEPING_PERFORM)
-}
-
-function isTransientTransactionError(error) {
-    return Boolean(
-        error?.hasErrorLabel?.("TransientTransactionError") ||
-        error?.hasErrorLabel?.("UnknownTransactionCommitResult"),
-    )
-}
-
-export async function withHousekeepingTransaction(work, {
-    startSession = () => mongoose.startSession(),
-} = {}) {
-    let lastError
-    for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
-        const session = await startSession()
-        try {
-            let result
-            await session.withTransaction(async () => {
-                result = await work(session)
-            }, {
-                readConcern: { level: "snapshot" },
-                writeConcern: { w: "majority" },
-                maxCommitTimeMS: 10_000,
-            })
-            return result
-        } catch (error) {
-            lastError = error
-            if (!isTransientTransactionError(error) || attempt === MAX_TRANSACTION_ATTEMPTS) throw error
-        } finally {
-            await session.endSession()
-        }
-    }
-    throw lastError
 }
 
 async function resolveLean(value) {
@@ -332,7 +300,7 @@ export async function checkoutReservationIntoHousekeeping({
     }
 
     try {
-        return await withHousekeepingTransaction(execute, { startSession })
+        return await withCanonicalTransaction(execute, { startSession })
     } catch (error) {
         if (!isDuplicateKeyError(error)) throw error
         const [reservation, operation] = await Promise.all([
@@ -389,7 +357,7 @@ export async function startHousekeepingOperation({ businessId, operationId, acto
     const requestedOperationId = requiredText(operationId, "operationId")
     const performedBy = normalizeHousekeepingActor(actor)
 
-    return withHousekeepingTransaction(async (session) => {
+    return withCanonicalTransaction(async (session) => {
         const operation = await readBusinessAndOperation({
             tenantId,
             operationId: requestedOperationId,
@@ -474,7 +442,7 @@ export async function markNoSuppliesUsed({ businessId, operationId, actor }, {
     const tenantId = requiredText(businessId, "businessId")
     const requestedOperationId = requiredText(operationId, "operationId")
     const performedBy = normalizeHousekeepingActor(actor)
-    return withHousekeepingTransaction(async (session) => {
+    return withCanonicalTransaction(async (session) => {
         const operation = await readBusinessAndOperation({
             tenantId,
             operationId: requestedOperationId,
@@ -518,7 +486,7 @@ export async function completeHousekeepingOperation({ businessId, operationId, a
     const tenantId = requiredText(businessId, "businessId")
     const requestedOperationId = requiredText(operationId, "operationId")
     const performedBy = normalizeHousekeepingActor(actor)
-    return withHousekeepingTransaction(async (session) => {
+    return withCanonicalTransaction(async (session) => {
         const operation = await readBusinessAndOperation({
             tenantId,
             operationId: requestedOperationId,
