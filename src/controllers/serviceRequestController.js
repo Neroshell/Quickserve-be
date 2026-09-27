@@ -287,7 +287,7 @@ export async function createWaiterCall(req, res) {
         contextType: resolved.contextType,
         guestSessionId: resolved.guestSessionId,
         servicePointId: finalServicePointId,
-        servicePointLabel: finalTableLabel,
+        displayLabel: finalTableLabel,
         servicePointQrCode: finalTableCode,
         userDeviceId: userDeviceId ? String(userDeviceId).trim() : null,
         reason: String(reason || "").trim(),

@@ -70,3 +70,19 @@ test("existing waiter-call reasons normalize only to the supported food-service 
         "other"
     )
 })
+
+test("ServiceRequest stores the canonical display label and drops the legacy undeclared label", () => {
+    const request = new ServiceRequest({
+        businessId: "business-1",
+        module: "foodService",
+        contextType: "table_session",
+        servicePointId: "sp-1",
+        displayLabel: "Table 7",
+        servicePointLabel: "Spoofed client label",
+        status: "pending",
+    })
+    const value = request.toObject()
+
+    assert.equal(value.displayLabel, "Table 7")
+    assert.equal(value.servicePointLabel, undefined)
+})

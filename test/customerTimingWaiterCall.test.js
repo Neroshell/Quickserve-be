@@ -131,10 +131,15 @@ test("valid current visit is authoritative for tenant and service-point scope", 
   })
 
   const res = responseRecorder()
-  await createWaiterCall(customerRequest(), res)
+  await createWaiterCall(
+    customerRequest({ servicePointLabel: "Spoofed client label" }),
+    res,
+  )
   assert.equal(res.statusCode, 201)
   assert.equal(persisted.businessId, "trusted-business")
   assert.equal(persisted.servicePointId, "sp-trusted")
+  assert.equal(persisted.displayLabel, "Table 7")
+  assert.equal(Object.hasOwn(persisted, "servicePointLabel"), false)
   assert.equal(persisted.requestCategory, "delayed_order")
   assert.equal(
     persisted.activeScopeKey,
