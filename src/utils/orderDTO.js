@@ -115,6 +115,7 @@ export function toOrderDTO(
         currency: o.currency || "EUR",
         paymentChannel: o.paymentChannel || "offline",
         paymentStatus: o.paymentStatus || "unpaid",
+        paidAt: o.paidAt || null,
         paidVia: o.paidVia || null,
         completedBy: o.completedBy || null,
         items: projectedItems,

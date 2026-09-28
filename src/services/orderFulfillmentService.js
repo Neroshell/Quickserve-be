@@ -275,6 +275,8 @@ function projectCustomerStation(lines = [], now) {
     return {
       required: false,
       state: "not_required",
+      startedAt: null,
+      readyAt: null,
       estimatedReadyAt: null,
       estimateStartedAt: null,
       etaState: "none",
@@ -286,6 +288,14 @@ function projectCustomerStation(lines = [], now) {
     (line) => line.fulfillmentStatus === FULFILLMENT_STATUSES.IN_PROGRESS,
   )
   const hasReady = lines.some((line) => line.fulfillmentStatus === FULFILLMENT_STATUSES.READY)
+  const startedDates = lines.map((line) => validDate(line.fulfillmentStartedAt)).filter(Boolean)
+  const readyDates = lines.map((line) => validDate(line.fulfillmentReadyAt)).filter(Boolean)
+  const startedAt = startedDates.length > 0
+    ? new Date(Math.min(...startedDates.map((date) => date.getTime())))
+    : null
+  const readyAt = allReady && readyDates.length === lines.length
+    ? new Date(Math.max(...readyDates.map((date) => date.getTime())))
+    : null
   // Preparation ETA describes active timed work; direct and pending lines still
   // participate in station state and readiness through the checks above.
   const activePreparedLines = lines.filter((line) => (
@@ -313,6 +323,8 @@ function projectCustomerStation(lines = [], now) {
     required: true,
     state: allReady ? "ready" : preparing ? "preparing" : "waiting",
     hasReady,
+    startedAt,
+    readyAt,
     estimatedReadyAt,
     estimateStartedAt,
     etaState: estimatedReadyAt

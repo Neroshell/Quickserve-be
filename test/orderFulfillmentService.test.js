@@ -487,11 +487,14 @@ test("waitstaff alone performs final handoff after every line is ready and payme
 })
 
 test("customer projection is deterministic and hides internal fulfilment terminology", () => {
+  const paidAt = new Date("2026-09-04T11:59:00.000Z")
   const mixed = {
     orderId: "ord_customer",
     businessId: "biz_a",
     servicePointLabel: "sp_1",
     status: "in_progress",
+    paymentStatus: "paid",
+    paidAt,
     items: [
       line({ status: "in_progress" }),
       line({ type: "drinks", status: "ready" }),
@@ -505,6 +508,16 @@ test("customer projection is deterministic and hides internal fulfilment termino
   assert.equal(customerDTO.customerStatusMessage, "Your drinks are ready. Your food is still being prepared.")
   assert.equal("fulfillmentStatus" in customerDTO.items[0], false)
   assert.equal("orderLineId" in customerDTO.items[0], false)
+  assert.equal(customerDTO.paidAt, paidAt)
+  assert.deepEqual(
+    customerDTO.customerProgress.stationContext.food.startedAt,
+    new Date("2026-09-04T12:00:00.000Z"),
+  )
+  assert.equal(customerDTO.customerProgress.stationContext.food.readyAt, null)
+  assert.deepEqual(
+    customerDTO.customerProgress.stationContext.drinks.readyAt,
+    new Date("2026-09-04T12:00:00.000Z"),
+  )
   const staffDTO = toOrderDTO(mixed, { includeFulfillment: true })
   assert.equal(staffDTO.items[0].fulfillmentStation, "kitchen")
 })
