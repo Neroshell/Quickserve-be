@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { getCanonicalFrontendOrigin } from "../../config/frontendUrl.js";
 import Business from "../../models/Business.js";
 import EmailDelivery from "../../models/EmailDelivery.js";
 import Reservation from "../../models/Reservation.js";
@@ -422,7 +423,7 @@ export async function processReservationEmailDelivery(
       }
       const notComingToken = createReservationNotComingToken(reservation);
       const frontendBaseUrl =
-        process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+        getCanonicalFrontendOrigin();
       arrivalUrl = `${frontendBaseUrl}/reservation/arrival?token=${encodeURIComponent(arrivalToken)}`;
       notComingUrl = `${frontendBaseUrl}/reservation/not-coming?token=${encodeURIComponent(notComingToken)}`;
       viewReservationUrl = `${arrivalUrl}&view=1`;

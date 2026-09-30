@@ -1,4 +1,5 @@
 import crypto from "node:crypto"
+import { getCanonicalFrontendOrigin } from "../../config/frontendUrl.js";
 import Stripe from "stripe"
 import BillingInvoice from "../../models/BillingInvoice.js"
 import Business from "../../models/Business.js"
@@ -186,7 +187,7 @@ export function resolveBillingCurrency({ stripeInvoice, stripePreview, plan, bus
 }
 
 function billingLink() {
-    return `${process.env.FRONTEND_BASE_URL || "http://localhost:3000"}/owner/billing`
+    return `${getCanonicalFrontendOrigin()}/owner/billing`
 }
 
 async function upcomingAmountHtml({ business, plan, stripeClient }) {

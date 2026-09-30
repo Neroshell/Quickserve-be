@@ -1,10 +1,11 @@
 import Stripe from "stripe"
+import { getCanonicalFrontendOrigin } from "../config/frontendUrl.js";
 import Business from "../models/Business.js"
 import { isCountryResolutionError, resolveCountryMetadata } from "../utils/countryHelper.js"
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
-const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
+const FRONTEND_URL = getCanonicalFrontendOrigin()
 
 /**
  * POST /owner/stripe/connect-account

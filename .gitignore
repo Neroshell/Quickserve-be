@@ -149,3 +149,4 @@ test/ownerOrdersPagination.test.js
 /test_redis_error.js
 /test_session_middleware.js
 /scratch/
+!test/frontendOriginIntegration.test.js

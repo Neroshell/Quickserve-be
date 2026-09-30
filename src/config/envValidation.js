@@ -1,3 +1,8 @@
+import {
+    normalizeExactHttpOrigin,
+    parseAdditionalFrontendOrigins,
+} from "./frontendUrl.js";
+
 /**
  * ARCH-010: Process-aware environment configuration validation.
  *
@@ -33,6 +38,7 @@ const API_PRODUCTION_REQUIRED = [
 const WORKER_PRODUCTION_REQUIRED = [
     ["MONGODB_URI", "MongoDB connection string"],
     ["REDIS_URL", "Redis URL for BullMQ connections"],
+    ["FRONTEND_BASE_URL", "Canonical frontend origin for customer-facing links"],
 ];
 
 // ── BullMQ Feature → Worker Requirement Map ─────────────────────────────────
@@ -76,6 +82,22 @@ export function validateEnvironment(role, env = process.env) {
             if (!env[name]?.trim()) {
                 errors.push(`Missing required env: ${name} — ${description}`);
             }
+        }
+    }
+
+    if (env.FRONTEND_BASE_URL?.trim() && !normalizeExactHttpOrigin(env.FRONTEND_BASE_URL)) {
+        errors.push("Invalid env: FRONTEND_BASE_URL must be an exact HTTP(S) origin");
+    }
+
+    if (role === "api") {
+        try {
+            parseAdditionalFrontendOrigins(env.ADDITIONAL_FRONTEND_ORIGINS);
+        } catch (error) {
+            errors.push(`Invalid env: ${error.message}`);
+        }
+
+        if (env.BACKOFFICE_BASE_URL?.trim() && !normalizeExactHttpOrigin(env.BACKOFFICE_BASE_URL)) {
+            errors.push("Invalid env: BACKOFFICE_BASE_URL must be an exact HTTP(S) origin");
         }
     }
 

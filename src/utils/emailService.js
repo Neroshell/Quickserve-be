@@ -18,6 +18,7 @@ import Business from "../models/Business.js";
 import ServicePoint from "../models/ServicePoint.js";
 import { getCustomerReservationPricing } from "../services/reservationPricingService.js";
 import { assertTestExternalProviderAllowed } from "./testExternalProviderGuard.js";
+import { getCanonicalFrontendOrigin } from "../config/frontendUrl.js";
 
 dotenv.config();
 
@@ -464,7 +465,7 @@ export async function sendReservationPaymentEmail({ to, businessName, businessLo
       });
       return false;
     }
-    const frontendBaseUrl = process.env.FRONTEND_BASE_URL || "https://quickservehq.com";
+    const frontendBaseUrl = getCanonicalFrontendOrigin();
     // Points to the QuickServe payment page, NOT the post-payment confirmation page.
     const paymentUrl = `${frontendBaseUrl}/reservation/pay/${reservation.secureToken}`;
     const html = await render(React.createElement(ReservationPaymentEmail, { businessName, businessLogoUrl, primaryColor, reservation, paymentUrl }));

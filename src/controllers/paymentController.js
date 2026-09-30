@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { getCanonicalFrontendOrigin } from "../config/frontendUrl.js";
 import crypto from "node:crypto";
 import mongoose from "mongoose";
 import GuestSession from "../models/GuestSession.js";
@@ -56,7 +57,7 @@ import {
 } from "../utils/restaurantOrderValidation.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+const FRONTEND_BASE_URL = getCanonicalFrontendOrigin();
 
 function getCheckoutIdempotencyKey(req, fallback) {
     const supplied = req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"];

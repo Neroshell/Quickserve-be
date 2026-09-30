@@ -1,4 +1,5 @@
 import Staff from "../models/Staff.js"
+import { getCanonicalFrontendOrigin } from "../config/frontendUrl.js";
 import Business from "../models/Business.js"
 import crypto from "crypto"
 import { sendOnboardingEmail } from "../utils/emailService.js"
@@ -225,7 +226,7 @@ export async function createStaff(req, res) {
         await invalidateSetupProgress(businessId)
 
         // Send invitation email
-        const frontendUrl = process.env.FRONTEND_BASE_URL || "http://localhost:3000"
+        const frontendUrl = getCanonicalFrontendOrigin()
         const inviteLink = `${frontendUrl}/staff/setup-account?token=${inviteToken}`
 
         sendOnboardingEmail({ to: staff.email, userName: staff.name, inviteLink, role: "staff" }).catch((err) => {

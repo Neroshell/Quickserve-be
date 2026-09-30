@@ -19,6 +19,7 @@ import {
   enqueueReservationPaymentExpiry,
 } from "../queues/index.js";
 import { scheduleReservationArrivalReminder } from "../services/reservationArrivalService.js";
+import { getCanonicalFrontendOrigin } from "../config/frontendUrl.js";
 import {
   createReservationService,
   createHotelReservation,
@@ -175,7 +176,7 @@ export function toOwnerReservationResponse(reservation) {
   return {
     ...safeReservation,
     paymentUrl: canUsePaymentLink
-      ? `${process.env.FRONTEND_BASE_URL || "https://quickservehq.com"}/reservation/pay/${secureToken}`
+      ? `${getCanonicalFrontendOrigin()}/reservation/pay/${secureToken}`
       : null,
     originalPaidAmountCents,
     refundedAmountCents,

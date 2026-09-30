@@ -1,4 +1,5 @@
 import Business from "../models/Business.js"
+import { getCanonicalFrontendOrigin } from "../config/frontendUrl.js";
 import Order from "../models/order.js"
 import Plan from "../models/Plan.js"
 import ServicePoint, { normalizeRoomType } from "../models/ServicePoint.js"
@@ -1275,7 +1276,7 @@ export async function createAdminOwner(req, res) {
         )
 
         // Send invitation email in background
-        const inviteLink = `${process.env.FRONTEND_BASE_URL || 'http://localhost:3000'}/setup-account?token=${inviteToken}`
+        const inviteLink = `${getCanonicalFrontendOrigin()}/setup-account?token=${inviteToken}`
         
         sendOnboardingEmail({ to: ownerEmail, userName: ownerName, businessName: updatedBusiness.displayName, inviteLink, role: "owner" }).catch(err => {
             console.error(`[createAdminOwner] Failed to send invitation email to ${ownerEmail}:`, err)

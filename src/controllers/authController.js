@@ -1,4 +1,5 @@
 import Business from "../models/Business.js";
+import { getCanonicalFrontendOrigin } from "../config/frontendUrl.js";
 import Staff from "../models/Staff.js";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
@@ -528,7 +529,7 @@ export async function requestPasswordReset(req, res) {
         }
 
         // Send Email
-        const resetLink = `${process.env.FRONTEND_BASE_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+        const resetLink = `${getCanonicalFrontendOrigin()}/reset-password?token=${resetToken}`;
         await sendAuthEmail({ to: normalizedEmail, userName: userName || undefined, resetLink });
 
     } catch (err) {
@@ -826,7 +827,7 @@ export async function confirmEmailChange(req, res) {
 
         if (!user) {
             // Redirect to a friendly error page
-            const frontendBase = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+            const frontendBase = getCanonicalFrontendOrigin();
             return res.redirect(`${frontendBase}/owner/confirm-email?error=invalid`);
         }
 
@@ -851,7 +852,7 @@ export async function confirmEmailChange(req, res) {
             user.emailChangeToken = undefined;
             user.emailChangeTokenExpires = undefined;
             await user.save();
-            const frontendBase = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+            const frontendBase = getCanonicalFrontendOrigin();
             return res.redirect(`${frontendBase}/owner/confirm-email?error=taken`);
         }
 
@@ -886,11 +887,11 @@ export async function confirmEmailChange(req, res) {
             newEmail
         }).catch(err => console.error("[confirmEmailChange] Failed to send notification email:", err));
 
-        const frontendBase = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+        const frontendBase = getCanonicalFrontendOrigin();
         return res.redirect(`${frontendBase}/owner/confirm-email?success=true`);
     } catch (err) {
         console.error("Confirm email change error:", err);
-        const frontendBase = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+        const frontendBase = getCanonicalFrontendOrigin();
         return res.redirect(`${frontendBase}/owner/confirm-email?error=server`);
     }
 }

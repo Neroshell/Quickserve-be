@@ -35,6 +35,10 @@ import { requireAuth, requirePermission, requireRole } from "./src/middleware/au
 import { PERMISSIONS } from "./src/constants/permissions.js"
 import { handleSessionStoreUnavailable } from "./src/middleware/sessionStoreAvailability.js"
 import { startApiRuntime } from "./src/services/apiStartupService.js"
+import {
+  createCredentialedCorsOptions,
+  getTrustedBrowserOrigins,
+} from "./src/config/frontendUrl.js"
 
 const app = express()
 app.set("trust proxy", 1) // required for secure cookies behind proxies like vercel
@@ -75,15 +79,11 @@ const globalLimiter = rateLimit({
 })
 app.use(globalLimiter)
 
-// For cors logic update later, ensure credentials:true is present if needed. Default is * which blocks credentials.
-// Let's modify cors to explicitly allow credentials for dashboard frontends
-const origins = [
-  process.env.FRONTEND_BASE_URL || "http://localhost:3000",
-  "http://localhost:3001"
-];
-// Platform admin backoffice (separate app/origin). Uses Authorization Bearer, not cookies.
-if (process.env.BACKOFFICE_BASE_URL) origins.push(process.env.BACKOFFICE_BASE_URL)
-app.use(cors({ origin: origins, credentials: true }))
+// One normalized exact-origin allowlist is shared by credentialed CORS and the
+// Origin/Referer CSRF defense below. FRONTEND_BASE_URL remains the canonical
+// link-generation host; ADDITIONAL_FRONTEND_ORIGINS is authorization-only.
+const origins = getTrustedBrowserOrigins(process.env)
+app.use(cors(createCredentialedCorsOptions(origins)))
 app.use(healthRoute)
 app.use(sessionMiddleware)
 
