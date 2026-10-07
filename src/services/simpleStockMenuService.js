@@ -30,6 +30,7 @@ import {
 } from "./menuInventoryAvailabilityService.js"
 import { normalizeMenuFulfillmentConfiguration } from "./orderFulfillmentService.js"
 import { safelyNotifyInventoryStockTransitions } from "./inventoryNotificationIntegrationService.js"
+import { MENU_ITEM_PRICE_ERROR, parseMenuItemPrice } from "../utils/menuItemPrice.js"
 
 const SIMPLE_UNITS = new Set(SIMPLE_STOCK_UNIT_VALUES)
 
@@ -224,9 +225,9 @@ export async function createSimpleStockMenuItem({
     }
     const reactivateInventoryItem = input?.reactivateInventoryItem === true
     const allowCategoryVariant = input?.allowCategoryVariant === true
-    const price = Number(input?.price)
-    if (!Number.isFinite(price) || price < 0) {
-        throw new SimpleStockMenuError("price must be a non-negative number", "INVALID_SIMPLE_STOCK_INPUT")
+    const price = parseMenuItemPrice(input?.price)
+    if (price === null) {
+        throw new SimpleStockMenuError(MENU_ITEM_PRICE_ERROR, "INVALID_SIMPLE_STOCK_INPUT")
     }
     const description = String(input?.description || "")
     if (description.trim().split(/\s+/).filter(Boolean).length > 100) {

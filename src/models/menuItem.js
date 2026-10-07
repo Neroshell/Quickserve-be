@@ -1,9 +1,17 @@
 import mongoose from "mongoose"
+import { isValidMenuItemPrice, MENU_ITEM_PRICE_ERROR } from "../utils/menuItemPrice.js"
 
 const MenuItemSchema = new mongoose.Schema({
     businessId: { type: String, required: true, index: true },
     name: { type: String, required: true, maxlength: 30 },
-    price: { type: Number, required: true },
+    price: {
+        type: Number,
+        required: true,
+        validate: {
+            validator: isValidMenuItemPrice,
+            message: MENU_ITEM_PRICE_ERROR,
+        },
+    },
     prepTimeMinutes: {
         type: Number,
         default: 10,

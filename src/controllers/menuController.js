@@ -13,6 +13,7 @@ import {
     setMappedMenuManualAvailability,
 } from "../services/simpleStockMenuService.js"
 import { normalizeMenuFulfillmentConfiguration } from "../services/orderFulfillmentService.js"
+import { MENU_ITEM_PRICE_ERROR, parseMenuItemPrice } from "../utils/menuItemPrice.js"
 
 /** Accept businessId with fallback to legacy businessId */
 function resolveBusinessId(req) {
@@ -87,8 +88,12 @@ export async function createMenuItem(req, res) {
             })
         }
 
-        if (!businessId || !name || price === undefined || !category || !type) {
-            return res.status(400).json({ error: "Missing required fields (businessId, name, price, category, type)" })
+        if (!businessId || !name || !category || !type) {
+            return res.status(400).json({ error: "Missing required fields (businessId, name, category, type)" })
+        }
+        const normalizedPrice = parseMenuItemPrice(price)
+        if (normalizedPrice === null) {
+            return res.status(400).json({ error: MENU_ITEM_PRICE_ERROR })
         }
         const fulfillment = normalizeMenuFulfillmentConfiguration({
             type,
@@ -108,7 +113,7 @@ export async function createMenuItem(req, res) {
         const newItem = new MenuItem({
             businessId,
             name,
-            price,
+            price: normalizedPrice,
             prepTimeMinutes: fulfillment.prepTimeMinutes,
             category,
             type: fulfillment.type,
@@ -141,6 +146,13 @@ export async function updateMenuItem(req, res) {
 
         if (!businessId) {
             return res.status(400).json({ error: "Missing businessId" })
+        }
+        if (Object.prototype.hasOwnProperty.call(req.body, "price")) {
+            const normalizedPrice = parseMenuItemPrice(req.body.price)
+            if (normalizedPrice === null) {
+                return res.status(400).json({ error: MENU_ITEM_PRICE_ERROR })
+            }
+            req.body.price = normalizedPrice
         }
 
         const existingItem = await MenuItem.findOne({ _id: id, businessId, archivedAt: null }).lean()

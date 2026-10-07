@@ -66,6 +66,7 @@ docker-data/
 
 
 test/*
+!test/menuItemPriceIntegrity.test.js
 !test/customerOrderVisitScope.test.js
 !test/qrCapability.test.js
 !test/orderFulfillmentService.test.js
