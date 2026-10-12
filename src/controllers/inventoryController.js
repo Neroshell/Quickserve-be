@@ -326,10 +326,13 @@ export async function listInventoryMovements(req, res) {
     const businessId = requireTenant(req, res)
     if (!businessId) return
     try {
+        const business = await loadOwnerBusiness(businessId)
+        const domains = resolveInventoryReadDomainsForBusiness(business, req.query.domain)
         if (req.query.inventoryItemId) {
             await readEnabledInventoryItem({
                 businessId,
                 inventoryItemId: req.query.inventoryItemId,
+                business,
             })
         }
         return res.json(await readInventoryMovementsPage({
@@ -338,6 +341,7 @@ export async function listInventoryMovements(req, res) {
             type: req.query.type,
             from: req.query.from,
             to: req.query.to,
+            domain: domains.join(","),
             cursor: req.query.cursor,
             limit: req.query.limit,
         }))

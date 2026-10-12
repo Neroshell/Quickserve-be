@@ -295,18 +295,16 @@ export async function validateIngredientRecipeRelationship({
         )
     }
 
-    const [menuItem, inventoryItems] = await Promise.all([
-        MenuItemModel.findOne(
-            { _id: normalizedMenuItemId, businessId: tenantId, archivedAt: null },
-            null,
-            sessionOptions(session),
-        ),
-        InventoryItemModel.find(
-            { businessId: tenantId, inventoryItemId: { $in: inventoryItemIds } },
-            null,
-            sessionOptions(session),
-        ),
-    ])
+    const menuItem = await MenuItemModel.findOne(
+        { _id: normalizedMenuItemId, businessId: tenantId, archivedAt: null },
+        null,
+        sessionOptions(session),
+    )
+    const inventoryItems = await InventoryItemModel.find(
+        { businessId: tenantId, inventoryItemId: { $in: inventoryItemIds } },
+        null,
+        sessionOptions(session),
+    )
     if (!menuItem) {
         throw mappingError("Menu item not found", "MENU_ITEM_NOT_FOUND", 404)
     }

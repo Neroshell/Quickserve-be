@@ -141,6 +141,57 @@ function inventoryDomainCondition(domains) {
     return { $or: domainConditions }
 }
 
+function toInventoryMovementItem(item) {
+    if (!item || typeof item !== "object") return null
+    if (
+        typeof item.inventoryItemId !== "string" ||
+        typeof item.name !== "string" ||
+        typeof item.trackingUnit !== "string"
+    ) {
+        return null
+    }
+    return {
+        inventoryItemId: item.inventoryItemId,
+        name: item.name,
+        category: item.category ?? null,
+        trackingUnit: item.trackingUnit,
+    }
+}
+
+async function enrichInventoryMovements({
+    businessId,
+    rows,
+    InventoryItemModel,
+}) {
+    const joinedItems = new Map()
+    const missingItemIds = new Set()
+
+    for (const row of rows) {
+        const joinedItem = toInventoryMovementItem(
+            Array.isArray(row.inventoryItem) ? row.inventoryItem[0] : row.inventoryItem,
+        )
+        if (joinedItem) joinedItems.set(joinedItem.inventoryItemId, joinedItem)
+        else if (typeof row.inventoryItemId === "string") missingItemIds.add(row.inventoryItemId)
+    }
+
+    if (missingItemIds.size > 0 && typeof InventoryItemModel?.find === "function") {
+        const query = InventoryItemModel.find({
+            businessId,
+            inventoryItemId: { $in: [...missingItemIds] },
+        })
+        const items = typeof query.lean === "function" ? await query.lean() : await query
+        for (const item of items || []) {
+            const summary = toInventoryMovementItem(item)
+            if (summary) joinedItems.set(summary.inventoryItemId, summary)
+        }
+    }
+
+    return rows.map((row) => ({
+        ...toInventoryMovementDTO(row),
+        inventoryItem: joinedItems.get(row.inventoryItemId) || null,
+    }))
+}
+
 export async function readInventoryOverview({ businessId, domain }, {
     InventoryItemModel = InventoryItem,
     InventoryMovementModel = InventoryMovement,
@@ -171,6 +222,7 @@ export async function readInventoryOverview({ businessId, domain }, {
                         },
                     },
                     ...(domainCondition ? [{ $match: domainCondition }] : []),
+                    { $project: { _id: 0, inventoryItemId: 1, name: 1, category: 1, trackingUnit: 1 } },
                     { $limit: 1 },
                 ],
                 as: "inventoryItem",
@@ -178,16 +230,15 @@ export async function readInventoryOverview({ businessId, domain }, {
         },
         { $match: { "inventoryItem.0": { $exists: true } } },
         { $sort: { createdAt: -1, _id: -1 } },
-        { $limit: 10 },
-        { $project: { inventoryItem: 0 } },
+        { $limit: 5 },
     ]
     const recentMovementsQuery = domainCondition
         ? InventoryMovementModel.aggregate(movementPipeline)
         : InventoryMovementModel.find({ businessId })
             .sort({ createdAt: -1, _id: -1 })
-            .limit(10)
+            .limit(5)
             .lean()
-    const [summaryRows, recentMovements] = await Promise.all([
+    const [summaryRows, recentMovementRows] = await Promise.all([
         InventoryItemModel.aggregate([
             { $match: itemMatch },
             {
@@ -230,10 +281,13 @@ export async function readInventoryOverview({ businessId, domain }, {
             lowStockItems: summary.lowStockItems,
             outOfStockItems: summary.outOfStockItems,
         },
-        recentMovements: recentMovements.map(toInventoryMovementDTO),
+        recentMovements: await enrichInventoryMovements({
+            businessId,
+            rows: recentMovementRows,
+            InventoryItemModel,
+        }),
     }
 }
-
 export async function readInventoryItemsPage({
     businessId,
     active,
@@ -376,10 +430,12 @@ export async function readInventoryMovementsPage({
     type,
     from,
     to,
+    domain,
     cursor,
     limit,
 }, {
     InventoryMovementModel = InventoryMovement,
+    InventoryItemModel = InventoryItem,
     ServicePointModel = ServicePoint,
 } = {}) {
     const normalizedItemId = normalizeOptionalFilterText(
@@ -388,6 +444,7 @@ export async function readInventoryMovementsPage({
         100,
     )
     const normalizedType = normalizeMovementType(type)
+    const normalizedDomains = normalizeDomainFilter(domain)
     const fromDate = normalizeDate(from, "from")
     const toDate = normalizeDate(to, "to")
     if (fromDate && toDate && fromDate > toDate) {
@@ -397,6 +454,7 @@ export async function readInventoryMovementsPage({
     const filterKey = queryFingerprint({
         inventoryItemId: normalizedItemId,
         type: normalizedType,
+        domains: normalizedDomains,
         from: fromDate?.toISOString() || null,
         to: toDate?.toISOString() || null,
     })
@@ -426,14 +484,48 @@ export async function readInventoryMovementsPage({
         ]
     }
 
-    const rows = await InventoryMovementModel.find(filter)
-        .sort({ createdAt: -1, _id: -1 })
-        .limit(pageLimit + 1)
-        .lean()
+    const domainCondition = inventoryDomainCondition(normalizedDomains)
+    const rows = domainCondition
+        ? await InventoryMovementModel.aggregate([
+            { $match: filter },
+            {
+                $lookup: {
+                    from: InventoryItemModel.collection?.name || "inventoryitems",
+                    let: { movementInventoryItemId: "$inventoryItemId" },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: {
+                                    $and: [
+                                        { $eq: ["$businessId", businessId] },
+                                        { $eq: ["$inventoryItemId", "$$movementInventoryItemId"] },
+                                    ],
+                                },
+                            },
+                        },
+                        { $match: domainCondition },
+                        { $project: { _id: 0, inventoryItemId: 1, name: 1, category: 1, trackingUnit: 1 } },
+                        { $limit: 1 },
+                    ],
+                    as: "inventoryItem",
+                },
+            },
+            { $match: { "inventoryItem.0": { $exists: true } } },
+            { $sort: { createdAt: -1, _id: -1 } },
+            { $limit: pageLimit + 1 },
+        ])
+        : await InventoryMovementModel.find(filter)
+            .sort({ createdAt: -1, _id: -1 })
+            .limit(pageLimit + 1)
+            .lean()
     const hasNextPage = rows.length > pageLimit
     const pageRows = rows.slice(0, pageLimit)
     const last = pageRows.at(-1)
-    const movementDtos = pageRows.map(toInventoryMovementDTO)
+    const movementDtos = await enrichInventoryMovements({
+        businessId,
+        rows: pageRows,
+        InventoryItemModel,
+    })
     const servicePointIds = [...new Set(movementDtos
         .map((movement) => movement.servicePointId)
         .filter(Boolean))]

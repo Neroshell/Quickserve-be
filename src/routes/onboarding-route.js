@@ -1,7 +1,7 @@
 import express from "express"
-import rateLimit from "express-rate-limit"
 import { startSignup, resendVerificationEmail, verifyEmail, getSession, updateSession, completeOnboarding, getAddressSuggestions } from "../controllers/onboardingController.js"
 import Plan from "../models/Plan.js"
+import { createAddressSearchLimiter } from "../middleware/addressSearchRateLimit.js"
 import {
     createSharedSecurityRateLimit,
     getRequestIp,
@@ -9,12 +9,7 @@ import {
 } from "../middleware/sharedSecurityRateLimit.js"
 
 const router = express.Router()
-const addressSearchLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    limit: 60,
-    standardHeaders: "draft-8",
-    legacyHeaders: false
-})
+const addressSearchLimiter = createAddressSearchLimiter()
 const onboardingSignupLimiter = createSharedSecurityRateLimit({
     scope: "onboarding-signup",
     windowMs: 60 * 60 * 1000,

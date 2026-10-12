@@ -153,6 +153,26 @@ test("waiter-call guest create and list use canonical current-visit authority", 
     assert.equal(createResponse.body.call.guestSessionId, "visit-a")
     assert.equal(listResponse.statusCode, 200)
     assert.deepEqual(listResponse.body.calls.map((call) => call._id), ["call-1"])
+    assert.deepEqual(listResponse.body.currentVisitCalls.map((call) => call._id), ["call-1"])
+  })
+
+  await t.test("guest recovery retains the compatible calls result but proves current-visit ownership separately", async () => {
+    calls.push({
+      _id: "call-other-visit",
+      businessId: "business-a",
+      module: "foodService",
+      servicePointId: "sp-a",
+      guestSessionId: "visit-b",
+      status: "acknowledged",
+      createdAt: new Date(),
+    })
+
+    const res = responseRecorder()
+    await listWaiterCalls(guestRequest(), res)
+
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(res.body.calls.map((call) => call._id), ["call-1", "call-other-visit"])
+    assert.deepEqual(res.body.currentVisitCalls.map((call) => call._id), ["call-1"])
   })
 
   const rejectedCases = [
@@ -200,6 +220,7 @@ test("waiter-call guest create and list use canonical current-visit authority", 
       session: { user: { businessId: "business-a" } },
     }, res)
     assert.equal(res.statusCode, 200)
-    assert.deepEqual(res.body.calls.map((call) => call._id), ["call-1"])
+    assert.deepEqual(res.body.calls.map((call) => call._id), ["call-1", "call-other-visit"])
+    assert.equal("currentVisitCalls" in res.body, false)
   })
 })

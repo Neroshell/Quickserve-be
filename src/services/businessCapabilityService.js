@@ -179,7 +179,7 @@ export function resolveBusinessCapabilities(business) {
         settings: {
             sections: [
                 "business",
-                ...(hasLodging ? ["propertyProfile"] : []),
+                "propertyProfile",
                 "operations",
                 ...(hasLodging ? ["lodging"] : []),
                 "preferences",

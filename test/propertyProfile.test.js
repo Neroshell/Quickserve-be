@@ -5,6 +5,7 @@ import test from "node:test"
 import Business from "../src/models/Business.js"
 import {
     getPropertyProfile,
+    getPropertyProfileAddressSuggestions,
     updatePropertyProfileSection,
 } from "../src/controllers/propertyProfileController.js"
 import {
@@ -57,10 +58,11 @@ function makeBusiness(overrides = {}) {
     }
 }
 
-function mockReqRes({ businessId = "biz_hotel_alpha", section, body = {} } = {}) {
+function mockReqRes({ businessId = "biz_hotel_alpha", section, body = {}, query = {} } = {}) {
     const req = {
         session: businessId ? { user: { businessId, role: "owner" } } : {},
         params: section ? { section } : {},
+        query,
         body,
     }
     const res = {
@@ -239,11 +241,134 @@ test("photo reordering can set a cover and removal cannot reference another tena
     assert.equal(foreign.res.statusCode, 400)
 })
 
-test("Property Profile is unavailable to non-hotel businesses", async t => {
+test("Business Profile supports restaurant and bar shells without changing hotel semantics", async t => {
     installBusinessFindOne(t, makeBusiness({ businessType: "restaurant" }))
     const { req, res } = mockReqRes()
     await getPropertyProfile(req, res)
-    assert.equal(res.statusCode, 409)
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.body.businessType, "restaurant")
+})
+
+test("location updates resolve canonical fields from Google and ignore browser-supplied address data", async t => {
+    const business = makeBusiness()
+    installBusinessFindOne(t, business)
+    const originalFetch = globalThis.fetch
+    const originalApiKey = process.env.GOOGLE_PLACES_API_KEY
+    process.env.GOOGLE_PLACES_API_KEY = "test-key"
+    globalThis.fetch = async () => ({
+        ok: true,
+        async json() {
+            return {
+                id: "place_canonical_123",
+                formattedAddress: "41 Triq il-Borg, Birgu, Malta",
+                location: { latitude: 35.8871, longitude: 14.5223 },
+                addressComponents: [
+                    { types: ["country"], shortText: "MT", longText: "Malta" },
+                    { types: ["locality"], longText: "Birgu" },
+                    { types: ["administrative_area_level_1"], longText: "Southern Region" },
+                    { types: ["postal_code"], longText: "BRG 1300" },
+                ],
+            }
+        },
+    })
+    t.after(() => {
+        globalThis.fetch = originalFetch
+        if (originalApiKey === undefined) delete process.env.GOOGLE_PLACES_API_KEY
+        else process.env.GOOGLE_PLACES_API_KEY = originalApiKey
+    })
+
+    const { req, res } = mockReqRes({
+        section: "location",
+        body: {
+            addressPlaceId: "place_canonical_123",
+            addressSessionToken: "profile_session_123",
+            countryCode: "mt",
+            address: "Untrusted browser address",
+            city: "Untrusted city",
+            latitude: 0,
+            longitude: 0,
+        },
+    })
+    await updatePropertyProfileSection(req, res)
+
+    assert.equal(res.statusCode, 200)
+    assert.equal(business.address, "41 Triq il-Borg, Birgu, Malta")
+    assert.equal(business.addressPlaceId, "place_canonical_123")
+    assert.equal(business.latitude, 35.8871)
+    assert.equal(business.longitude, 14.5223)
+    assert.equal(business.propertyProfile.city, "Birgu")
+    assert.equal(business.propertyProfile.region, "Southern Region")
+    assert.equal(business.propertyProfile.postalCode, "BRG 1300")
+    assert.equal(res.body.location.verified, true)
+})
+
+test("location updates reject manual addresses without a selected Google place", async t => {
+    const business = makeBusiness()
+    installBusinessFindOne(t, business)
+    const { req, res } = mockReqRes({
+        section: "location",
+        body: { address: "Manual address", country: "Malta", latitude: 35.9, longitude: 14.5 },
+    })
+    await updatePropertyProfileSection(req, res)
+
+    assert.equal(res.statusCode, 400)
+    assert.match(res.body.message, /Google Maps/)
+    assert.equal(business.address, "1 Marina Road")
+    assert.equal(business.addressPlaceId, "place_123")
+})
+
+test("address suggestions are owner-session scoped and reuse the canonical Google service", async t => {
+    const business = makeBusiness()
+    let capturedFilter
+    installBusinessFindOne(t, business, filter => { capturedFilter = filter })
+    const originalFetch = globalThis.fetch
+    const originalApiKey = process.env.GOOGLE_PLACES_API_KEY
+    process.env.GOOGLE_PLACES_API_KEY = "test-key"
+    globalThis.fetch = async (url, options) => {
+        assert.match(String(url), /places:autocomplete/)
+        assert.equal(options.method, "POST")
+        return {
+            ok: true,
+            async json() {
+                return {
+                    suggestions: [{
+                        placePrediction: {
+                            placeId: "place_suggestion_123",
+                            text: { text: "41 Triq il-Borg, Birgu, Malta" },
+                            structuredFormat: {
+                                mainText: { text: "41 Triq il-Borg" },
+                                secondaryText: { text: "Birgu, Malta" },
+                            },
+                        },
+                    }],
+                }
+            },
+        }
+    }
+    t.after(() => {
+        globalThis.fetch = originalFetch
+        if (originalApiKey === undefined) delete process.env.GOOGLE_PLACES_API_KEY
+        else process.env.GOOGLE_PLACES_API_KEY = originalApiKey
+    })
+
+    const { req, res } = mockReqRes({
+        query: {
+            businessId: "biz_other_tenant",
+            input: "41 Triq",
+            countryCode: "mt",
+            sessionToken: "profile_session_456",
+        },
+    })
+    await getPropertyProfileAddressSuggestions(req, res)
+
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(capturedFilter, { businessId: "biz_hotel_alpha" })
+    assert.deepEqual(res.body.suggestions, [{
+        placeId: "place_suggestion_123",
+        text: "41 Triq il-Borg, Birgu, Malta",
+        mainText: "41 Triq il-Borg",
+        secondaryText: "Birgu, Malta",
+    }])
 })
 
 test("Business schema validates structured Property Profile enums", () => {
@@ -277,7 +402,7 @@ test("Business schema validates structured Property Profile enums", () => {
         businessType: "restaurant",
         modules: ["foodService"],
     })
-    assert.equal(restaurant.propertyProfile, undefined)
+    assert.equal(restaurant.validateSync(), undefined)
 })
 
 test("Property Profile and property-photo routes use the owner/co-owner Business Settings guard", async () => {
@@ -288,6 +413,7 @@ test("Property Profile and property-photo routes use the owner/co-owner Business
     ])
 
     assert.match(businessRoutes, /router\.get\("\/property-profile", requireBusinessIdentityOwner, getPropertyProfile\)/)
+    assert.match(businessRoutes, /router\.get\("\/property-profile\/address-suggestions", requireBusinessIdentityOwner, propertyProfileAddressSearchLimiter, getPropertyProfileAddressSuggestions\)/)
     assert.match(businessRoutes, /router\.patch\("\/property-profile\/:section", requireBusinessIdentityOwner, updatePropertyProfileSection\)/)
     assert.match(uploadRoutes, /"\/property-photo",\s*requireManagementArea\(MANAGEMENT_ACCESS_AREAS\.BUSINESS_SETTINGS\)/)
     assert.match(uploadRoutes, /router\.use\(requireAuth\)/)

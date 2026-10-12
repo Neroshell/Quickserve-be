@@ -407,7 +407,19 @@ export async function listWaiterCalls(req, res) {
       .sort({ createdAt: -1 })
       .lean()
 
-    return res.json({ calls })
+    // Keep the existing table-scoped result intact for compatibility, while
+    // also exposing the subset that the canonical GuestSession proves belongs
+    // to this exact visit. Guests must not infer notification ownership from
+    // a shared ServicePoint result alone.
+    const currentVisitCalls = resolved.contextType === "table_session"
+      ? calls.filter((call) => String(call.guestSessionId || "") === resolved.guestSessionId)
+      : undefined
+
+    return res.json(
+      currentVisitCalls !== undefined
+        ? { calls, currentVisitCalls }
+        : { calls },
+    )
   } catch (err) {
     console.error("[listWaiterCalls]", err)
     return res.status(500).json({ error: "Failed to fetch waiter calls" })

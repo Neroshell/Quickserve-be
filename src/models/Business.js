@@ -15,6 +15,18 @@ import {
     PROPERTY_LANGUAGE_IDS,
 } from "../constants/propertyProfileCatalog.js"
 import {
+    CUISINE_TYPE_IDS,
+    MEAL_SERVICE_IDS,
+    ATMOSPHERE_TAG_IDS,
+    DINING_STYLE_IDS,
+    DRESS_CODE_IDS,
+    DIETARY_OPTION_IDS,
+    BAR_HIGHLIGHT_IDS,
+    ACCESSIBILITY_FEATURE_IDS,
+    RESTAURANT_FACILITY_IDS,
+    RESERVATION_POLICY_IDS,
+} from "../constants/businessProfileCatalog.js"
+import {
     INVENTORY_UNIT_VALUES,
     MAX_INVENTORY_QUANTITY,
 } from "../constants/inventory.js"
@@ -133,24 +145,27 @@ const PropertyParkingSchema = new mongoose.Schema({
     access: { type: String, enum: ["private", "public", null], default: null },
 }, { _id: false })
 
+const SocialLinksSchema = new mongoose.Schema({
+    instagram: { type: String, default: "", trim: true, maxlength: 100 },
+    facebook: { type: String, default: "", trim: true, maxlength: 255 },
+}, { _id: false })
+
+// Combined facility IDs: hotel + restaurant/bar facilities can coexist
+const ALL_FACILITY_IDS = [...new Set([...PROPERTY_FACILITY_IDS, ...RESTAURANT_FACILITY_IDS])]
+
 const PropertyProfileSchema = new mongoose.Schema({
-    accommodationType: {
-        type: String,
-        enum: [...PROPERTY_ACCOMMODATION_TYPES.map(type => type.id), null],
-        default: null,
-    },
+    // --- Shared Core Metadata ---
+    tagline: { type: String, default: "", trim: true, maxlength: 120 },
     description: { type: String, default: "", trim: true, maxlength: 3000 },
-    starRating: { type: Number, min: 1, max: 5, default: null },
     city: { type: String, default: "", trim: true, maxlength: 120 },
     region: { type: String, default: "", trim: true, maxlength: 120 },
     postalCode: { type: String, default: "", trim: true, maxlength: 32 },
     photos: { type: [PropertyPhotoSchema], default: [] },
     facilityIds: {
-        type: [{ type: String, enum: PROPERTY_FACILITY_IDS }],
+        type: [{ type: String, enum: ALL_FACILITY_IDS }],
         default: [],
     },
     parking: { type: PropertyParkingSchema, default: () => ({}) },
-    breakfastOffered: { type: Boolean, default: null },
     languages: {
         type: [{ type: String, enum: PROPERTY_LANGUAGE_IDS }],
         default: [],
@@ -162,6 +177,66 @@ const PropertyProfileSchema = new mongoose.Schema({
         default: null,
     },
     websiteUrl: { type: String, default: "", trim: true, maxlength: 2048 },
+    socialLinks: { type: SocialLinksSchema, default: () => ({}) },
+
+    // --- Hotel-Specific Fields ---
+    accommodationType: {
+        type: String,
+        enum: [...PROPERTY_ACCOMMODATION_TYPES.map(type => type.id), null],
+        default: null,
+    },
+    starRating: { type: Number, min: 1, max: 5, default: null },
+    breakfastOffered: { type: Boolean, default: null },
+
+    // --- Restaurant & Bar Fields ---
+    priceLevel: {
+        type: Number,
+        enum: [1, 2, 3, 4, null],
+        default: null,
+    },
+    diningStyle: {
+        type: String,
+        enum: [...DINING_STYLE_IDS, null],
+        default: null,
+    },
+    cuisineTypes: {
+        type: [{ type: String, enum: CUISINE_TYPE_IDS }],
+        default: [],
+    },
+    mealServices: {
+        type: [{ type: String, enum: MEAL_SERVICE_IDS }],
+        default: [],
+    },
+    atmosphere: {
+        type: [{ type: String, enum: ATMOSPHERE_TAG_IDS }],
+        default: [],
+    },
+    dressCode: {
+        type: String,
+        enum: [...DRESS_CODE_IDS, null],
+        default: null,
+    },
+    dietaryOptions: {
+        type: [{ type: String, enum: DIETARY_OPTION_IDS }],
+        default: [],
+    },
+    barHighlights: {
+        type: [{ type: String, enum: BAR_HIGHLIGHT_IDS }],
+        default: [],
+    },
+    reservationPolicy: {
+        type: String,
+        enum: [...RESERVATION_POLICY_IDS, null],
+        default: null,
+    },
+    accessibility: {
+        type: [{ type: String, enum: ACCESSIBILITY_FEATURE_IDS }],
+        default: [],
+    },
+
+    // --- Discovery Publishing State ---
+    discoveryPublished: { type: Boolean, default: false },
+    publishedAt: { type: Date, default: null },
 }, { _id: false })
 
 const BillingLifecycleClaimSchema = new mongoose.Schema({
@@ -430,7 +505,7 @@ const BusinessSchema = new mongoose.Schema({
     propertyProfile: {
         type: PropertyProfileSchema,
         default: function defaultPropertyProfile() {
-            return this.businessType === "hotel" ? {} : undefined
+            return ["hotel", "restaurant", "bar_lounge"].includes(this.businessType) ? {} : undefined
         },
     },
     

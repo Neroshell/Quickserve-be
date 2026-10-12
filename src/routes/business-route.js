@@ -4,7 +4,8 @@ import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatin
 import { requireManagementArea, requirePermission, requirePermissionForAuthenticatedManager } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
-import { getPropertyProfile, updatePropertyProfileSection } from "../controllers/propertyProfileController.js"
+import { getPropertyProfile, getPropertyProfileAddressSuggestions, updatePropertyProfileSection } from "../controllers/propertyProfileController.js"
+import { createAddressSearchLimiter } from "../middleware/addressSearchRateLimit.js"
 
 const router = express.Router()
 
@@ -26,6 +27,7 @@ const requireMenuConfiguration = requireManagementArea(
     PERMISSIONS.MENU_MANAGE,
     PERMISSIONS.SETTINGS_OPERATIONAL_MANAGE,
 )
+const propertyProfileAddressSearchLimiter = createAddressSearchLimiter()
 
 /**
  * @openapi
@@ -70,10 +72,11 @@ router.patch("/settings", requireBusinessIdentityOwner, updateSettings)
  */
 router.patch("/settings/modules", requireBusinessIdentityOwner, updateOwnerBusinessModules)
 
-// Property Profile is a hotel-only, owner/co-owner business-settings surface.
+// Business Profile is an owner/co-owner business-settings surface for supported shells.
 // Controllers derive the tenant from the authenticated session and deliberately
 // keep Room Types and physical Service Points outside this resource.
 router.get("/property-profile", requireBusinessIdentityOwner, getPropertyProfile)
+router.get("/property-profile/address-suggestions", requireBusinessIdentityOwner, propertyProfileAddressSearchLimiter, getPropertyProfileAddressSuggestions)
 router.patch("/property-profile/:section", requireBusinessIdentityOwner, updatePropertyProfileSection)
 
 /**

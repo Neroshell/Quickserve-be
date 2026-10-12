@@ -58,6 +58,21 @@ async function readGoogleResponse(response) {
     return payload ?? {}
 }
 
+function getAddressComponentText(addressComponents, type) {
+    const component = addressComponents.find((candidate) => candidate.types?.includes(type))
+    return component?.longText?.trim() || component?.shortText?.trim() || ""
+}
+
+function extractAddressParts(addressComponents) {
+    const city = getAddressComponentText(addressComponents, "locality")
+        || getAddressComponentText(addressComponents, "postal_town")
+        || getAddressComponentText(addressComponents, "administrative_area_level_3")
+    return {
+        city,
+        region: getAddressComponentText(addressComponents, "administrative_area_level_1"),
+        postalCode: getAddressComponentText(addressComponents, "postal_code"),
+    }
+}
 export async function searchGooglePlaces({ input, countryCode, sessionToken, fetchImpl = fetch }) {
     const normalizedInput = typeof input === "string" ? input.trim().slice(0, 160) : ""
     if (normalizedInput.length < 3) return []
@@ -129,10 +144,12 @@ export async function resolveGooglePlace({ placeId, countryCode, sessionToken, f
         throw new PlacesServiceError("The selected address could not be validated", 400)
     }
 
+    const addressParts = extractAddressParts(Array.isArray(place.addressComponents) ? place.addressComponents : [])
     return {
         address: place.formattedAddress.trim(),
         latitude,
         longitude,
-        addressPlaceId: place.id || normalizedPlaceId
+        addressPlaceId: place.id || normalizedPlaceId,
+        ...addressParts,
     }
 }

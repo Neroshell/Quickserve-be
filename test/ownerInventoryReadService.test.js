@@ -248,7 +248,14 @@ test("movement history applies tenant, item, type, date, and stable sorting", as
         from: "2026-09-01T00:00:00.000Z",
         to: "2026-09-02T00:00:00.000Z",
         limit: 25,
-    }, { InventoryMovementModel })
+    }, {
+        InventoryMovementModel,
+        InventoryItemModel: {
+            find() {
+                return queryReturning([ITEM_A], {})
+            },
+        },
+    })
 
     assert.equal(capture.filter.businessId, "biz_alpha")
     assert.equal(capture.filter.inventoryItemId, "inv_a")
@@ -293,7 +300,15 @@ test("Room Usage movement history hydrates room context through a tenant-scoped 
     const page = await readInventoryMovementsPage({
         businessId: "biz_alpha",
         inventoryItemId: "inv_a",
-    }, { InventoryMovementModel, ServicePointModel })
+    }, {
+        InventoryMovementModel,
+        InventoryItemModel: {
+            find() {
+                return queryReturning([ITEM_A], {})
+            },
+        },
+        ServicePointModel,
+    })
 
     assert.deepEqual(servicePointFilter, {
         businessId: "biz_alpha",
@@ -330,11 +345,53 @@ test("inventory overview returns derived counts and recent immutable movements",
         $match: { businessId: "biz_alpha", isActive: true, deletedAt: null },
     })
     assert.deepEqual(movementCapture.filter, { businessId: "biz_alpha" })
-    assert.equal(movementCapture.limit, 10)
+    assert.equal(movementCapture.limit, 5)
     assert.deepEqual(overview.summary, {
         activeItems: 5,
         lowStockItems: 2,
         outOfStockItems: 1,
     })
     assert.equal(overview.recentMovements.length, 1)
+    assert.equal(overview.recentMovements[0].inventoryItem, null)
+})
+
+test("movement history scopes activity to the requested inventory domains and returns item context", async () => {
+    let pipeline = null
+    const domainMovement = {
+        ...MOVEMENT,
+        inventoryItem: [ITEM_A],
+    }
+    const InventoryMovementModel = {
+        async aggregate(value) {
+            pipeline = value
+            return [domainMovement]
+        },
+    }
+    const page = await readInventoryMovementsPage({
+        businessId: "biz_alpha",
+        domain: "food_service",
+        limit: 20,
+    }, {
+        InventoryMovementModel,
+        InventoryItemModel: { collection: { name: "inventoryitems" } },
+    })
+
+    assert.deepEqual(pipeline[0], { $match: { businessId: "biz_alpha" } })
+    assert.deepEqual(pipeline[1].$lookup.pipeline[1], {
+        $match: {
+            $or: [
+                { domain: { $in: ["food_service"] } },
+                { domain: { $exists: false } },
+                { domain: null },
+            ],
+        },
+    })
+    assert.deepEqual(pipeline.at(-2), { $sort: { createdAt: -1, _id: -1 } })
+    assert.deepEqual(pipeline.at(-1), { $limit: 21 })
+    assert.deepEqual(page.movements[0].inventoryItem, {
+        inventoryItemId: "inv_a",
+        name: "Apples",
+        category: "Produce",
+        trackingUnit: "piece",
+    })
 })

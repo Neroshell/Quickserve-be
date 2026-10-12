@@ -5,11 +5,24 @@ import {
     PROPERTY_LANGUAGE_IDS,
 } from "../constants/propertyProfileCatalog.js"
 import {
+    CUISINE_TYPE_IDS,
+    MEAL_SERVICE_IDS,
+    ATMOSPHERE_TAG_IDS,
+    DINING_STYLE_IDS,
+    DRESS_CODE_IDS,
+    DIETARY_OPTION_IDS,
+    BAR_HIGHLIGHT_IDS,
+    ACCESSIBILITY_FEATURE_IDS,
+    RESTAURANT_FACILITY_IDS,
+    RESERVATION_POLICY_IDS,
+} from "../constants/businessProfileCatalog.js"
+import {
     buildPropertyProfileResponse,
     serializePropertyPhoto,
 } from "../services/propertyProfileService.js"
 import { resolveCountryMetadata } from "../utils/countryHelper.js"
 import { normalizeInternationalPhoneNumber } from "../utils/phoneNumber.js"
+import { PlacesServiceError, resolveGooglePlace, searchGooglePlaces } from "../services/googlePlacesService.js"
 import { deleteFromCloudinary, uploadToCloudinary } from "../utils/uploadToCloudinary.js"
 import {
     invalidateBusinessConfiguration,
@@ -46,11 +59,25 @@ const SECTION_IDS = new Set([
     "arrival-departure",
     "policies",
     "contact",
+    "cuisine",
+    "atmosphere",
+    "dietary-accessibility",
 ])
 const ACCOMMODATION_TYPE_IDS = new Set(PROPERTY_ACCOMMODATION_TYPES.map(type => type.id))
-const FACILITY_IDS = new Set(PROPERTY_FACILITY_IDS)
+const ALL_FACILITY_IDS = new Set([...PROPERTY_FACILITY_IDS, ...RESTAURANT_FACILITY_IDS])
 const LANGUAGE_IDS = new Set(PROPERTY_LANGUAGE_IDS)
 const PETS_POLICIES = new Set(["allowed", "on_request", "not_allowed"])
+const CUISINE_IDS = new Set(CUISINE_TYPE_IDS)
+const MEAL_IDS = new Set(MEAL_SERVICE_IDS)
+const ATMOSPHERE_IDS = new Set(ATMOSPHERE_TAG_IDS)
+const DINING_IDS = new Set(DINING_STYLE_IDS)
+const DRESS_IDS = new Set(DRESS_CODE_IDS)
+const DIETARY_IDS = new Set(DIETARY_OPTION_IDS)
+const BAR_IDS = new Set(BAR_HIGHLIGHT_IDS)
+const ACCESSIBILITY_IDS = new Set(ACCESSIBILITY_FEATURE_IDS)
+const RESERVATION_IDS = new Set(RESERVATION_POLICY_IDS)
+
+const SUPPORTED_PROFILE_SHELLS = new Set(["hotel", "restaurant", "bar_lounge"])
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MAX_PROPERTY_PHOTOS = 30
@@ -144,13 +171,17 @@ function setProfileValue(profile, key, value) {
     if (value !== undefined) profile[key] = value
 }
 
-function ensureHotelProfile(business) {
+/**
+ * Shell-aware profile resolver. Supports hotel, restaurant, and bar_lounge.
+ * Never silently classifies an unknown business type.
+ */
+function resolveProfileShell(business) {
     if (!business) return { status: 404, message: "Business not found" }
-    if (business.businessType !== "hotel") {
-        return { status: 409, message: "Property Profile is available for hotel businesses only" }
+    if (!SUPPORTED_PROFILE_SHELLS.has(business.businessType)) {
+        return { status: 409, message: `Business Profile is not available for business type: ${business.businessType}` }
     }
     if (!business.propertyProfile) business.propertyProfile = {}
-    if (!business.hotelSettings) business.hotelSettings = {}
+    if (business.businessType === "hotel" && !business.hotelSettings) business.hotelSettings = {}
     return null
 }
 
@@ -164,60 +195,84 @@ function applyDetails(business, data) {
 
     setProfileValue(
         business.propertyProfile,
-        "accommodationType",
-        nullableEnum(data.accommodationType, ACCOMMODATION_TYPE_IDS, "accommodation type"),
-    )
-    setProfileValue(
-        business.propertyProfile,
         "description",
         cleanText(data.description, { field: "Description", maxLength: 3000 }),
     )
 
-    if (data.starRating !== undefined) {
-        if (data.starRating === null || data.starRating === "") {
-            business.propertyProfile.starRating = null
-        } else {
-            const rating = Number(data.starRating)
-            if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-                throw new PropertyProfileValidationError("Star rating must be 1 to 5, or Unrated")
+    // --- Hotel-specific detail fields ---
+    if (business.businessType === "hotel") {
+        setProfileValue(
+            business.propertyProfile,
+            "accommodationType",
+            nullableEnum(data.accommodationType, ACCOMMODATION_TYPE_IDS, "accommodation type"),
+        )
+        if (data.starRating !== undefined) {
+            if (data.starRating === null || data.starRating === "") {
+                business.propertyProfile.starRating = null
+            } else {
+                const rating = Number(data.starRating)
+                if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+                    throw new PropertyProfileValidationError("Star rating must be 1 to 5, or Unrated")
+                }
+                business.propertyProfile.starRating = rating
             }
-            business.propertyProfile.starRating = rating
         }
+    }
+
+    // --- Restaurant / Bar detail fields ---
+    if (business.businessType !== "hotel") {
+        setProfileValue(
+            business.propertyProfile,
+            "tagline",
+            cleanText(data.tagline, { field: "Tagline", maxLength: 120 }),
+        )
+        if (data.priceLevel !== undefined) {
+            if (data.priceLevel === null || data.priceLevel === "") {
+                business.propertyProfile.priceLevel = null
+            } else {
+                const level = Number(data.priceLevel)
+                if (![1, 2, 3, 4].includes(level)) {
+                    throw new PropertyProfileValidationError("Price level must be 1 to 4")
+                }
+                business.propertyProfile.priceLevel = level
+            }
+        }
+        setProfileValue(
+            business.propertyProfile,
+            "diningStyle",
+            nullableEnum(data.diningStyle, DINING_IDS, "dining style"),
+        )
     }
 }
 
-function applyLocation(business, data) {
-    const previousAddress = business.address || ""
-    const address = cleanText(data.address, { field: "Address", maxLength: 300 })
-    if (address !== undefined) business.address = address
-    setProfileValue(business.propertyProfile, "city", cleanText(data.city, { field: "City", maxLength: 120 }))
-    setProfileValue(business.propertyProfile, "region", cleanText(data.region, { field: "Region", maxLength: 120 }))
-    setProfileValue(business.propertyProfile, "postalCode", cleanText(data.postalCode, { field: "Postal code", maxLength: 32 }))
-
-    if (data.country !== undefined) {
-        const country = cleanText(data.country, { field: "Country", maxLength: 120, required: true })
-        const metadata = resolveCountryMetadata(country)
-        const countryChanged = metadata.countryCode !== business.countryCode
-        business.country = metadata.country
-        business.countryCode = metadata.countryCode
-        if (countryChanged) {
-            business.currency = metadata.currency
-            business.timezone = metadata.timezone
-        }
+async function applyLocation(business, data) {
+    const addressPlaceId = typeof data.addressPlaceId === "string" ? data.addressPlaceId.trim() : ""
+    const addressSessionToken = typeof data.addressSessionToken === "string" ? data.addressSessionToken.trim() : ""
+    if (!addressPlaceId || !addressSessionToken) {
+        throw new PropertyProfileValidationError("Select a valid address from Google Maps before saving")
     }
 
-    const latitude = cleanCoordinate(data.latitude, { field: "Latitude", min: -90, max: 90 })
-    const longitude = cleanCoordinate(data.longitude, { field: "Longitude", min: -180, max: 180 })
-    if ((latitude === null) !== (longitude === null) || (latitude === undefined) !== (longitude === undefined)) {
-        throw new PropertyProfileValidationError("Latitude and longitude must be provided together")
-    }
-    if (latitude !== undefined) {
-        business.latitude = latitude
-        business.longitude = longitude
-    } else if (address !== undefined && address !== previousAddress) {
-        business.latitude = null
-        business.longitude = null
-        business.addressPlaceId = ""
+    const countryCode = cleanText(data.countryCode, { field: "Country", maxLength: 2, required: true })
+    const countryMetadata = resolveCountryMetadata(countryCode)
+    const selectedAddress = await resolveGooglePlace({
+        placeId: addressPlaceId,
+        countryCode: countryMetadata.countryCode,
+        sessionToken: addressSessionToken,
+    })
+    const countryChanged = countryMetadata.countryCode !== business.countryCode
+
+    business.address = selectedAddress.address
+    business.addressPlaceId = selectedAddress.addressPlaceId
+    business.latitude = selectedAddress.latitude
+    business.longitude = selectedAddress.longitude
+    business.country = countryMetadata.country
+    business.countryCode = countryMetadata.countryCode
+    business.propertyProfile.city = selectedAddress.city
+    business.propertyProfile.region = selectedAddress.region
+    business.propertyProfile.postalCode = selectedAddress.postalCode
+    if (countryChanged) {
+        business.currency = countryMetadata.currency
+        business.timezone = countryMetadata.timezone
     }
 }
 
@@ -247,13 +302,22 @@ function applyPhotos(business, data) {
 
 function applyFacilities(business, data) {
     if (data.facilityIds !== undefined) {
-        business.propertyProfile.facilityIds = uniqueKnownIds(data.facilityIds, FACILITY_IDS, "facility")
+        business.propertyProfile.facilityIds = uniqueKnownIds(data.facilityIds, ALL_FACILITY_IDS, "facility")
     }
-    setProfileValue(
-        business.propertyProfile,
-        "breakfastOffered",
-        nullableBoolean(data.breakfastOffered, "Breakfast offered"),
-    )
+
+    // Hotel-only: breakfast offered
+    if (business.businessType === "hotel") {
+        setProfileValue(
+            business.propertyProfile,
+            "breakfastOffered",
+            nullableBoolean(data.breakfastOffered, "Breakfast offered"),
+        )
+    }
+
+    // Restaurant/Bar: bar highlights
+    if (business.businessType !== "hotel" && data.barHighlights !== undefined) {
+        business.propertyProfile.barHighlights = uniqueKnownIds(data.barHighlights, BAR_IDS, "bar highlight")
+    }
 
     if (data.parking !== undefined) {
         if (!data.parking || typeof data.parking !== "object" || Array.isArray(data.parking)) {
@@ -308,6 +372,14 @@ function applyPolicies(business, data) {
         "petsPolicy",
         nullableEnum(data.petsPolicy, PETS_POLICIES, "pets policy"),
     )
+    // Restaurant/Bar: reservation advisory policy
+    if (business.businessType !== "hotel") {
+        setProfileValue(
+            business.propertyProfile,
+            "reservationPolicy",
+            nullableEnum(data.reservationPolicy, RESERVATION_IDS, "reservation policy"),
+        )
+    }
 }
 
 function applyContact(business, data) {
@@ -331,6 +403,58 @@ function applyContact(business, data) {
     if (data.website !== undefined) {
         business.propertyProfile.websiteUrl = cleanWebsiteUrl(data.website)
     }
+    // Social links (restaurant/bar profiles)
+    if (data.socialLinks !== undefined && typeof data.socialLinks === "object" && !Array.isArray(data.socialLinks)) {
+        const socialLinks = {}
+        if (data.socialLinks.instagram !== undefined) {
+            socialLinks.instagram = cleanText(data.socialLinks.instagram, { field: "Instagram", maxLength: 100 })
+        }
+        if (data.socialLinks.facebook !== undefined) {
+            socialLinks.facebook = cleanText(data.socialLinks.facebook, { field: "Facebook", maxLength: 255 })
+        }
+        if (!business.propertyProfile.socialLinks) business.propertyProfile.socialLinks = {}
+        Object.assign(business.propertyProfile.socialLinks, socialLinks)
+    }
+}
+
+// --- New F&B-specific section handlers ---
+
+function applyCuisine(business, data) {
+    if (business.businessType === "hotel") {
+        throw new PropertyProfileValidationError("Cuisine section is not available for hotels")
+    }
+    if (data.cuisineTypes !== undefined) {
+        business.propertyProfile.cuisineTypes = uniqueKnownIds(data.cuisineTypes, CUISINE_IDS, "cuisine type")
+    }
+    if (data.mealServices !== undefined) {
+        business.propertyProfile.mealServices = uniqueKnownIds(data.mealServices, MEAL_IDS, "meal service")
+    }
+}
+
+function applyAtmosphere(business, data) {
+    if (business.businessType === "hotel") {
+        throw new PropertyProfileValidationError("Atmosphere section is not available for hotels")
+    }
+    if (data.atmosphere !== undefined) {
+        business.propertyProfile.atmosphere = uniqueKnownIds(data.atmosphere, ATMOSPHERE_IDS, "atmosphere tag")
+    }
+    setProfileValue(
+        business.propertyProfile,
+        "dressCode",
+        nullableEnum(data.dressCode, DRESS_IDS, "dress code"),
+    )
+}
+
+function applyDietaryAccessibility(business, data) {
+    if (business.businessType === "hotel") {
+        throw new PropertyProfileValidationError("Dietary & Accessibility section is not available for hotels")
+    }
+    if (data.dietaryOptions !== undefined) {
+        business.propertyProfile.dietaryOptions = uniqueKnownIds(data.dietaryOptions, DIETARY_IDS, "dietary option")
+    }
+    if (data.accessibility !== undefined) {
+        business.propertyProfile.accessibility = uniqueKnownIds(data.accessibility, ACCESSIBILITY_IDS, "accessibility feature")
+    }
 }
 
 const SECTION_HANDLERS = {
@@ -342,6 +466,9 @@ const SECTION_HANDLERS = {
     "arrival-departure": applyArrivalDeparture,
     policies: applyPolicies,
     contact: applyContact,
+    cuisine: applyCuisine,
+    atmosphere: applyAtmosphere,
+    "dietary-accessibility": applyDietaryAccessibility,
 }
 
 async function invalidatePropertyProfileCaches(business) {
@@ -351,13 +478,36 @@ async function invalidatePropertyProfileCaches(business) {
     ])
 }
 
+export async function getPropertyProfileAddressSuggestions(req, res) {
+    try {
+        const businessId = req.session?.user?.businessId
+        if (!businessId) return res.status(401).json({ message: "Unauthorized" })
+
+        const business = await Business.findOne({ businessId }).select("businessId businessType")
+        const domainError = resolveProfileShell(business)
+        if (domainError) return res.status(domainError.status).json({ message: domainError.message })
+
+        const suggestions = await searchGooglePlaces({
+            input: req.query?.input,
+            countryCode: req.query?.countryCode,
+            sessionToken: req.query?.sessionToken,
+        })
+        return res.json({ suggestions })
+    } catch (error) {
+        if (error instanceof PlacesServiceError) {
+            return res.status(error.status).json({ message: error.message })
+        }
+        console.error("[property-profile:address-suggestions]", error)
+        return res.status(502).json({ message: "Address search is temporarily unavailable" })
+    }
+}
 export async function getPropertyProfile(req, res) {
     try {
         const businessId = req.session?.user?.businessId
         if (!businessId) return res.status(401).json({ message: "Unauthorized" })
 
         const business = await Business.findOne({ businessId }).select(PROPERTY_PROFILE_SELECT)
-        const domainError = ensureHotelProfile(business)
+        const domainError = resolveProfileShell(business)
         if (domainError) return res.status(domainError.status).json({ message: domainError.message })
 
         return res.json(buildPropertyProfileResponse(business))
@@ -382,10 +532,10 @@ export async function updatePropertyProfileSection(req, res) {
         }
 
         const business = await Business.findOne({ businessId }).select(PROPERTY_PROFILE_SELECT)
-        const domainError = ensureHotelProfile(business)
+        const domainError = resolveProfileShell(business)
         if (domainError) return res.status(domainError.status).json({ message: domainError.message })
 
-        removedPhotos = SECTION_HANDLERS[section](business, req.body) || []
+        removedPhotos = await SECTION_HANDLERS[section](business, req.body) || []
         business.markModified?.("propertyProfile")
         business.markModified?.("hotelSettings")
         await business.save()
@@ -407,7 +557,7 @@ export async function updatePropertyProfileSection(req, res) {
             savedSection: section,
         })
     } catch (error) {
-        if (error instanceof PropertyProfileValidationError || error?.name === "CountryResolutionError") {
+        if (error instanceof PropertyProfileValidationError || error instanceof PlacesServiceError || error?.name === "CountryResolutionError") {
             return res.status(400).json({ message: error.message })
         }
         if (error?.name === "ValidationError") {
@@ -426,7 +576,7 @@ export async function uploadPropertyPhoto(req, res) {
         if (!req.file) return res.status(400).json({ message: "Image file is required" })
 
         const business = await Business.findOne({ businessId }).select(PROPERTY_PROFILE_SELECT)
-        const domainError = ensureHotelProfile(business)
+        const domainError = resolveProfileShell(business)
         if (domainError) return res.status(domainError.status).json({ message: domainError.message })
         if ((business.propertyProfile.photos || []).length >= MAX_PROPERTY_PHOTOS) {
             return res.status(400).json({ message: `A property can have up to ${MAX_PROPERTY_PHOTOS} photos` })
