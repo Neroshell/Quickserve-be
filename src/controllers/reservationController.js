@@ -1208,7 +1208,7 @@ export function toPublicHotelAvailabilityPricingSummary(pricingSummary) {
  * room selection; reservation creation still resolves it tenant-scoped and
  * revalidates availability and pricing on the server.
  */
-export function toPublicHotelAvailabilityRoomDto(room) {
+export export function toPublicHotelAvailabilityRoomDto(room) {
   return {
     servicePointId: room.servicePointId,
     label: room.label,
