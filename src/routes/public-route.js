@@ -12,6 +12,7 @@ import {
   validateReservationNotComing,
 } from "../controllers/reservationNotComingController.js";
 import { getDiscoveryPlace, searchDiscoveryPlaces } from "../controllers/discoveryController.js";
+import { getDiscoveryMenu } from "../controllers/discoveryMenuController.js";
 
 const router = express.Router();
 
@@ -82,6 +83,7 @@ router.get("/business/:countryCode/:slug", getBusinessBySlug);
 // every request rather than relying on a response-cache TTL for revocation.
 router.get("/discovery/search", discoveryLimiter, searchDiscoveryPlaces);
 router.get("/discovery/places/:countryCode/:slug", discoveryLimiter, getDiscoveryPlace);
+router.get("/menu/:countryCode/:slug", discoveryLimiter, getDiscoveryMenu);
 
 /**
  * @openapi
