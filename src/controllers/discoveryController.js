@@ -72,7 +72,7 @@ function positiveInteger(value, { name, defaultValue, maximum }) {
 function optionalCoordinate(value, { name, min, max }) {
     value = requireSingleQueryValue(value, name)
     if (value === undefined) return null
-    if (typeof value !== "string" || !/^-?(?:\\d+)(?:\\.\\d+)?$/.test(value.trim())) {
+    if (typeof value !== "string" || !/^-?(?:\d+)(?:\.\d+)?$/.test(value.trim())) {
         throw new PublicBusinessResolutionError(`${name} must be a valid coordinate`)
     }
     const parsed = Number(value)
