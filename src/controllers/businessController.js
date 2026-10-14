@@ -206,6 +206,21 @@ function changesPublicBusinessDto(update) {
     )
 }
 
+// Legacy settings/admin edits are not Google-verified location updates.
+// Preserve those endpoints, but invalidate stale discovery coordinates when
+// they change the canonical public address or country.
+function invalidateUnverifiedLocationUpdate(update, current) {
+    const addressChanged = Object.hasOwn(update, "address") && update.address !== current.address
+    const countryChanged = Object.hasOwn(update, "countryCode") &&
+        update.countryCode !== current.countryCode
+    if (!addressChanged && !countryChanged) return false
+    update.addressPlaceId = ""
+    update.latitude = null
+    update.longitude = null
+    update["propertyProfile.city"] = ""
+    return true
+}
+
 function isValidTimeString(value) {
     return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
 }
@@ -430,9 +445,12 @@ export async function updateSettings(req, res) {
             ? await Business.findOne({ businessId }).select("countryCode slug").lean()
             : null
 
+        const currentLocation = await Business.findOne({ businessId }).select("address countryCode").lean()
+        if (!currentLocation) return res.status(404).json({ message: "Business not found" })
+        const locationInvalidated = invalidateUnverifiedLocationUpdate(updateObj, currentLocation)
         const business = await Business.findOneAndUpdate(
             { businessId },
-            { $set: updateObj },
+            { $set: updateObj, ...(locationInvalidated ? { $unset: { discoveryGeoPoint: 1 } } : {}) },
             { new: true, runValidators: true }
         ).select(SAFE_BUSINESS_PROJECTION)
 
@@ -1450,6 +1468,15 @@ export async function updateAdminBusiness(req, res) {
             })
         }
 
+        // Geographic provenance must come from the canonical Google-backed profile flow.
+        if (["addressPlaceId", "latitude", "longitude", "discoveryGeoPoint",
+            "propertyProfile.city", "propertyProfile.region", "propertyProfile.postalCode"
+        ].some(field => Object.hasOwn(updateData, field))) {
+            return res.status(400).json({
+                message: "Update the business address through the verified Business Profile location workflow.",
+            })
+        }
+
         const existingBusinessForUpdate = await Business.findOne({
             $or: [{ businessId: paramId }, { businessId: paramId }]
         }).select("_id businessId businessId businessType modules countryCode slug").lean()
@@ -1523,9 +1550,21 @@ export async function updateAdminBusiness(req, res) {
             delete updateData.countryCode
         }
 
+        const currentLocation = await Business.findOne({
+            $or: [{ businessId: paramId }, { businessId: paramId }]
+        }).select("address countryCode").lean()
+        if (!currentLocation) return res.status(404).json({ message: "Business not found" })
+        const locationInvalidated = invalidateUnverifiedLocationUpdate(updateData, currentLocation)
+        // Client-supplied coordinates/place IDs cannot independently certify a new address.
+        if (locationInvalidated) {
+            updateData.addressPlaceId = ""
+            updateData.latitude = null
+            updateData.longitude = null
+        }
+        const locationUpdate = { $set: updateData, ...(locationInvalidated ? { $unset: { discoveryGeoPoint: 1 } } : {}) }
         const businessUpdate = hasReservationEligibilityMutation(updateData)
-            ? withReservationEligibilityFence({ $set: updateData })
-            : { $set: updateData }
+            ? withReservationEligibilityFence(locationUpdate)
+            : locationUpdate
         const business = await Business.findOneAndUpdate(
             { $or: [{ businessId: paramId }, { businessId: paramId }] },
             businessUpdate,
