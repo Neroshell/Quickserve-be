@@ -27,6 +27,7 @@ function business(id, countryCode = "mt", published = true, type = "restaurant")
   return {
     businessId: id, slug: "shared-cafe", countryCode, country: "Malta",
     name: "Cafe", address: "1 Main Street", businessType: type, status: "active",
+    addressPlaceId: "ChIJVerifiedCafeTest", latitude: 35.8992, longitude: 14.5141,
     currency: "EUR", modules: ["foodService"],
     settings: { reservationsEnabled: true },
     propertyProfile: {
