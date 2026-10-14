@@ -82,6 +82,16 @@ export function evaluateDiscoveryPublicationEligibility(business) {
             message: "Add a public address and city to your Business Profile.",
         })
     }
+    const latitude = business?.latitude
+    const longitude = business?.longitude
+    if (!hasText(business?.addressPlaceId) ||
+        !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+        !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+        blockers.push({
+            code: "verified_location_required",
+            message: "Select and save a verified Google Maps address before publishing to Discovery.",
+        })
+    }
     if (!publicCoverImage(business)) {
         blockers.push({
             code: "cover_photo_required",
