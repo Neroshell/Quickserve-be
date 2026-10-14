@@ -1,4 +1,5 @@
 import Business from "../models/Business.js"
+import { resolveDiscoveryDestination } from "../services/discoveryDestinationResolver.js"
 import {
     DISCOVERY_BUSINESS_SELECT,
     DISCOVERY_VISIBLE_BUSINESS_STATUSES,
@@ -139,6 +140,12 @@ async function lean(query) {
 export async function searchDiscoveryPlaces(req, res, { businessModel = Business } = {}) {
     try {
         const options = parseDiscoverySearchQuery(req.query)
+        const placeId = optionalText(req.query?.placeId, { name: "placeId", maxLength: 255 })
+        if (placeId) {
+            const resolved = await resolveDiscoveryDestination(placeId)
+            options.countryCode = resolved.countryCode
+            options.city = resolved.city
+        }
         const query = queryForDiscoverySearch(options)
         const sort = options.sort === "name_desc"
             ? { displayName: -1, _id: 1 }
