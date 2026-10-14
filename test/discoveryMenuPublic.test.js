@@ -26,7 +26,7 @@ const query = (value) => ({
 function business(id, countryCode = "mt", published = true, type = "restaurant") {
   return {
     businessId: id, slug: "shared-cafe", countryCode, country: "Malta",
-    name: "Cafe", businessType: type, status: "active",
+    name: "Cafe", address: "1 Main Street", businessType: type, status: "active",
     currency: "EUR", modules: ["foodService"],
     settings: { reservationsEnabled: true },
     propertyProfile: {
