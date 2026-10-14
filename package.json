@@ -12,6 +12,7 @@
     "test:check-in": "node --import ./test/testEnvironment.js --test test/checkInCode.test.js test/hotelCheckInController.test.js",
     "test:capabilities": "node --import ./test/testEnvironment.js --test test/businessCapabilityService.test.js",
     "test:pricing": "node --import ./test/testEnvironment.js --test test/pricingService.test.js test/hotelPricingEmail.test.js",
+    "test:discovery-menu": "node --import ./test/testEnvironment.js --test test/discoveryMenuPublic.test.js",
     "test:discovery-hotel": "node --import ./test/testEnvironment.js --test test/discoveryHotelPublic.test.js",
     "test:hotel-flow": "node --import ./test/testEnvironment.js --test test/hotelReservationFlow.test.js",
     "test:hotel-concurrency": "node --import ./test/testEnvironment.js --test test/hotelReservationConcurrency.integration.test.js",
