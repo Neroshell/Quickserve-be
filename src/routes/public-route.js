@@ -13,6 +13,7 @@ import {
 } from "../controllers/reservationNotComingController.js";
 import { getDiscoveryPlace, searchDiscoveryPlaces } from "../controllers/discoveryController.js";
 import { getDiscoveryMenu } from "../controllers/discoveryMenuController.js";
+import { getDiscoveryHotelRooms, getDiscoveryHotelAvailability } from "../controllers/discoveryHotelController.js";
 
 const router = express.Router();
 
@@ -84,6 +85,8 @@ router.get("/business/:countryCode/:slug", getBusinessBySlug);
 router.get("/discovery/search", discoveryLimiter, searchDiscoveryPlaces);
 router.get("/discovery/places/:countryCode/:slug", discoveryLimiter, getDiscoveryPlace);
 router.get("/menu/:countryCode/:slug", discoveryLimiter, getDiscoveryMenu);
+router.get("/discovery/hotels/:countryCode/:slug/rooms", discoveryLimiter, getDiscoveryHotelRooms);
+router.get("/discovery/hotels/:countryCode/:slug/availability", discoveryLimiter, getDiscoveryHotelAvailability);
 
 /**
  * @openapi
