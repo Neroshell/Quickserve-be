@@ -322,15 +322,19 @@ const BusinessSchema = new mongoose.Schema({
     longitude: { type: Number, min: -180, max: 180, default: null },
     // Discovery geographic point, derived from canonical address coordinates.
     discoveryGeoPoint: {
-        type: {
-            type: String,
-            enum: ["Point"],
-            default: undefined,
-        },
-        coordinates: {
-            type: [Number],
-            default: undefined,
-        },
+        type: new mongoose.Schema({
+            type: { type: String, enum: ["Point"], required: true },
+            coordinates: {
+                type: [Number],
+                required: true,
+                validate: {
+                    validator: (value) => Array.isArray(value) && value.length === 2
+                        && value.every(Number.isFinite),
+                    message: "GeoJSON Point must have longitude and latitude",
+                },
+            },
+        }, { _id: false }),
+        default: undefined,
     },
     phoneNumber: { type: String, default: "" },
     contactEmail: { type: String, default: "" },
