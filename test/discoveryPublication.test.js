@@ -248,6 +248,7 @@ test("Discovery search query validation bounds pagination and rejects ambiguous 
     assert.deepEqual(parseDiscoverySearchQuery({}), {
         countryCode: null,
         city: null,
+        nearby: null,
         category: null,
         businessType: null,
         sort: "name_asc",
@@ -256,6 +257,48 @@ test("Discovery search query validation bounds pagination and rejects ambiguous 
     })
     assert.throws(() => parseDiscoverySearchQuery({ limit: "51" }), /between 1 and 50/)
     assert.throws(() => parseDiscoverySearchQuery({ countryCode: ["mt", "us"] }), /provided once/)
+})
+
+test("Discovery nearby query uses bounded geospatial radius, country and publication filters", async () => {
+    let capturedQuery
+    const businessModel = {
+        find(query) {
+            capturedQuery = query
+            return queryResult([makeBusiness()])
+        },
+    }
+    const { req, res } = mockReqRes({
+        query: { latitude: "35.8992", longitude: "14.5141", radiusKm: "15", countryCode: "mt", category: "stay" },
+    })
+    await searchDiscoveryPlaces(req, res, { businessModel })
+    assert.equal(res.statusCode, 200)
+    assert.equal(capturedQuery.countryCode, "mt")
+    assert.equal(capturedQuery.businessType, "hotel")
+    assert.equal(capturedQuery["propertyProfile.discoveryPublished"], true)
+    assert.deepEqual(capturedQuery.discoveryGeoPoint, {
+        $geoWithin: { $centerSphere: [[14.5141, 35.8992], 15 / 6378.137] },
+    })
+    assert.equal(res.body.results.length, 1)
+})
+
+test("Discovery nearby coordinates reject malformed, oversized or ambiguous requests", () => {
+    const badQueries = [
+        { latitude: "35.9" },
+        { longitude: "14.5" },
+        { latitude: "91", longitude: "14.5" },
+        { latitude: "35.9", longitude: "181" },
+        { latitude: "NaN", longitude: "14.5" },
+        { latitude: "35.9", longitude: "14.5", radiusKm: "51" },
+        { radiusKm: "5" },
+        { latitude: "35.9", longitude: "14.5", city: "Valletta" },
+        { latitude: ["35.9", "36.0"], longitude: "14.5" },
+    ]
+    for (const query of badQueries) {
+        assert.throws(() => parseDiscoverySearchQuery(query))
+    }
+    assert.deepEqual(parseDiscoverySearchQuery({ latitude: "0", longitude: "0" }).nearby, {
+        latitude: 0, longitude: 0, radiusKm: 20,
+    })
 })
 
 test("Discovery detail resolves only the canonical country and slug pair", async () => {
