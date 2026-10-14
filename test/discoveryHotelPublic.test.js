@@ -9,11 +9,13 @@ const [
   { default: Business },
   { default: ServicePoint },
   { default: Reservation },
+  { default: Plan },
   { getDiscoveryHotelRooms, getDiscoveryHotelAvailability },
 ] = await Promise.all([
   import("../src/models/Business.js"),
   import("../src/models/ServicePoint.js"),
   import("../src/models/Reservation.js"),
+  import("../src/models/Plan.js"),
   import("../src/controllers/discoveryHotelController.js"),
 ]);
 
@@ -130,6 +132,12 @@ test("Discovery availability rejects invalid dates without querying reservations
 
 test("Discovery availability uses canonical quote and excludes booked, oversized and unpriced rooms", async (t) => {
   mockBusiness(t, [business("hotel-mt")]);
+  // The canonical pricing calculator reads the applicable commission plan.
+  // Stub only the external plan lookup, not the pricing calculation itself.
+  t.mock.method(Plan, "findOne", (filter) => {
+    assert.equal(filter.slug, "basic");
+    return query({ slug: "basic", commissionPercentage: 3 });
+  });
   t.mock.method(ServicePoint, "find", (filter) => {
     assert.equal(filter.businessId, "hotel-mt");
     return query([
