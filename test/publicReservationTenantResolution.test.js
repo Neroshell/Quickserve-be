@@ -74,6 +74,7 @@ function business({
     countryCode,
     slug,
     status: "active",
+    onboardingCompleted: true,
     name: `${businessId} name`,
     displayName: businessId,
     businessType,
@@ -307,6 +308,8 @@ test("same-slug restaurant creation persists inside the selected country tenant"
       point.businessId === filter.businessId &&
       (!filter.servicePointId || point.servicePointId === filter.servicePointId)));
   });
+  t.mock.method(Business, "findOneAndUpdate", (filter) =>
+    queryFor(businesses.find((candidate) => matches(candidate, filter)) || null));
   t.mock.method(ServicePoint, "findOneAndUpdate", (filter) => {
     lockScopes.push(filter.businessId);
     return queryFor(points.find((point) =>
@@ -405,6 +408,8 @@ test("same-slug hotel creation locks and persists the room inside the selected c
       room.servicePointId === filter.servicePointId) || null);
   });
   t.mock.method(Reservation, "findOne", () => queryFor(null));
+  t.mock.method(Business, "findOneAndUpdate", (filter) =>
+    queryFor(businesses.find((candidate) => matches(candidate, filter)) || null));
   t.mock.method(Plan, "findOne", () => queryFor(null));
   t.mock.method(Reservation.prototype, "save", async function () {
     saved.push({

@@ -20,6 +20,7 @@ import {
     buildPropertyProfileResponse,
     serializePropertyPhoto,
 } from "../services/propertyProfileService.js"
+import { evaluateDiscoveryPublicationEligibility } from "../services/discoveryPublicationService.js"
 import { resolveCountryMetadata } from "../utils/countryHelper.js"
 import { normalizeInternationalPhoneNumber } from "../utils/phoneNumber.js"
 import { PlacesServiceError, resolveGooglePlace, searchGooglePlaces } from "../services/googlePlacesService.js"
@@ -32,6 +33,7 @@ import {
 const PROPERTY_PROFILE_SELECT = [
     "businessId",
     "businessType",
+    "status",
     "modules",
     "displayName",
     "address",
@@ -565,6 +567,50 @@ export async function updatePropertyProfileSection(req, res) {
         }
         console.error("[property-profile:update]", error)
         return res.status(500).json({ message: "Unable to save Property Profile" })
+    }
+}
+
+export async function updateDiscoveryPublication(req, res) {
+    try {
+        const businessId = req.session?.user?.businessId
+        if (!businessId) return res.status(401).json({ message: "Unauthorized" })
+        if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+            return res.status(400).json({ message: "Publication data is required" })
+        }
+        if (typeof req.body.discoveryPublished !== "boolean") {
+            return res.status(400).json({ message: "discoveryPublished must be true or false" })
+        }
+
+        const business = await Business.findOne({ businessId }).select(PROPERTY_PROFILE_SELECT)
+        const domainError = resolveProfileShell(business)
+        if (domainError) return res.status(domainError.status).json({ message: domainError.message })
+
+        const requestedPublication = req.body.discoveryPublished
+        if (requestedPublication) {
+            const eligibility = evaluateDiscoveryPublicationEligibility(business)
+            if (!eligibility.eligible) {
+                return res.status(422).json({
+                    message: "Complete the Discovery publication requirements before publishing.",
+                    discoveryPublication: buildPropertyProfileResponse(business).discoveryPublication,
+                })
+            }
+        }
+
+        const currentPublication = business.propertyProfile.discoveryPublished === true
+        if (currentPublication !== requestedPublication) {
+            business.propertyProfile.discoveryPublished = requestedPublication
+            business.propertyProfile.publishedAt = requestedPublication ? new Date() : null
+            business.markModified?.("propertyProfile")
+            await business.save()
+        }
+
+        return res.json(buildPropertyProfileResponse(business))
+    } catch (error) {
+        if (error?.name === "ValidationError") {
+            return res.status(400).json({ message: error.message })
+        }
+        console.error("[property-profile:discovery-publication]", error)
+        return res.status(500).json({ message: "Unable to update Discovery publication" })
     }
 }
 

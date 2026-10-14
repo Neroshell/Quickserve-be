@@ -1,10 +1,10 @@
 import express from "express"
 import { getSettings, updateSettings, updateOwnerBusinessModules, updateOperatingHours, updateOrderingPreferences, updatePaymentPreferences, updateTablePreferences, getCategories, addCategory, removeCategory, addHotelRoomType, updateHotelRoomType, removeHotelRoomType, getHotelRoomTypeSupplyTemplate, updateHotelRoomTypeSupplyTemplate } from "../controllers/businessController.js"
 
-import { requireManagementArea, requirePermission, requirePermissionForAuthenticatedManager } from "../middleware/authMiddleware.js"
+import { requireAuth, requireManagementArea, requirePermission, requirePermissionForAuthenticatedManager } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import { MANAGEMENT_ACCESS_AREAS } from "../constants/managementAccess.js"
-import { getPropertyProfile, getPropertyProfileAddressSuggestions, updatePropertyProfileSection } from "../controllers/propertyProfileController.js"
+import { getPropertyProfile, getPropertyProfileAddressSuggestions, updateDiscoveryPublication, updatePropertyProfileSection } from "../controllers/propertyProfileController.js"
 import { createAddressSearchLimiter } from "../middleware/addressSearchRateLimit.js"
 
 const router = express.Router()
@@ -77,6 +77,9 @@ router.patch("/settings/modules", requireBusinessIdentityOwner, updateOwnerBusin
 // keep Room Types and physical Service Points outside this resource.
 router.get("/property-profile", requireBusinessIdentityOwner, getPropertyProfile)
 router.get("/property-profile/address-suggestions", requireBusinessIdentityOwner, propertyProfileAddressSearchLimiter, getPropertyProfileAddressSuggestions)
+// Discovery publication changes are session-verified as well as constrained to
+// the existing owner/co-owner business-settings surface.
+router.patch("/property-profile/discovery-publication", requireAuth, requireBusinessIdentityOwner, updateDiscoveryPublication)
 router.patch("/property-profile/:section", requireBusinessIdentityOwner, updatePropertyProfileSection)
 
 /**

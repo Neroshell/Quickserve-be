@@ -53,6 +53,7 @@ import {
   getHotelRoomPricingPreview,
 } from "../services/hotelReservationAvailabilityService.js";
 
+import { assertReservationEligibility } from "../services/reservationEligibilityService.js";
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 const ARCHIVABLE_RESERVATION_STATUSES = new Set([
   "cancelled",
@@ -1184,6 +1185,49 @@ export async function deleteReservation(req, res) {
  * Fetch ServicePoints available for a stay based on check-in and check-out dates.
  * The legacy URL is retained for compatibility.
  */
+export function toPublicHotelAvailabilityPricingSummary(pricingSummary) {
+  if (!pricingSummary || typeof pricingSummary !== "object") return null;
+
+  return {
+    nights: pricingSummary.nights,
+    subtotal: pricingSummary.subtotal,
+    taxAmount: pricingSummary.taxAmount,
+    taxAmountCents: pricingSummary.taxAmountCents,
+    taxRate: pricingSummary.taxRate,
+    customerPlatformFeeAmount: pricingSummary.customerPlatformFeeAmount,
+    customerPlatformFeeCents: pricingSummary.customerPlatformFeeCents,
+    total: pricingSummary.total,
+    totalCents: pricingSummary.totalCents,
+    hasAdditionalCharges: pricingSummary.hasAdditionalCharges,
+  };
+}
+
+/**
+ * Public room projection for guest availability. `servicePointId` is the
+ * minimum stable identifier required for the guest to request a canonical
+ * room selection; reservation creation still resolves it tenant-scoped and
+ * revalidates availability and pricing on the server.
+ */
+export function toPublicHotelAvailabilityRoomDto(room) {
+  return {
+    servicePointId: room.servicePointId,
+    label: room.label,
+    servicePointType: "room",
+    roomType: room.roomType || null,
+    description: room.fullDescription || room.description || null,
+    capacity: room.capacity ?? null,
+    pricePerNight: room.pricePerNight ?? null,
+    amenities: Array.isArray(room.amenities)
+      ? room.amenities.filter((amenity) => typeof amenity === "string")
+      : [],
+    images: Array.isArray(room.images)
+      ? room.images.filter((image) => typeof image === "string")
+      : [],
+    beds: room.beds ?? null,
+    pricingSummary: toPublicHotelAvailabilityPricingSummary(room.pricingSummary),
+  };
+}
+
 export async function getAvailableStayServicePoints(req, res) {
   try {
     const {
@@ -1206,6 +1250,7 @@ export async function getAvailableStayServicePoints(req, res) {
     if (!business || !resolveBusinessCapabilities(business).reservations.modes.includes("stay")) {
       return res.status(404).json({ error: "Hotel not found" });
     }
+    assertReservationEligibility(business);
 
     if (business.settings?.reservationsEnabled === false) {
       return res.status(403).json({ error: "Reservations are disabled." });
@@ -1220,7 +1265,7 @@ export async function getAvailableStayServicePoints(req, res) {
 
     const availableRooms = rooms
       .filter((room) => room.available && !room.capacityExceeded)
-      .map(({ available: _available, capacityExceeded: _capacityExceeded, ...room }) => room);
+      .map(toPublicHotelAvailabilityRoomDto);
 
     res.json(availableRooms);
   } catch (error) {
@@ -1432,6 +1477,7 @@ export async function createStaffReservation(req, res) {
     if (!business) {
       return res.status(404).json({ error: "Business not found" });
     }
+    assertReservationEligibility(business);
 
     const capabilities = resolveBusinessCapabilities(business);
     const reservationMode = capabilities?.reservations?.primaryMode;

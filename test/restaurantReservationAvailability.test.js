@@ -48,6 +48,12 @@ function mockQuery(value) {
     lean: async () => value,
   };
 }
+function mockReservationEligibilityFence(t, business) {
+  t.mock.method(Business, "findOneAndUpdate", (filter) => {
+    assert.equal(filter.businessId, business.businessId);
+    return mockQuery(business);
+  });
+}
 
 function createBusiness(overrides = {}) {
   const operatingHours = Object.fromEntries([
@@ -57,6 +63,7 @@ function createBusiness(overrides = {}) {
     businessId: "business-a",
     slug: "test-bistro",
     status: "active",
+    onboardingCompleted: true,
     businessType: "restaurant",
     modules: ["foodService"],
     timezone: "UTC",
@@ -483,6 +490,7 @@ test("new restaurant reservation without a requested table gets a canonical assi
       Tuesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
     },
   });
+  mockReservationEligibilityFence(t, business);
   const large = createPoint({ servicePointId: "table-large", capacity: 6 });
   const smallest = createPoint({ servicePointId: "table-small", capacity: 2 });
   let savedReservation = null;
@@ -532,6 +540,7 @@ test("public creation validates and reserves the exact requested ServicePoint", 
       Tuesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
     },
   });
+  mockReservationEligibilityFence(t, business);
   const requested = createPoint({
     servicePointId: "table-requested",
     label: "Terrace 4",
@@ -593,6 +602,7 @@ test("an unavailable explicit selection is rejected rather than silently substit
       Tuesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
     },
   });
+  mockReservationEligibilityFence(t, business);
   let saveCalls = 0;
   t.mock.method(ServicePoint, "find", (query) => {
     assert.equal(query.businessId, business.businessId);
@@ -632,6 +642,7 @@ test("no eligible table rejects creation and never persists an unassigned reserv
       Tuesday: { enabled: true, openTime: "09:00", closeTime: "22:00" },
     },
   });
+  mockReservationEligibilityFence(t, business);
   let saveCalls = 0;
   t.mock.method(ServicePoint, "find", () => mockQuery([]));
   t.mock.method(Reservation.prototype, "save", async () => { saveCalls += 1; });
@@ -709,6 +720,7 @@ test("final owner creation loses a stale-availability race with 409 and no doubl
     },
   });
   const point = createPoint();
+  mockReservationEligibilityFence(t, business);
   let reservationFindCalls = 0;
   let saveCalls = 0;
   let lockCalls = 0;

@@ -102,6 +102,8 @@ async function createOrLoadActiveAttempt({
     currency,
     stripeSessionConfigFactory,
     PendingCheckoutModel,
+    beforeNewAttempt = null,
+    session = null,
 }) {
     const reservationId = reservation._id
     const businessId = reservation.businessId
@@ -114,10 +116,13 @@ async function createOrLoadActiveAttempt({
         pricingSnapshotVersion: reservation.pricingSnapshotVersion,
     })
     const expected = { reservationId, businessId, requestFingerprint }
-    const existing = await PendingCheckoutModel.findOne({
+    const existingQuery = PendingCheckoutModel.findOne({
         ...ACTIVE_RESERVATION_ATTEMPT_FILTER,
         reservationId,
     })
+    const existing = session && typeof existingQuery?.session === "function"
+        ? await existingQuery.session(session)
+        : await existingQuery
     if (existing) {
         assertReusableAttempt(existing, expected)
         return { attempt: existing, replayed: true }
@@ -130,8 +135,11 @@ async function createOrLoadActiveAttempt({
     )
     const stripeRequestSnapshot = stripeSessionConfigFactory(String(attemptId))
     const legacyStripeSessionId = reservation.stripeSessionId || null
+    if (!legacyStripeSessionId && typeof beforeNewAttempt === "function") {
+        await beforeNewAttempt({ session })
+    }
     try {
-        const attempt = await PendingCheckoutModel.create({
+        const attemptPayload = {
             _id: attemptId,
             checkoutType: "reservation",
             businessId,
@@ -149,17 +157,71 @@ async function createOrLoadActiveAttempt({
             stripeRequestIdempotencyKey,
             stripeRequestSnapshot,
             expiresAt: null,
-        })
+        }
+        const createdAttempt = session
+            ? await PendingCheckoutModel.create([attemptPayload], { session })
+            : await PendingCheckoutModel.create(attemptPayload)
+        const attempt = Array.isArray(createdAttempt) ? createdAttempt[0] : createdAttempt
         return { attempt, replayed: false }
     } catch (error) {
         if (error?.code !== 11000) throw error
-        const winner = await PendingCheckoutModel.findOne({
+        const winnerQuery = PendingCheckoutModel.findOne({
             ...ACTIVE_RESERVATION_ATTEMPT_FILTER,
             reservationId,
         })
+        const winner = session && typeof winnerQuery?.session === "function"
+            ? await winnerQuery.session(session)
+            : await winnerQuery
         if (!winner) throw error
         assertReusableAttempt(winner, expected)
         return { attempt: winner, replayed: true }
+    }
+}
+
+/**
+ * Persist the durable attempt in the same MongoDB transaction as the business
+ * eligibility fence. Stripe runs only after that transaction commits, so a
+ * status/onboarding transition cannot commit before a newly admitted attempt.
+ */
+async function prepareReservationCheckoutAttempt({
+    reservation,
+    business,
+    amountCents,
+    currency,
+    stripeSessionConfigFactory,
+    PendingCheckoutModel,
+    beforeNewAttempt,
+    startSession = () => mongoose.startSession(),
+}) {
+    if (typeof beforeNewAttempt !== "function") {
+        return createOrLoadActiveAttempt({
+            reservation,
+            business,
+            amountCents,
+            currency,
+            stripeSessionConfigFactory,
+            PendingCheckoutModel,
+        })
+    }
+
+    const session = await startSession()
+    try {
+        let resolved
+        await session.withTransaction(async () => {
+            resolved = await createOrLoadActiveAttempt({
+                reservation,
+                business,
+                amountCents,
+                currency,
+                stripeSessionConfigFactory,
+                PendingCheckoutModel,
+                beforeNewAttempt,
+                session,
+            })
+        })
+        return resolved
+    } finally {
+        await session.endSession()
     }
 }
 
@@ -379,7 +441,9 @@ export async function createOrReuseReservationCheckout({
     stripeClient,
     now = new Date(),
     PendingCheckoutModel = PendingCheckout,
+    beforeNewAttempt = null,
     ReservationModel = Reservation,
+    startSession,
 }) {
     if (!stripeClient?.checkout?.sessions?.create) {
         throw new ReservationPaymentAttemptError(
@@ -389,13 +453,15 @@ export async function createOrReuseReservationCheckout({
     }
 
     for (let cycle = 0; cycle < 2; cycle += 1) {
-        const { attempt, replayed } = await createOrLoadActiveAttempt({
+        const { attempt, replayed } = await prepareReservationCheckoutAttempt({
             reservation,
             business,
             amountCents,
             currency,
             stripeSessionConfigFactory,
+            beforeNewAttempt,
             PendingCheckoutModel,
+            ...(startSession ? { startSession } : {}),
         })
 
         let stripeSession = null

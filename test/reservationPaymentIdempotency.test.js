@@ -62,29 +62,30 @@ function createPendingCheckoutModel() {
             return records.find((record) => matches(record, query)) || null
         },
         async create(payload) {
+            const document = Array.isArray(payload) ? payload[0] : payload
             if (
-                payload.checkoutType === "reservation" &&
+                document.checkoutType === "reservation" &&
                 payload.activeReservationAttempt === true &&
                 records.some((record) =>
                     record.checkoutType === "reservation" &&
                     record.activeReservationAttempt === true &&
-                    same(record.reservationId, payload.reservationId)
+                    same(record.reservationId, document.reservationId)
                 )
             ) throw duplicateKeyError()
             if (
-                payload.stripeSessionId &&
-                records.some((record) => record.stripeSessionId === payload.stripeSessionId)
+                document.stripeSessionId &&
+                records.some((record) => record.stripeSessionId === document.stripeSessionId)
             ) throw duplicateKeyError()
             if (
-                payload.idempotencyKey &&
+                document.idempotencyKey &&
                 records.some((record) =>
-                    record.businessId === payload.businessId &&
-                    record.idempotencyKey === payload.idempotencyKey
+                    record.businessId === document.businessId &&
+                    record.idempotencyKey === document.idempotencyKey
                 )
             ) throw duplicateKeyError()
-            const record = { ...payload }
+            const record = { ...document }
             records.push(record)
-            return record
+            return Array.isArray(payload) ? [record] : record
         },
         async findOneAndUpdate(query, update) {
             const record = records.find((entry) => matches(entry, query))
@@ -234,7 +235,7 @@ function createFixture(options = {}) {
         success_url: `https://app.test/reservation/confirmation/${reservation._id}`,
         cancel_url: "https://app.test/reservation/pay/token",
     })
-    const start = () => createOrReuseReservationCheckout({
+    const start = (overrides = {}) => createOrReuseReservationCheckout({
         reservation,
         business,
         amountCents: reservation.grossAmount,
@@ -243,6 +244,7 @@ function createFixture(options = {}) {
         stripeClient,
         PendingCheckoutModel,
         ReservationModel,
+        ...overrides,
     })
     return {
         reservation,
@@ -292,6 +294,37 @@ test("2. first request creates one Stripe Session identity", async () => {
     assert.equal(fixture.stripeClient.byKey.size, 1)
 })
 
+test("new checkout admission commits the eligibility fence and durable attempt before Stripe", async () => {
+    const fixture = createFixture()
+    const events = []
+    const transactionSession = {
+        async withTransaction(work) {
+            events.push("transaction-started")
+            await work()
+            events.push("transaction-committed")
+        },
+        async endSession() {
+            events.push("session-ended")
+        },
+    }
+    const originalCreate = fixture.stripeClient.checkout.sessions.create
+    fixture.stripeClient.checkout.sessions.create = async (...args) => {
+        assert.deepEqual(events, ["transaction-started", "fence", "transaction-committed", "session-ended"])
+        assert.equal(fixture.PendingCheckoutModel.records.length, 1)
+        return originalCreate(...args)
+    }
+
+    await fixture.start({
+        startSession: async () => transactionSession,
+        beforeNewAttempt: async ({ session }) => {
+            assert.equal(session, transactionSession)
+            events.push("fence")
+        },
+    })
+
+    assert.equal(fixture.PendingCheckoutModel.records.length, 1)
+    assert.equal(fixture.stripeClient.calls.length, 1)
+})
 test("3. sequential retry returns the same attempt", async () => {
     const fixture = createFixture()
     const first = await fixture.start()

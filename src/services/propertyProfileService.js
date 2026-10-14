@@ -1,5 +1,6 @@
 import { PROPERTY_PROFILE_CATALOG } from "../constants/propertyProfileCatalog.js"
 import { BUSINESS_PROFILE_CATALOG } from "../constants/businessProfileCatalog.js"
+import { getDiscoveryPublicationState } from "./discoveryPublicationService.js"
 
 function hasText(value) {
     return typeof value === "string" && value.trim().length > 0
@@ -236,6 +237,7 @@ export function buildPropertyProfileResponse(business) {
                 facebook: profile.socialLinks?.facebook || "",
             },
         },
+        discoveryPublication: getDiscoveryPublicationState(business),
         completeness: calculatePropertyProfileCompleteness(business),
         updatedAt: business.updatedAt || null,
     }

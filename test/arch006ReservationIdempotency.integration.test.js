@@ -24,6 +24,7 @@ import test from "node:test";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
 
+import Business from "../src/models/Business.js";
 import Reservation from "../src/models/Reservation.js";
 import ServicePoint from "../src/models/ServicePoint.js";
 import {
@@ -81,22 +82,28 @@ function futureDate(offsetDays) {
 function hotelBusiness(businessId = BIZ_HOTEL) {
   return {
     businessId,
-    slug: businessId,
+    slug: businessId.replaceAll("_", "-"),
     name: "Arch006 Hotel",
+    displayName: "Arch006 Hotel",
+    status: "active",
+    onboardingCompleted: true,
     currency: "eur",
     timezone: "Europe/Paris",
     businessType: "hotel",
-    hotelSettings: { onlineBookingConfirmationMode: "manual" }, // avoids enqueue side-effects
+    hotelSettings: { onlineBookingConfirmationMode: "confirmation_required" },
   };
 }
 
 function restaurantBusiness(businessId = BIZ_RESTAURANT) {
   return {
     businessId,
-    slug: businessId,
+    slug: businessId.replaceAll("_", "-"),
     countryCode: "fr",
     name: "Arch006 Restaurant",
     currency: "eur",
+    displayName: "Arch006 Restaurant",
+    status: "active",
+    onboardingCompleted: true,
     timezone: "Europe/Paris",
     businessType: "restaurant",
     operatingHours: {
@@ -171,15 +178,21 @@ test.before(async () => {
   await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 20000 });
   // Ensure indexes are synced
   await Reservation.syncIndexes();
+  await Business.syncIndexes();
   await ServicePoint.syncIndexes();
   // Clean previous test data
   await Reservation.deleteMany({ businessId: { $in: [BIZ_HOTEL, BIZ_HOTEL_2, BIZ_RESTAURANT] } });
   await ServicePoint.deleteMany({ businessId: { $in: [BIZ_HOTEL, BIZ_HOTEL_2, BIZ_RESTAURANT] } });
+  await Business.deleteMany({ businessId: { $in: [BIZ_HOTEL, BIZ_HOTEL_2, BIZ_RESTAURANT] } });
+  await Business.create([
+    hotelBusiness(BIZ_HOTEL), hotelBusiness(BIZ_HOTEL_2), restaurantBusiness(BIZ_RESTAURANT),
+  ]);
 });
 
 test.after(async () => {
   await Reservation.deleteMany({ businessId: { $in: [BIZ_HOTEL, BIZ_HOTEL_2, BIZ_RESTAURANT] } });
   await ServicePoint.deleteMany({ businessId: { $in: [BIZ_HOTEL, BIZ_HOTEL_2, BIZ_RESTAURANT] } });
+  await Business.deleteMany({ businessId: { $in: [BIZ_HOTEL, BIZ_HOTEL_2, BIZ_RESTAURANT] } });
   await mongoose.disconnect();
 });
 

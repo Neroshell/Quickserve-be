@@ -12,6 +12,7 @@ import {
 } from "../services/responseCacheService.js"
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 
+import { withReservationEligibilityFence } from "../services/reservationEligibilityService.js"
 const BUSINESS_SELECT = [
     "businessId",
     "businessType",
@@ -259,16 +260,21 @@ export async function dismissSetupGuide(req, res) {
             });
         }
 
+        const completedAt = new Date()
         await Business.updateOne(
             { businessId },
-            {
+            withReservationEligibilityFence({
                 $set: {
                     "setupProgress.setupGuideDismissed": true,
-                    "setupProgress.setupGuideDismissedAt": new Date(),
+                    "setupProgress.setupGuideDismissedAt": completedAt,
                     onboardingCompleted: true,
-                    onboardingCompletedAt: new Date()
-                }
-            }
+                    onboardingCompletedAt: completedAt,
+                    onboardingCompletionAudit: {
+                        source: "self_service_setup",
+                        completedAt,
+                    },
+                },
+            }, completedAt),
         );
 
         await invalidateSetupProgress(businessId)

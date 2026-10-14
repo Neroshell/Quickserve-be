@@ -516,6 +516,22 @@ const BusinessSchema = new mongoose.Schema({
     onboardingStartedAt: { type: Date, default: null },
     onboardingCompletedAt: { type: Date, default: null },
    
+    onboardingCompletionAudit: {
+        source: {
+            type: String,
+            enum: ["self_service_setup", "platform_admin"],
+            default: null,
+        },
+        completedAt: { type: Date, default: null },
+        completedByPlatformAdminEmail: { type: String, default: null },
+        reason: { type: String, default: null },
+    },
+    // Incremented by every reservation-eligibility transition and by the
+    // in-transaction reservation fence. This is intentionally separate from
+    // general document timestamps so the concurrency boundary is explicit.
+    reservationEligibilityVersion: { type: Number, default: 0, min: 0 },
+    reservationEligibilityChangedAt: { type: Date, default: null },
+    reservationEligibilityCheckedAt: { type: Date, default: null },
     // @deprecated - Phase 1 roadmap: setupChecklist is dead. 
     // Data is preserved for backward compatibility but no longer updated.
     setupChecklist: {

@@ -11,8 +11,17 @@ import {
   cancelReservationNotComing,
   validateReservationNotComing,
 } from "../controllers/reservationNotComingController.js";
+import { getDiscoveryPlace, searchDiscoveryPlaces } from "../controllers/discoveryController.js";
 
 const router = express.Router();
+
+const discoveryLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 180,
+  message: { error: "Too many Discovery requests from this IP, please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // Anti-spam rate limiter for reservations
 const reservationLimiter = rateLimit({
@@ -67,6 +76,12 @@ const arrivalLimiter = rateLimit({
  *         description: Business not found
  */
 router.get("/business/:countryCode/:slug", getBusinessBySlug);
+
+// Discovery is intentionally separate from the older storefront DTO. It has a
+// narrower public projection and evaluates effective publication visibility on
+// every request rather than relying on a response-cache TTL for revocation.
+router.get("/discovery/search", discoveryLimiter, searchDiscoveryPlaces);
+router.get("/discovery/places/:countryCode/:slug", discoveryLimiter, getDiscoveryPlace);
 
 /**
  * @openapi

@@ -20,6 +20,7 @@ import {
     createOrReuseReservationCheckout,
     ReservationPaymentAttemptError,
 } from "../services/reservationPaymentAttemptService.js";
+import { acquireReservationEligibilityFence } from "../services/reservationEligibilityService.js";
 import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
 import { buildCanonicalOrderDraft } from "../services/orderConstructionService.js";
 import { normalizeTip } from "../utils/tips.js";
@@ -723,6 +724,10 @@ export async function createReservationCheckoutSession(req, res) {
             currency,
             stripeSessionConfigFactory,
             stripeClient,
+            beforeNewAttempt: ({ session } = {}) => acquireReservationEligibilityFence({
+                businessId: reservation.businessId,
+                session,
+            }),
         });
 
         console.log("[reservationCheckout] Stripe Checkout resolved", {

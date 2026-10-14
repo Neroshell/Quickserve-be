@@ -43,6 +43,7 @@ async function createBusiness() {
     slug: "allocation-test",
     timezone: "UTC",
     status: "active",
+    onboardingCompleted: true,
     businessType: "restaurant",
   });
   return business.toObject();

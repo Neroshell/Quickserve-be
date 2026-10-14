@@ -15,16 +15,7 @@ export class PublicBusinessResolutionError extends Error {
   }
 }
 
-export function normalizePublicBusinessLocator({ businessSlug, countryCode }) {
-  const normalizedSlug = typeof businessSlug === "string"
-    ? businessSlug.trim().toLowerCase()
-    : "";
-  if (!normalizedSlug) {
-    throw new PublicBusinessResolutionError("businessSlug is required", {
-      code: "PUBLIC_BUSINESS_SLUG_REQUIRED",
-    });
-  }
-
+export function normalizePublicCountryCode(countryCode) {
   const normalizedCountryCode = typeof countryCode === "string"
     ? countryCode.trim().toLowerCase()
     : "";
@@ -39,6 +30,20 @@ export function normalizePublicBusinessLocator({ businessSlug, countryCode }) {
       { code: "PUBLIC_BUSINESS_COUNTRY_INVALID" },
     );
   }
+  return normalizedCountryCode;
+}
+
+export function normalizePublicBusinessLocator({ businessSlug, countryCode }) {
+  const normalizedSlug = typeof businessSlug === "string"
+    ? businessSlug.trim().toLowerCase()
+    : "";
+  if (!normalizedSlug) {
+    throw new PublicBusinessResolutionError("businessSlug is required", {
+      code: "PUBLIC_BUSINESS_SLUG_REQUIRED",
+    });
+  }
+
+  const normalizedCountryCode = normalizePublicCountryCode(countryCode);
 
   return {
     businessSlug: normalizedSlug,
@@ -58,6 +63,7 @@ export async function resolvePublicBusiness({
   businessSlug,
   countryCode,
   statuses = null,
+  select = null,
   businessModel = Business,
 } = {}) {
   const locator = normalizePublicBusinessLocator({ businessSlug, countryCode });
@@ -68,9 +74,11 @@ export async function resolvePublicBusiness({
       : {}),
   };
 
-  const business = await lean(businessModel.findOne({
+  let query = businessModel.findOne({
     ...baseQuery,
     countryCode: locator.countryCode,
-  }));
+  });
+  if (select && typeof query?.select === "function") query = query.select(select);
+  const business = await lean(query);
   return { business: business || null, locator };
 }

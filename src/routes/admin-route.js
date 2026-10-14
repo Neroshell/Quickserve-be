@@ -1,6 +1,7 @@
 import express from "express"
 import { createBusiness, getAdminBusinesses, getAdminOwners, createAdminOwner, getAdminBusinessById, updateAdminBusiness, getAdminDashboardStats, deleteAdminBusiness, getAdminBusinessModuleCatalog } from "../controllers/businessController.js"
 import { getPlans, updatePlan } from "../controllers/planController.js"
+import { completeAdminBusinessOnboarding } from "../controllers/adminOnboardingController.js"
 
 import { requirePlatformAdmin } from "../middleware/platformAdminAuth.js"
 
@@ -160,6 +161,7 @@ router.get("/dashboard-stats", getAdminDashboardStats)
  *         description: Business not found
  */
 router.get("/businesses/:businessId", getAdminBusinessById)
+router.post("/businesses/:businessId/onboarding-completion", completeAdminBusinessOnboarding)
 
 /**
  * @openapi

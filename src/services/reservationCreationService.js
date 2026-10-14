@@ -31,6 +31,10 @@ import {
   validateHotelStayWindow,
 } from "./hotelReservationAvailabilityService.js";
 
+import {
+  acquireReservationEligibilityFence,
+  assertReservationEligibility,
+} from "./reservationEligibilityService.js";
 export {
   BLOCKING_STAY_STATUSES,
   assertNoRoomConflict,
@@ -498,6 +502,7 @@ export async function createHotelReservation({
   idempotencyKey: rawIdempotencyKey = null,
   sideEffects = {},
 }) {
+  assertReservationEligibility(business);
   // Phase I: Validation
   if (!customerName || !phone || !email || !checkInDate || !checkOutDate || !guestCount || !servicePointId) {
     const err = new Error('Missing required fields.');
@@ -564,6 +569,10 @@ export async function createHotelReservation({
           replayed = true;
           return;
         }
+        await acquireReservationEligibilityFence({
+          businessId: business.businessId,
+          session,
+        });
 
         // Phase I rules 4-8: lock room, capacity, conflict
         const sp = await lockHotelRoomForReservation({ servicePointId, businessId: business.businessId, session });
@@ -799,6 +808,7 @@ export async function createRestaurantReservation({
     err.statusCode = 404;
     throw err;
   }
+  assertReservationEligibility(business);
 
   assertRestaurantAvailabilityPolicy(business, availabilityPolicy);
   const { durationMinutes: duration } = validateRestaurantReservationWindow({
@@ -859,6 +869,10 @@ export async function createRestaurantReservation({
           replayed = true;
           return;
         }
+        await acquireReservationEligibilityFence({
+          businessId: business.businessId,
+          session,
+        });
 
         const allocatedServicePoint = await allocateRestaurantServicePoint({
           businessId: business.businessId,

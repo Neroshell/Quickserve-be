@@ -30,6 +30,7 @@ import {
   resolvePublicBusiness,
 } from "../services/publicBusinessResolverService.js";
 
+import { assertReservationEligibility } from "../services/reservationEligibilityService.js";
 const RESERVATION_CONFIRMATION_SESSION_HEADER =
   "x-reservation-confirmation-session";
 const PUBLIC_BUSINESS_FIELDS = new Set([
@@ -332,6 +333,7 @@ export async function createReservation(req, res, {
     if (!business) {
       return res.status(404).json({ error: "Business not found or inactive" });
     }
+    assertReservationEligibility(business);
     const result = await createReservationRequest({
       isHotelBooking,
       businessSlug: business.slug,
@@ -414,6 +416,7 @@ export async function getPublicRestaurantAvailability(req, res) {
     ) {
       return res.status(404).json({ error: "Restaurant not found" });
     }
+    assertReservationEligibility(business);
 
     const availability = await getRestaurantAvailability({
       businessId: business.businessId,

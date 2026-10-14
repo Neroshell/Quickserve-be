@@ -32,6 +32,7 @@ import {
     updateRoomTypeSupplyTemplate,
 } from "../services/hotelRoomSupplyTemplateService.js"
 
+import { hasReservationEligibilityMutation, withReservationEligibilityFence } from "../services/reservationEligibilityService.js"
 function generateBusinessId() {
     return `biz_${crypto.randomBytes(7).toString("hex")}`
 }
@@ -45,6 +46,20 @@ const SENSITIVE_BUSINESS_FIELDS = [
     "inviteToken",
     "inviteTokenExpires",
 ]
+const ADMIN_RESTRICTED_RESERVATION_ELIGIBILITY_FIELDS = new Set([
+    "onboardingCompleted",
+    "onboardingCompletedAt",
+    "onboardingCompletionAudit",
+    "reservationEligibilityVersion",
+    "reservationEligibilityChangedAt",
+    "reservationEligibilityCheckedAt",
+])
+
+function isRestrictedReservationEligibilityField(field) {
+    return [...ADMIN_RESTRICTED_RESERVATION_ELIGIBILITY_FIELDS].some((restricted) => (
+        field === restricted || field.startsWith(`${restricted}.`)
+    ))
+}
 
 const INTERNAL_PAYMENT_FIELDS = [
     "stripeAccountId",
@@ -1427,6 +1442,13 @@ export async function updateAdminBusiness(req, res) {
 
         // Never allow credential/secret fields to be set through the admin API.
         for (const field of SENSITIVE_BUSINESS_FIELDS) delete updateData[field]
+        const restrictedFields = Object.keys(updateData)
+            .filter(isRestrictedReservationEligibilityField)
+        if (restrictedFields.length > 0) {
+            return res.status(400).json({
+                message: "Onboarding completion is controlled by the dedicated platform-admin action.",
+            })
+        }
 
         const existingBusinessForUpdate = await Business.findOne({
             $or: [{ businessId: paramId }, { businessId: paramId }]
@@ -1501,9 +1523,12 @@ export async function updateAdminBusiness(req, res) {
             delete updateData.countryCode
         }
 
+        const businessUpdate = hasReservationEligibilityMutation(updateData)
+            ? withReservationEligibilityFence({ $set: updateData })
+            : { $set: updateData }
         const business = await Business.findOneAndUpdate(
             { $or: [{ businessId: paramId }, { businessId: paramId }] },
-            { $set: updateData },
+            businessUpdate,
             { new: true, runValidators: true }
         )
 
