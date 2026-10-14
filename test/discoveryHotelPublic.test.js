@@ -29,6 +29,7 @@ function business(id, countryCode = "mt", published = true) {
   return {
     businessId: id, slug: "same-hotel", countryCode, country: "Malta",
     name: "Hotel", displayName: "Hotel", businessType: "hotel",
+    addressPlaceId: "ChIJVerifiedHotelTest", latitude: 35.8992, longitude: 14.5141,
     status: "active", address: "1 Main Street", timezone: "UTC",
     currency: "EUR", modules: ["lodging"], settings: { reservationsEnabled: true },
     propertyProfile: {
