@@ -320,6 +320,11 @@ const BusinessSchema = new mongoose.Schema({
     addressPlaceId: { type: String, default: "" },
     latitude: { type: Number, min: -90, max: 90, default: null },
     longitude: { type: Number, min: -180, max: 180, default: null },
+    // Discovery geographic point, derived from canonical address coordinates.
+    discoveryGeoPoint: {
+        type: { type: String, enum: ["Point"] },
+        coordinates: { type: [Number] },
+    },
     phoneNumber: { type: String, default: "" },
     contactEmail: { type: String, default: "" },
     currency: { type: String, default: "EUR" },
@@ -551,6 +556,16 @@ const BusinessSchema = new mongoose.Schema({
     }
 }, { timestamps: true })
 
+BusinessSchema.pre("validate", function normalizeDiscoveryGeoPoint() {
+    const lat = this.latitude
+    const lng = this.longitude
+    if (Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+        this.discoveryGeoPoint = { type: "Point", coordinates: [lng, lat] }
+    } else {
+        this.discoveryGeoPoint = undefined
+    }
+})
+
 BusinessSchema.pre("validate", function normalizeModulesBeforeValidation() {
     this.modules = validateBusinessModulesForType(this.businessType, this.modules)
 })
@@ -590,6 +605,7 @@ BusinessSchema.pre("updateMany", incrementOwnerAuthVersionForSensitiveQueryUpdat
 
 // Compound index to ensure slug is unique per country
 BusinessSchema.index({ countryCode: 1, slug: 1 }, { unique: true })
+BusinessSchema.index({ discoveryGeoPoint: "2dsphere" })
 BusinessSchema.index({ billingStatus: 1, nextInvoiceDate: 1 })
 BusinessSchema.index({ billingStatus: 1, billingFailedAt: 1 })
 BusinessSchema.index({ billingStatus: 1, offlineServiceRestricted: 1 })
