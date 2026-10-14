@@ -26,6 +26,9 @@ function makeBusiness(overrides = {}) {
         country: "Malta",
         countryCode: "mt",
         address: "1 Marina Road",
+        addressPlaceId: "ChIJDiscoveryHarbourTest",
+        latitude: 35.9087,
+        longitude: 14.5021,
         phoneNumber: "+35620000000",
         contactEmail: "private@harbour.example",
         stripeAccountId: "acct_private",
@@ -100,6 +103,21 @@ test("Discovery eligibility is explicit and published records fail closed after 
     assert.equal(state.discoveryPublished, true)
     assert.equal(state.effectivePublic, false)
     assert.equal(state.eligibility.blockers[0].code, "business_not_active")
+})
+
+test("Discovery publication requires verified canonical address coordinates", () => {
+    const base = makeBusiness()
+    const cases = [
+        { addressPlaceId: "", expected: "verified_location_required" },
+        { latitude: null, expected: "verified_location_required" },
+        { longitude: 181, expected: "verified_location_required" },
+    ]
+    for (const { expected, ...override } of cases) {
+        const state = getDiscoveryPublicationState(makeBusiness(override))
+        assert.equal(state.effectivePublic, false)
+        assert.ok(state.eligibility.blockers.some(blocker => blocker.code === expected))
+    }
+    assert.equal(getDiscoveryPublicationState(base).effectivePublic, true)
 })
 
 test("publication action derives the tenant from session and is idempotent", async t => {
