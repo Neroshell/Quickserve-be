@@ -20,7 +20,7 @@ function sampleBusiness(coordinates) {
 test("Business derives a GeoJSON Point in longitude-latitude order", async () => {
   const business = sampleBusiness({ latitude: 35.8992, longitude: 14.5141 });
   await business.validate();
-  assert.deepEqual(business.discoveryGeoPoint.toObject(), {
+  assert.deepEqual(business.toObject().discoveryGeoPoint, {
     type: "Point",
     coordinates: [14.5141, 35.8992],
   });
