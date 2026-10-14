@@ -66,7 +66,9 @@ test("Discovery menu isolates country tenants and exposes only available safe it
       { _id: "mt-2", businessId: "cafe-mt", name: "Sold out", category: "Drinks", price: 5, isAvailable: false },
       { _id: "gb-1", businessId: "cafe-gb", name: "Tea", category: "Drinks", price: 4, isAvailable: true },
     ];
-    return query(items.filter((item) => item.businessId === filter.businessId));
+    const matchingItems = items.filter((item) => item.businessId === filter.businessId);
+    // MenuItem.find(...).sort(...) is awaited directly by the controller.
+    return { sort: async () => structuredClone(matchingItems) };
   });
   t.mock.method(MenuInventoryRecipe, "find", (filter) => {
     assert.ok(["cafe-mt", "cafe-gb"].includes(filter.businessId));
