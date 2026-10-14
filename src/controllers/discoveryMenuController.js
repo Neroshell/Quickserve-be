@@ -23,7 +23,7 @@ export async function getDiscoveryMenu(req, res) {
     });
     if (!business || !isDiscoveryBusinessVisible(business) ||
         !["restaurant", "bar_lounge"].includes(business.businessType) ||
-        !resolveBusinessCapabilities(business).hasFoodService) {
+        !resolveBusinessCapabilities(business).visibleModules.includes("foodService")) {
       return res.status(404).json({ error: "Menu not found" });
     }
 
