@@ -12,6 +12,7 @@ import {
   validateReservationNotComing,
 } from "../controllers/reservationNotComingController.js";
 import { getDiscoveryPlace, searchDiscoveryPlaces } from "../controllers/discoveryController.js";
+import { getDiscoveryDestinationSuggestions } from "../controllers/discoveryDestinationController.js";
 import { getDiscoveryMenu } from "../controllers/discoveryMenuController.js";
 import { getDiscoveryHotelRooms, getDiscoveryHotelAvailability } from "../controllers/discoveryHotelController.js";
 
@@ -83,6 +84,7 @@ router.get("/business/:countryCode/:slug", getBusinessBySlug);
 // narrower public projection and evaluates effective publication visibility on
 // every request rather than relying on a response-cache TTL for revocation.
 router.get("/discovery/search", discoveryLimiter, searchDiscoveryPlaces);
+router.get("/discovery/destinations", discoveryLimiter, getDiscoveryDestinationSuggestions);
 router.get("/discovery/places/:countryCode/:slug", discoveryLimiter, getDiscoveryPlace);
 router.get("/menu/:countryCode/:slug", discoveryLimiter, getDiscoveryMenu);
 router.get("/discovery/hotels/:countryCode/:slug/rooms", discoveryLimiter, getDiscoveryHotelRooms);
