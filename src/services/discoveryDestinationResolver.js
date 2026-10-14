@@ -11,7 +11,7 @@ export async function resolveDiscoveryDestination(placeId) {
       signal: controller.signal,
       headers: {
         "X-Goog-Api-Key": key,
-        "X-Goog-FieldMask": "id,types,addressComponents",
+        "X-Goog-FieldMask": "id,types,addressComponents,viewport",
       },
     });
     if (!response.ok) throw new Error("Place resolution failed");
@@ -21,13 +21,20 @@ export async function resolveDiscoveryDestination(placeId) {
     const part = (type) => parts.find((item) => item.types?.includes(type));
     const countryCode = part("country")?.shortText?.toLowerCase();
     if (!/^[a-z]{2}$/.test(countryCode || "")) throw new Error("Country missing");
-    if (types.includes("country")) return { countryCode, city: null };
+    if (types.includes("country")) return { countryCode, city: null, bounds: null };
     if (!types.includes("locality") && !types.includes("postal_town")) {
       throw new Error("Unsupported geographic scope");
     }
     const city = part("locality")?.longText || part("postal_town")?.longText;
     if (typeof city !== "string" || !city || city.length > 120) throw new Error("City missing");
-    return { countryCode, city };
+    const sw = place.viewport?.low;
+    const ne = place.viewport?.high;
+    const valid = (point) => Number.isFinite(point?.latitude) && Number.isFinite(point?.longitude)
+      && point.latitude >= -90 && point.latitude <= 90 && point.longitude >= -180 && point.longitude <= 180;
+    if (!valid(sw) || !valid(ne) || sw.latitude >= ne.latitude || sw.longitude >= ne.longitude) {
+      throw new Error("Destination bounds unavailable");
+    }
+    return { countryCode, city, bounds: [[sw.longitude, sw.latitude], [ne.longitude, ne.latitude]] };
   } finally {
     clearTimeout(timeout);
   }
