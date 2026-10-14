@@ -16,6 +16,9 @@ import {
 const MAX_PAGE_SIZE = 50
 const DEFAULT_PAGE_SIZE = 20
 const MAX_PAGE = 10_000
+const EARTH_RADIUS_KM = 6378.137
+const DEFAULT_NEARBY_RADIUS_KM = 20
+const MAX_NEARBY_RADIUS_KM = 50
 const CATEGORY_BUSINESS_TYPES = Object.freeze({
     eat: ["restaurant"],
     drink: ["bar_lounge"],
@@ -66,11 +69,24 @@ function positiveInteger(value, { name, defaultValue, maximum }) {
     return parsed
 }
 
+function optionalCoordinate(value, { name, min, max }) {
+    value = requireSingleQueryValue(value, name)
+    if (value === undefined) return null
+    if (typeof value !== "string" || !/^-?(?:\\d+)(?:\\.\\d+)?$/.test(value.trim())) {
+        throw new PublicBusinessResolutionError(`${name} must be a valid coordinate`)
+    }
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+        throw new PublicBusinessResolutionError(`${name} must be between ${min} and ${max}`)
+    }
+    return parsed
+}
+
 function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-function queryForDiscoverySearch({ countryCode, city, bounds, category, businessType }) {
+function queryForDiscoverySearch({ countryCode, city, bounds, nearby, category, businessType }) {
     const query = {
         status: { $in: [...DISCOVERY_VISIBLE_BUSINESS_STATUSES] },
         "propertyProfile.discoveryPublished": true,
@@ -82,8 +98,117 @@ function queryForDiscoverySearch({ countryCode, city, bounds, category, business
         "propertyProfile.photos.0.url": { $regex: /^https?:\/\/\S+$/i },
     }
     if (countryCode) query.countryCode = countryCode
-    if (bounds) query.discoveryGeoPoint = { $geoWithin: { $box: bounds } }
-    else if (city) query["propertyProfile.city"] = new RegExp(`^${escapeRegExp(city)}$`, "i")
+    if (nearby) {
+        query.discoveryGeoPoint = {
+            $geoWithin: {
+                $centerSphere: [
+                    [nearby.longitude, nearby.latitude],
+                    nearby.radiusKm / EARTH_RADIUS_KM,
+                ],
+            },
+        }
+    } else if (bounds) query.discoveryGeoPoint = { $geoWithin: { $box: bounds } }
+    else if (city) query["propertyProfile.city"] = new RegExp(`^${escapeRegExp(city)}import Business from "../models/Business.js"
+import { resolveDiscoveryDestination } from "../services/discoveryDestinationResolver.js"
+import {
+    DISCOVERY_BUSINESS_SELECT,
+    DISCOVERY_VISIBLE_BUSINESS_STATUSES,
+    buildDiscoveryListingDto,
+    buildDiscoveryPlaceDto,
+} from "../services/discoveryPublicationService.js"
+import {
+    PublicBusinessResolutionError,
+    normalizePublicBusinessLocator,
+    normalizePublicCountryCode,
+    resolvePublicBusiness,
+} from "../services/publicBusinessResolverService.js"
+
+const MAX_PAGE_SIZE = 50
+const DEFAULT_PAGE_SIZE = 20
+const MAX_PAGE = 10_000
+const EARTH_RADIUS_KM = 6378.137
+const DEFAULT_NEARBY_RADIUS_KM = 20
+const MAX_NEARBY_RADIUS_KM = 50
+const CATEGORY_BUSINESS_TYPES = Object.freeze({
+    eat: ["restaurant"],
+    drink: ["bar_lounge"],
+    stay: ["hotel"],
+})
+const BUSINESS_TYPES = new Set(["restaurant", "bar_lounge", "hotel"])
+
+function setDiscoveryNoStore(res) {
+    const headers = {
+        "Cache-Control": "private, no-store, max-age=0",
+        Pragma: "no-cache",
+        Expires: "0",
+        "Surrogate-Control": "no-store",
+    }
+    if (typeof res?.set === "function") res.set(headers)
+    else if (typeof res?.setHeader === "function") {
+        Object.entries(headers).forEach(([key, value]) => res.setHeader(key, value))
+    }
+}
+
+function requireSingleQueryValue(value, name) {
+    if (Array.isArray(value)) throw new PublicBusinessResolutionError(`${name} must be provided once`)
+    return value
+}
+
+function optionalText(value, { name, maxLength }) {
+    value = requireSingleQueryValue(value, name)
+    if (value === undefined) return null
+    if (typeof value !== "string") throw new PublicBusinessResolutionError(`${name} must be text`)
+    const normalized = value.trim()
+    if (!normalized) return null
+    if (normalized.length > maxLength) {
+        throw new PublicBusinessResolutionError(`${name} must be ${maxLength} characters or fewer`)
+    }
+    return normalized
+}
+
+function positiveInteger(value, { name, defaultValue, maximum }) {
+    value = requireSingleQueryValue(value, name)
+    if (value === undefined || value === "") return defaultValue
+    if (typeof value !== "string" || !/^\d+$/.test(value)) {
+        throw new PublicBusinessResolutionError(`${name} must be a whole number`)
+    }
+    const parsed = Number(value)
+    if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > maximum) {
+        throw new PublicBusinessResolutionError(`${name} must be between 1 and ${maximum}`)
+    }
+    return parsed
+}
+
+function optionalCoordinate(value, { name, min, max }) {
+    value = requireSingleQueryValue(value, name)
+    if (value === undefined) return null
+    if (typeof value !== "string" || !/^-?(?:\\d+)(?:\\.\\d+)?$/.test(value.trim())) {
+        throw new PublicBusinessResolutionError(`${name} must be a valid coordinate`)
+    }
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+        throw new PublicBusinessResolutionError(`${name} must be between ${min} and ${max}`)
+    }
+    return parsed
+}
+
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function queryForDiscoverySearch({ countryCode, city, bounds, nearby, category, businessType }) {
+    const query = {
+        status: { $in: [...DISCOVERY_VISIBLE_BUSINESS_STATUSES] },
+        "propertyProfile.discoveryPublished": true,
+        displayName: { $type: "string", $regex: /\S/ },
+        country: { $type: "string", $regex: /\S/ },
+        countryCode: { $regex: /^[a-z]{2}$/i },
+        address: { $type: "string", $regex: /\S/ },
+        "propertyProfile.city": { $type: "string", $regex: /\S/ },
+        "propertyProfile.photos.0.url": { $regex: /^https?:\/\/\S+$/i },
+    }
+    if (countryCode) query.countryCode = countryCode
+, "i")
 
     const categoryTypes = category ? CATEGORY_BUSINESS_TYPES[category] : null
     const requestedTypes = businessType ? [businessType] : null
@@ -105,6 +230,21 @@ export function parseDiscoverySearchQuery(rawQuery = {}) {
     const category = optionalText(rawQuery.category, { name: "category", maxLength: 16 })?.toLowerCase() || null
     const businessType = optionalText(rawQuery.businessType, { name: "businessType", maxLength: 32 })?.toLowerCase() || null
     const sort = optionalText(rawQuery.sort, { name: "sort", maxLength: 16 }) || "name_asc"
+    const latitude = optionalCoordinate(rawQuery.latitude, { name: "latitude", min: -90, max: 90 })
+    const longitude = optionalCoordinate(rawQuery.longitude, { name: "longitude", min: -180, max: 180 })
+    const radiusKm = positiveInteger(rawQuery.radiusKm, {
+        name: "radiusKm", defaultValue: DEFAULT_NEARBY_RADIUS_KM, maximum: MAX_NEARBY_RADIUS_KM,
+    })
+    if ((latitude === null) !== (longitude === null)) {
+        throw new PublicBusinessResolutionError("latitude and longitude must be supplied together")
+    }
+    if (latitude !== null && city) {
+        throw new PublicBusinessResolutionError("city cannot be combined with nearby coordinates")
+    }
+    if (rawQuery.radiusKm !== undefined && latitude === null) {
+        throw new PublicBusinessResolutionError("radiusKm requires nearby coordinates")
+    }
+
 
     if (category && !Object.hasOwn(CATEGORY_BUSINESS_TYPES, category)) {
         throw new PublicBusinessResolutionError("category must be eat, drink, or stay")
@@ -119,6 +259,7 @@ export function parseDiscoverySearchQuery(rawQuery = {}) {
     return {
         countryCode,
         city,
+        nearby: latitude === null ? null : { latitude, longitude, radiusKm },
         category,
         businessType,
         sort,
@@ -142,6 +283,9 @@ export async function searchDiscoveryPlaces(req, res, { businessModel = Business
     try {
         const options = parseDiscoverySearchQuery(req.query)
         const placeId = optionalText(req.query?.placeId, { name: "placeId", maxLength: 255 })
+        if (placeId && options.nearby) {
+            throw new PublicBusinessResolutionError("Choose a destination or nearby coordinates, not both")
+        }
         if (placeId) {
             const resolved = await resolveDiscoveryDestination(placeId)
             options.countryCode = resolved.countryCode
