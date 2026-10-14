@@ -376,6 +376,47 @@ test("slug and country mutation invalidates both old and new country-scoped keys
     assert.equal(client.values.has(newKey), false)
 })
 
+test("legacy address edits invalidate verified discovery coordinates without trusting client geo fields", async t => {
+    const originals = {
+        businessFindOne: Business.findOne,
+        businessFindOneAndUpdate: Business.findOneAndUpdate,
+    }
+    t.after(() => {
+        Business.findOne = originals.businessFindOne
+        Business.findOneAndUpdate = originals.businessFindOneAndUpdate
+    })
+    const business = makeBusiness({
+        addressPlaceId: "ChIJVerifiedTest",
+        latitude: 35.9,
+        longitude: 14.5,
+        discoveryGeoPoint: { type: "Point", coordinates: [14.5, 35.9] },
+    })
+    Business.findOne = () => queryFor(business)
+    let capturedUpdate
+    Business.findOneAndUpdate = (_filter, update) => {
+        capturedUpdate = update
+        return { async select() { return structuredClone({ ...business, ...update.$set }) } }
+    }
+
+    const { req, res } = mockReqRes({
+        user: { businessId: "biz_alpha", role: "owner" },
+        body: {
+            address: "9 New Road",
+            latitude: 0,
+            longitude: 0,
+            addressPlaceId: "untrusted",
+        },
+    })
+    await updateSettings(req, res)
+    assert.equal(res.statusCode, 200)
+    assert.equal(capturedUpdate.$set.address, "9 New Road")
+    assert.equal(capturedUpdate.$set.addressPlaceId, "")
+    assert.equal(capturedUpdate.$set.latitude, null)
+    assert.equal(capturedUpdate.$set.longitude, null)
+    assert.equal(capturedUpdate.$set["propertyProfile.city"], "")
+    assert.deepEqual(capturedUpdate.$unset, { discoveryGeoPoint: 1 })
+})
+
 test("public business reads and invalidation fail open for Redis GET, SET, and DEL errors", async t => {
     const client = new MemoryRedis()
     client.get = async () => { throw Object.assign(new Error("get unavailable"), { code: "ECONNREFUSED" }) }
