@@ -1,4 +1,5 @@
 import MenuItem from "../models/menuItem.js";
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js";
 import { enrichMenuItemsWithInventory } from "../services/simpleStockMenuService.js";
 import { DISCOVERY_VISIBLE_BUSINESS_STATUSES, isDiscoveryBusinessVisible } from "../services/discoveryPublicationService.js";
 import { PublicBusinessResolutionError, resolvePublicBusiness } from "../services/publicBusinessResolverService.js";
@@ -22,7 +23,7 @@ export async function getDiscoveryMenu(req, res) {
     });
     if (!business || !isDiscoveryBusinessVisible(business) ||
         !["restaurant", "bar_lounge"].includes(business.businessType) ||
-        !business.modules?.includes("foodService")) {
+        !resolveBusinessCapabilities(business).hasFoodService) {
       return res.status(404).json({ error: "Menu not found" });
     }
 
