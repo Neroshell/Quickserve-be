@@ -19,7 +19,7 @@ export async function getDiscoveryDestinationSuggestions(req, res) {
       headers: { "Content-Type": "application/json", "X-Goog-Api-Key": key },
       body: JSON.stringify({
         input,
-        includedPrimaryTypes: ["(cities)", "(regions)"],
+        includedPrimaryTypes: ["(cities)"],
         languageCode: "en",
       }),
     });
