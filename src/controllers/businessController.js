@@ -1471,7 +1471,7 @@ export async function updateAdminBusiness(req, res) {
         // Geographic provenance must come from the canonical Google-backed profile flow.
         if (["addressPlaceId", "latitude", "longitude", "discoveryGeoPoint",
             "propertyProfile.city", "propertyProfile.region", "propertyProfile.postalCode"
-        ].some(field => Object.hasOwn(updateData, field))) {
+        ].some(field => Object.keys(updateData).some(path => path === field || path.startsWith(`${field}.`)))) {
             return res.status(400).json({
                 message: "Update the business address through the verified Business Profile location workflow.",
             })
@@ -1479,7 +1479,7 @@ export async function updateAdminBusiness(req, res) {
 
         const existingBusinessForUpdate = await Business.findOne({
             $or: [{ businessId: paramId }, { businessId: paramId }]
-        }).select("_id businessId businessId businessType modules countryCode slug").lean()
+        }).select("_id businessId businessId businessType modules countryCode slug address").lean()
         if (!existingBusinessForUpdate) {
             return res.status(404).json({ message: "Business not found" })
         }
@@ -1550,11 +1550,7 @@ export async function updateAdminBusiness(req, res) {
             delete updateData.countryCode
         }
 
-        const currentLocation = await Business.findOne({
-            $or: [{ businessId: paramId }, { businessId: paramId }]
-        }).select("address countryCode").lean()
-        if (!currentLocation) return res.status(404).json({ message: "Business not found" })
-        const locationInvalidated = invalidateUnverifiedLocationUpdate(updateData, currentLocation)
+        const locationInvalidated = invalidateUnverifiedLocationUpdate(updateData, existingBusinessForUpdate)
         // Client-supplied coordinates/place IDs cannot independently certify a new address.
         if (locationInvalidated) {
             updateData.addressPlaceId = ""
