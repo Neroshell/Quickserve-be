@@ -68,7 +68,7 @@ async function handleDiscoveryHotel(req, res, withAvailability) {
         isActive: { $ne: false },
         reservable: { $ne: false },
       }).sort({ label: 1 }).lean();
-      return res.json({ rooms: rooms.map(roomCatalogDto) });
+      return res.json({ currency: business.currency || 'EUR', rooms: rooms.map(roomCatalogDto) });
     }
 
     if (business.settings?.reservationsEnabled === false) {
@@ -91,7 +91,7 @@ async function handleDiscoveryHotel(req, res, withAvailability) {
         ...toPublicHotelAvailabilityRoomDto(room),
         images: roomCatalogDto(room).images,
       }));
-    return res.json({ rooms: availableRooms });
+    return res.json({ currency: business.currency || 'EUR', rooms: availableRooms });
   } catch (error) {
     if (error instanceof PublicBusinessResolutionError || error.statusCode) {
       return res.status(error.statusCode || 400).json({ error: error.message });
