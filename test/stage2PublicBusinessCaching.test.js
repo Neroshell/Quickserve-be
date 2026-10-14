@@ -6,6 +6,7 @@ import ServicePoint from "../src/models/ServicePoint.js"
 import { getBusinessBySlug } from "../src/controllers/publicController.js"
 import {
     updateSettings,
+    updateAdminBusiness,
 } from "../src/controllers/businessController.js"
 import {
     updateServicePoint,
@@ -374,6 +375,20 @@ test("slug and country mutation invalidates both old and new country-scoped keys
     assert.equal(business.countryCode, "de")
     assert.equal(client.values.has(oldKey), false)
     assert.equal(client.values.has(newKey), false)
+})
+
+test("admin business update rejects client-supplied Google location fields", async () => {
+    for (const body of [
+        { latitude: 35.9 },
+        { longitude: 14.5 },
+        { addressPlaceId: "fake-place" },
+        { discoveryGeoPoint: { type: "Point", coordinates: [14.5, 35.9] } },
+        { "propertyProfile.city": "Fake City" },
+    ]) {
+        const { req, res } = mockReqRes({ params: { businessId: "biz_alpha" }, body })
+        await updateAdminBusiness(req, res)
+        assert.equal(res.statusCode, 400)
+    }
 })
 
 test("legacy address edits invalidate verified discovery coordinates without trusting client geo fields", async t => {
