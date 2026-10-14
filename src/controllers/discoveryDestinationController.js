@@ -7,7 +7,9 @@ export async function getDiscoveryDestinationSuggestions(req, res) {
   if (input.length < 2 || input.length > 100) {
     return res.status(400).json({ error: "Enter between 2 and 100 characters." });
   }
-  const key = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
+  // The canonical Google address service uses GOOGLE_PLACES_API_KEY.
+  // Prefer the same server credential; preserve the older fallback for compatibility.
+  const key = process.env.GOOGLE_PLACES_API_KEY?.trim() || process.env.GOOGLE_MAPS_API_KEY?.trim();
   if (!key) return res.status(503).json({ error: "Destination search is not configured." });
 
   const controller = new AbortController();
@@ -23,7 +25,23 @@ export async function getDiscoveryDestinationSuggestions(req, res) {
         languageCode: "en",
       }),
     });
-    if (!upstream.ok) return res.status(502).json({ error: "Destination suggestions are temporarily unavailable." });
+    if (!upstream.ok) {
+      let providerStatus = null;
+      let providerCode = null;
+      try {
+        const payload = await upstream.json();
+        providerStatus = typeof payload?.error?.status === "string" ? payload.error.status : null;
+        providerCode = Number.isInteger(payload?.error?.code) ? payload.error.code : null;
+      } catch {
+        // Provider may return HTML or an invalid JSON body.
+      }
+      console.error("[discovery:destinations] Google Places autocomplete rejected request", {
+        httpStatus: upstream.status,
+        providerStatus,
+        providerCode,
+      });
+      return res.status(502).json({ error: "Destination suggestions are temporarily unavailable." });
+    }
     const data = await upstream.json();
     const suggestions = (Array.isArray(data.suggestions) ? data.suggestions : [])
       .map((entry) => entry.placePrediction)
@@ -38,7 +56,10 @@ export async function getDiscoveryDestinationSuggestions(req, res) {
       .filter((entry) => entry.label && entry.name);
     res.set("Cache-Control", "private, no-store");
     return res.json({ suggestions });
-  } catch {
+  } catch (error) {
+    console.error("[discovery:destinations] Google Places autocomplete request failed", {
+      failureType: error?.name === "AbortError" ? "timeout" : "network_or_invalid_response",
+    });
     return res.status(502).json({ error: "Destination suggestions are temporarily unavailable." });
   } finally {
     clearTimeout(timeout);
