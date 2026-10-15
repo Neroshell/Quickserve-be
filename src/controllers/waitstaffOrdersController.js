@@ -659,18 +659,6 @@ export async function createWaiterOrder(req, res) {
       })
     }
 
-    const stockFailures = await validateInventoryRequirements({
-      businessId,
-      items: enrichedItems,
-    })
-    if (stockFailures.length > 0) {
-      return res.status(409).json({
-        code: "INSUFFICIENT_STOCK",
-        message: "One or more items in your order are no longer available. Please review your cart.",
-        items: stockFailures,
-      })
-    }
-
     const subtotal = Number(calculatedTotal.toFixed(2))
     const totalInCentsForFee = Math.round(subtotal * 100)
 
@@ -722,6 +710,25 @@ export async function createWaiterOrder(req, res) {
       createdByStaffId: staffId,
       paymentMethod,
     })
+    // A successful retry must reach the canonical idempotency check instead of
+    // being rejected by a later stock preflight against its own reservation.
+    const existingForPreflight = await Order.exists({
+      businessId,
+      creationIdempotencyKey,
+    })
+    if (!existingForPreflight) {
+      const stockFailures = await validateInventoryRequirements({
+        businessId,
+        items: enrichedItems,
+      })
+      if (stockFailures.length > 0) {
+        return res.status(409).json({
+          code: "INSUFFICIENT_STOCK",
+          message: "One or more items in your order are no longer available. Please review your cart.",
+          items: stockFailures,
+        })
+      }
+    }
     const draft = buildCanonicalOrderDraft({
       business,
       orderId,

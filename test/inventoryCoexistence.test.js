@@ -63,14 +63,18 @@ function coexistenceMapping(menuItemId, ingredientQuantity = 1) {
     }
 }
 
-function requestLine(menuItemId, { station = "kitchen", lineId = "line_jollof" } = {}) {
+function requestLine(menuItemId, {
+    station = "kitchen",
+    lineId = "line_jollof",
+    fulfillmentBehavior = "prepared",
+} = {}) {
     return {
         menuItemId,
         itemName: "Jollof Rice",
         quantity: 1,
         orderLineId: lineId,
         fulfillmentStation: station,
-        fulfillmentBehavior: "prepared",
+        fulfillmentBehavior,
     }
 }
 
@@ -141,7 +145,7 @@ test("Simple Stock alone remains the availability authority when sidecar ingredi
     assert.equal(unavailable.effectiveIsAvailable, false)
 })
 
-test("disabling Simple Stock preserves enabled ingredients as the recipe-only authority", async () => {
+test("disabling Simple Stock keeps enabled ingredients as non-blocking usage tracking", async () => {
     const menuItemId = new mongoose.Types.ObjectId()
     const mapping = {
         ...coexistenceMapping(menuItemId),
@@ -166,7 +170,7 @@ test("disabling Simple Stock preserves enabled ingredients as the recipe-only au
         inventoryItems: [portion, chicken],
     })
     assert.equal(availability.trackingState, "canonical_recipe")
-    assert.equal(availability.effectiveIsAvailable, false)
+    assert.equal(availability.effectiveIsAvailable, true)
 
     const resolved = await resolveInventoryRequirements({
         businessId,
@@ -174,12 +178,62 @@ test("disabling Simple Stock preserves enabled ingredients as the recipe-only au
         session,
         env: {},
     }, resolverDependencies({ menuItem, mapping, inventoryItems: [portion, chicken] }))
-    assert.equal(resolved.failures[0].reason, "INSUFFICIENT_STOCK")
-    assert.deepEqual(
-        resolved.requirements.map(({ inventoryItemId }) => inventoryItemId),
-        ["inv_chicken"],
-    )
-    assert.equal(resolved.sidecarAllocationRequirements.length, 0)
+    assert.deepEqual(resolved.failures, [])
+    assert.deepEqual(resolved.requirements, [])
+    assert.equal(resolved.lineAllocationRequirements.length, 0)
+    assert.equal(resolved.menuRequirements.length, 0)
+    assert.equal(resolved.sidecarAllocationRequirements.length, 1)
+    assert.equal(resolved.sidecarAllocationRequirements[0].inventoryItemId, "inv_chicken")
+    assert.equal(resolved.tracked, true)
+
+    const manuallyUnavailable = await resolveInventoryRequirements({
+        businessId,
+        items: [requestLine(menuItemId)],
+        session,
+        env: {},
+    }, resolverDependencies({
+        menuItem: { ...menuItem, manualIsAvailable: false },
+        mapping,
+        inventoryItems: [portion, chicken],
+    }))
+    assert.equal(manuallyUnavailable.failures[0].reason, "MANUALLY_UNAVAILABLE")
+})
+
+test("recipe-only ingredients snapshot for prepared and direct-Bar fulfilment without reserving stock", async () => {
+    const menuItemId = new mongoose.Types.ObjectId()
+    const mapping = {
+        menuInventoryRecipeId: "mir_recipe_tracking",
+        businessId,
+        menuItemId,
+        mode: "recipe",
+        status: "active",
+        version: 3,
+        components: [{
+            inventoryItemId: "inv_chicken",
+            quantity: 1,
+            unit: "piece",
+            canonicalQuantity: 1,
+        }],
+    }
+    const menuItem = { _id: menuItemId, name: "Chicken burger", isAvailable: true }
+    const chicken = inventoryItem({ inventoryItemId: "inv_chicken", onHand: 0 })
+    for (const [station, fulfillmentBehavior] of [
+        ["kitchen", "prepared"],
+        ["bar", "direct"],
+    ]) {
+        const resolved = await resolveInventoryRequirements({
+            businessId,
+            items: [requestLine(menuItemId, { station, fulfillmentBehavior })],
+            session,
+            env: {},
+        }, resolverDependencies({ menuItem, mapping, inventoryItems: [chicken] }))
+        assert.deepEqual(resolved.failures, [])
+        assert.deepEqual(resolved.requirements, [])
+        assert.equal(resolved.lineAllocationRequirements.length, 0)
+        assert.equal(resolved.menuRequirements.length, 0)
+        assert.equal(resolved.sidecarAllocationRequirements.length, 1)
+        assert.equal(resolved.sidecarAllocationRequirements[0].fulfillmentBehavior, fulfillmentBehavior)
+    }
 })
 
 test("Phase 4 reserves Simple Stock but only snapshots zero-balance sidecar ingredients", async () => {
@@ -293,6 +347,77 @@ test("offline, waitstaff, and Stripe paths persist the same non-reserving sideca
     }
 })
 
+test("offline, waitstaff, and Stripe paths preserve recipe-only ingredients as non-blocking sidecar usage", async () => {
+    for (const sourceType of ["offline_order", "waitstaff_order", "stripe_checkout"]) {
+        const menuItemId = new mongoose.Types.ObjectId()
+        const menuItem = {
+            _id: menuItemId,
+            name: "Chicken burger",
+            isAvailable: true,
+            async save() { return this },
+        }
+        const mapping = {
+            menuInventoryRecipeId: `mir_${sourceType}`,
+            businessId,
+            menuItemId,
+            mode: "recipe",
+            status: "active",
+            version: 1,
+            components: [{
+                inventoryItemId: "inv_chicken",
+                quantity: 1,
+                unit: "piece",
+                canonicalQuantity: 1,
+            }],
+        }
+        const chicken = inventoryItem({ inventoryItemId: "inv_chicken", onHand: 0 })
+        const createdReservations = []
+        const movements = []
+        const pendingCheckoutId = sourceType === "stripe_checkout"
+            ? new mongoose.Types.ObjectId()
+            : null
+        const order = sourceType === "stripe_checkout" ? null : {
+            orderId: `ord_recipe_${sourceType}`,
+            async save() { return this },
+        }
+        await reserveInventoryForSource({
+            businessId,
+            items: [requestLine(menuItemId, { lineId: `line_recipe_${sourceType}` })],
+            sourceType,
+            sourceId: `source_recipe_${sourceType}`,
+            order,
+            orderId: `ord_recipe_${sourceType}`,
+            pendingCheckoutId,
+            expiresAt: pendingCheckoutId ? new Date(Date.now() + 60_000) : null,
+            reservationId: `irv_recipe_${sourceType}`,
+            idempotencyKey: `recipe-only:${sourceType}`,
+            requestFingerprint: "r".repeat(64),
+            actor,
+            session,
+            env: {},
+        }, {
+            InventoryReservationModel: {
+                findOne: async () => null,
+                async create(documents) {
+                    createdReservations.push(...documents)
+                    return documents
+                },
+            },
+            InventoryMovementModel: {
+                async create(documents) { movements.push(...documents); return documents },
+            },
+            projectSimple: async () => {},
+            ...resolverDependencies({ menuItem, mapping, inventoryItems: [chicken] }),
+        })
+        assert.equal(chicken.reservedQuantity, 0)
+        assert.equal(movements.length, 0)
+        assert.equal(createdReservations[0].components.length, 0)
+        assert.equal(createdReservations[0].lineAllocations.length, 0)
+        assert.equal(createdReservations[0].sidecarAllocations.length, 1)
+        if (order) assert.equal(order.inventorySemanticsVersion, "canonical_reservation_v1")
+    }
+})
+
 test("later recipe edits cannot change the frozen sidecar quantity consumed by an order", async () => {
     const scenario = await consumeScenario({ station: "kitchen", chickenOnHand: 10, required: 1 })
     const editedLiveRecipeQuantity = 9
@@ -386,13 +511,13 @@ test("adding, disabling, and removing sidecar ingredients never rewrites Simple 
     assert.equal(mapping.ingredientTrackingStatus, null)
 })
 
-function regularAllocation({ menuItemId, station }) {
+function regularAllocation({ menuItemId, station, behavior = "prepared" }) {
     return {
         allocationId: `ial_${station}_portion`,
         orderLineId: `line_${station}`,
         menuItemId,
         fulfillmentStation: station,
-        fulfillmentBehavior: "prepared",
+        fulfillmentBehavior: behavior,
         inventoryItemId: "inv_jollof_portion",
         canonicalQuantity: 1,
         unit: "portion",
@@ -404,14 +529,14 @@ function regularAllocation({ menuItemId, station }) {
     }
 }
 
-function sidecarAllocation({ menuItemId, station, quantity }) {
+function sidecarAllocation({ menuItemId, station, quantity, behavior = "prepared" }) {
     return {
         allocationId: `isa_${station}_chicken`,
         orderLineId: `line_${station}`,
         menuItemId,
         mappingVersion: 7,
         fulfillmentStation: station,
-        fulfillmentBehavior: "prepared",
+        fulfillmentBehavior: behavior,
         inventoryItemId: "inv_chicken",
         canonicalQuantity: quantity,
         unit: "piece",
@@ -423,7 +548,14 @@ function sidecarAllocation({ menuItemId, station, quantity }) {
     }
 }
 
-async function consumeScenario({ station, chickenOnHand, chickenReserved = 0, required = 1 }) {
+async function consumeScenario({
+    station,
+    chickenOnHand,
+    chickenReserved = 0,
+    required = 1,
+    behavior = "prepared",
+    recipeOnly = false,
+}) {
     const menuItemId = new mongoose.Types.ObjectId()
     const order = {
         orderId: `ord_${station}_${chickenOnHand}`,
@@ -433,19 +565,21 @@ async function consumeScenario({ station, chickenOnHand, chickenReserved = 0, re
             orderLineId: `line_${station}`,
             menuItemId,
             fulfillmentStation: station,
-            fulfillmentBehavior: "prepared",
+            fulfillmentBehavior: behavior,
         }],
     }
-    const portionAllocation = regularAllocation({ menuItemId, station })
-    const ingredientAllocation = sidecarAllocation({ menuItemId, station, quantity: required })
+    const portionAllocation = regularAllocation({ menuItemId, station, behavior })
+    const ingredientAllocation = sidecarAllocation({ menuItemId, station, quantity: required, behavior })
     const reservation = {
         reservationId: order.inventoryReservationId,
         orderId: order.orderId,
         status: INVENTORY_RESERVATION_STATUSES.COMMITTED,
-        components: [{ inventoryItemId: "inv_jollof_portion", canonicalQuantity: 1 }],
-        lineAllocations: [portionAllocation],
+        components: recipeOnly ? [] : [{ inventoryItemId: "inv_jollof_portion", canonicalQuantity: 1 }],
+        lineAllocations: recipeOnly ? [] : [portionAllocation],
         sidecarAllocations: [ingredientAllocation],
-        menuRequirements: [{ menuItemId, authority: "canonical", mappingMode: "simple" }],
+        menuRequirements: recipeOnly
+            ? []
+            : [{ menuItemId, authority: "canonical", mappingMode: "simple" }],
         async save() { return this },
     }
     const portion = inventoryItem({
@@ -474,7 +608,7 @@ async function consumeScenario({ station, chickenOnHand, chickenReserved = 0, re
         order,
         orderLineIds: [`line_${station}`],
         station,
-        action: "start",
+        action: behavior === "direct" ? "ready" : "start",
         actor,
         session,
         now: new Date("2026-09-06T12:00:00.000Z"),
@@ -526,6 +660,31 @@ test("ingredient shortage zero-floors safely, records a discrepancy, and never b
     assert.equal(scenario.ingredientAllocation.consumedCanonicalQuantity, 0)
     assert.equal(scenario.ingredientAllocation.shortageCanonicalQuantity, 2)
     assert.equal(scenario.result.shortages[0].reason, "insufficient_unreserved_balance")
+})
+
+test("recipe-only ingredients are accounted after fulfilment without reserving stock first", async () => {
+    const shortage = await consumeScenario({
+        station: "kitchen",
+        chickenOnHand: 0,
+        required: 2,
+        recipeOnly: true,
+    })
+    assert.equal(shortage.result.changed, true)
+    assert.equal(shortage.chicken.onHandQuantity, 0)
+    assert.equal(shortage.movements.length, 0)
+    assert.equal(shortage.ingredientAllocation.status, "shortage")
+    assert.equal(shortage.replay.changed, false)
+
+    const directBar = await consumeScenario({
+        station: "bar",
+        behavior: "direct",
+        chickenOnHand: 1,
+        required: 1,
+        recipeOnly: true,
+    })
+    assert.equal(directBar.chicken.onHandQuantity, 0)
+    assert.equal(directBar.ingredientAllocation.status, "consumed")
+    assert.equal(directBar.movements.length, 1)
 })
 
 test("partial sidecar consumption protects reserved stock and reconciles the frozen snapshot", async () => {
@@ -582,6 +741,29 @@ test("partial sidecar consumption protects reserved stock and reconciles the fro
         mappingMode: "simple",
         mappingVersion: 1,
     }]
+    await snapshot.validate()
+})
+
+test("recipe-only ingredient snapshots are valid without a sale-stock reservation", async () => {
+    const snapshot = new InventoryReservation({
+        reservationId: "irv_recipe_only_schema",
+        businessId,
+        sourceType: "offline_order",
+        sourceId: "ord_recipe_only_schema",
+        orderId: "ord_recipe_only_schema",
+        status: "committed",
+        components: [],
+        legacyComponents: [],
+        lineAllocations: [],
+        sidecarAllocations: [sidecarAllocation({
+            menuItemId: new mongoose.Types.ObjectId(),
+            station: "kitchen",
+            quantity: 1,
+        })],
+        menuRequirements: [],
+        idempotencyKey: "recipe-only:schema",
+        requestFingerprint: "a".repeat(64),
+    })
     await snapshot.validate()
 })
 

@@ -296,7 +296,7 @@ test("CONSUME ledger entries enforce balance deltas and expose fulfilment audit 
     await assert.rejects(movement.validate(), /requires a Reserved delta of -100/i)
 })
 
-test("reservation-time resolution preserves quantity, duplicate-line, recipe, simple, and shared ownership", async () => {
+test("reservation-time resolution reserves Simple Stock and snapshots recipe ingredient usage", async () => {
     const burgerId = new mongoose.Types.ObjectId()
     const tacoId = new mongoose.Types.ObjectId()
     const spriteId = new mongoose.Types.ObjectId()
@@ -390,25 +390,15 @@ test("reservation-time resolution preserves quantity, duplicate-line, recipe, si
             inventoryItemId,
             canonicalQuantity,
         ]),
-        [["inv_beef", 350], ["inv_bun", 3], ["inv_sprite", 2]],
-    )
-    assert.deepEqual(
-        result.lineAllocationRequirements
-            .filter((entry) => entry.orderLineId === "line_burger_a")
-            .map(({ inventoryItemId, canonicalQuantity }) => [inventoryItemId, canonicalQuantity]),
-        [["inv_beef", 200], ["inv_bun", 2]],
+        [["inv_sprite", 2]],
     )
     assert.equal(
-        result.lineAllocationRequirements.find(
-            (entry) => entry.orderLineId === "line_burger_b" && entry.inventoryItemId === "inv_beef",
-        ).canonicalQuantity,
-        100,
+        result.lineAllocationRequirements.some((entry) => entry.orderLineId === "line_burger_a"),
+        false,
     )
     assert.equal(
-        result.lineAllocationRequirements.find(
-            (entry) => entry.orderLineId === "line_taco" && entry.inventoryItemId === "inv_beef",
-        ).canonicalQuantity,
-        50,
+        result.lineAllocationRequirements.some((entry) => entry.orderLineId === "line_taco"),
+        false,
     )
     assert.equal(
         result.lineAllocationRequirements.find(
@@ -416,9 +406,27 @@ test("reservation-time resolution preserves quantity, duplicate-line, recipe, si
         ).canonicalQuantity,
         2,
     )
+    assert.deepEqual(
+        result.sidecarAllocationRequirements
+            .filter((entry) => entry.orderLineId === "line_burger_a")
+            .map(({ inventoryItemId, canonicalQuantity }) => [inventoryItemId, canonicalQuantity]),
+        [["inv_beef", 200], ["inv_bun", 2]],
+    )
+    assert.equal(
+        result.sidecarAllocationRequirements.find(
+            (entry) => entry.orderLineId === "line_burger_b" && entry.inventoryItemId === "inv_beef",
+        ).canonicalQuantity,
+        100,
+    )
+    assert.equal(
+        result.sidecarAllocationRequirements.find(
+            (entry) => entry.orderLineId === "line_taco" && entry.inventoryItemId === "inv_beef",
+        ).canonicalQuantity,
+        50,
+    )
 })
 
-test("offline, waitstaff, and Stripe reservation paths persist exact line allocations", async () => {
+test("offline, waitstaff, and Stripe reservation paths snapshot recipe ingredients without reserving them", async () => {
     for (const sourceType of Object.values(INVENTORY_RESERVATION_SOURCE_TYPES)) {
         const menuItemId = new mongoose.Types.ObjectId()
         const stock = inventoryItem({
@@ -490,20 +498,21 @@ test("offline, waitstaff, and Stripe reservation paths persist exact line alloca
         })
 
         assert.equal(result.tracked, true)
-        assert.equal(stock.reservedQuantity, 200)
-        assert.equal(createdReservations[0].components[0].canonicalQuantity, 200)
-        assert.deepEqual(createdReservations[0].lineAllocations.map((entry) => ({
-            orderLineId: entry.orderLineId,
-            inventoryItemId: entry.inventoryItemId,
-            canonicalQuantity: entry.canonicalQuantity,
+        assert.equal(stock.reservedQuantity, 0)
+        assert.deepEqual(createdReservations[0].components, [])
+        assert.deepEqual(createdReservations[0].lineAllocations, [])
+        assert.deepEqual(createdReservations[0].sidecarAllocations.map((entry) => ({
+            orderLineId: `line_${sourceType}`,
+            inventoryItemId: stock.inventoryItemId,
+            canonicalQuantity: 200,
             status: entry.status,
         })), [{
             orderLineId: `line_${sourceType}`,
             inventoryItemId: stock.inventoryItemId,
             canonicalQuantity: 200,
-            status: INVENTORY_LINE_ALLOCATION_STATUSES.RESERVED,
+            status: "pending",
         }])
-        assert.equal(movements.documents.length, 1)
+        assert.equal(movements.documents.length, 0)
         assert.equal(
             createdReservations[0].status,
             sourceType === INVENTORY_RESERVATION_SOURCE_TYPES.STRIPE_CHECKOUT

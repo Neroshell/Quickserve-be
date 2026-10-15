@@ -252,20 +252,6 @@ export async function createCheckoutSession(req, res) {
             });
         }
 
-        // Fast feedback uses the same resolver that re-runs inside the commit
-        // transaction. Only the in-transaction pass authorizes the hold.
-        const stockFailures = await validateInventoryRequirements({
-            businessId: businessIdToUse,
-            items: enrichedItems,
-        });
-        if (stockFailures.length > 0) {
-            return res.status(409).json({
-                code: "INSUFFICIENT_STOCK",
-                message: "One or more items in your order are no longer available. Please review your cart.",
-                items: stockFailures,
-            });
-        }
-
         // --- Resolve service point label for display ---
         // Resolve the human-friendly label once so the webhook can copy it
         // without reinterpreting a display field as technical identity.
@@ -373,6 +359,25 @@ export async function createCheckoutSession(req, res) {
             currency: finalCurrency,
             tip,
         });
+        // A successful retry must reach the canonical idempotency check instead
+        // of being rejected by a later stock preflight against its own hold.
+        const existingForPreflight = await PendingCheckout.exists({
+            businessId: businessIdToUse,
+            idempotencyKey: checkoutIdempotencyKey,
+        });
+        if (!existingForPreflight) {
+            const stockFailures = await validateInventoryRequirements({
+                businessId: businessIdToUse,
+                items: enrichedItems,
+            });
+            if (stockFailures.length > 0) {
+                return res.status(409).json({
+                    code: "INSUFFICIENT_STOCK",
+                    message: "One or more items in your order are no longer available. Please review your cart.",
+                    items: stockFailures,
+                });
+            }
+        }
         const stripeRequestIdempotencyKey = `inventory-checkout:${pendingCheckoutId}`;
         // Two seconds absorb transaction/network transit while retaining the
         // provider's minimum 30-minute restaurant Checkout lifetime.

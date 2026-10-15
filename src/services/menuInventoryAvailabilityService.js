@@ -167,7 +167,14 @@ export function resolveEffectiveMenuAvailability({
         }
     }
 
-    const effectiveIsAvailable = manualIsAvailable && inventoryAvailable !== false
+    // Ingredient recipes are operational accounting. They show owners what was used,
+    // but do not decide whether a manually enabled menu item can be sold. Simple Stock
+    // and legacy stock retain their existing availability authority.
+    const inventoryControlsAvailability = trackingState !==
+        MENU_INVENTORY_TRACKING_STATES.CANONICAL_RECIPE
+    const effectiveIsAvailable = manualIsAvailable && (
+        !inventoryControlsAvailability || inventoryAvailable !== false
+    )
     return Object.freeze({
         trackingState,
         manualIsAvailable,
@@ -277,13 +284,9 @@ export function toMenuItemWithInventoryDTO({
                 configured: ingredientTrackingConfigured,
                 status: ingredientTrackingStatus,
                 componentCount: ingredientComponents.length,
-                behavior: ingredientTrackingConfigured && canonicalSimpleActive
-                    ? "sidecar"
-                    : ingredientTrackingConfigured
-                        ? "authoritative"
-                        : null,
+                behavior: ingredientTrackingConfigured ? "sidecar" : null,
             },
-            ingredientAvailabilityEnforced: canonicalRecipeActive,
+            ingredientAvailabilityEnforced: false,
             effectiveIsAvailable: availability.effectiveIsAvailable,
             disabledReason: mapping?.disabledReason ?? null,
         },

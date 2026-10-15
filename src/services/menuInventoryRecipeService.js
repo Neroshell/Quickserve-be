@@ -455,7 +455,9 @@ export function toIngredientRecipeDTO({ mapping: mappingValue, menuItem: menuIte
                 : null,
             unit: simpleInventoryItem?.trackingUnit ?? simpleComponent.unit,
         } : null,
-        ingredientBehavior: simpleStockActive ? "sidecar" : "authoritative",
+        // Ingredients are an operational record for every mapping mode. They do not
+        // independently pause sales; the menu item's Available switch does that.
+        ingredientBehavior: "sidecar",
     }
 }
 

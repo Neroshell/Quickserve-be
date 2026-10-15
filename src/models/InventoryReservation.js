@@ -196,10 +196,13 @@ InventoryReservationSchema.index({ status: 1, expiresAt: 1, createdAt: 1 })
 InventoryReservationSchema.pre("validate", function () {
     const canonicalCount = Array.isArray(this.components) ? this.components.length : 0
     const legacyCount = Array.isArray(this.legacyComponents) ? this.legacyComponents.length : 0
-    if (canonicalCount === 0 && legacyCount === 0) {
+    const sidecarCount = Array.isArray(this.sidecarAllocations)
+        ? this.sidecarAllocations.length
+        : 0
+    if (canonicalCount === 0 && legacyCount === 0 && sidecarCount === 0) {
         this.invalidate(
             "components",
-            "InventoryReservation requires canonical or legacy reserved components",
+            "InventoryReservation requires reserved stock or ingredient-tracking allocations",
         )
     }
 

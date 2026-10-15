@@ -61,6 +61,7 @@ async function createCanonicalOrder({ orderId, reservationId, items }) {
     return Order.create({
         orderId,
         businessId: "biz_phase5b_integration",
+        servicePointId: "sp_phase5b",
         servicePointLabel: "sp_phase5b",
         status: "placed",
         paymentChannel: "offline",

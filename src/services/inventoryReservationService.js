@@ -364,26 +364,21 @@ export async function resolveInventoryRequirements({
         const ingredientTrackingActive = isIngredientTrackingActive(mapping)
         const legacyAuthority = mapping.mode === MENU_INVENTORY_MODES.SIMPLE &&
             !simpleStockActive && menuItem.trackStock === true
-        const components = simpleStockActive
-            ? mapping.components || []
-            : ingredientTrackingActive && !legacyAuthority
-                ? ingredientComponentsForMapping(mapping)
-                : []
+        // Only Simple Stock is a sale-time stock commitment. Recipe ingredients are
+        // frozen onto the order as sidecar accounting and are consumed (or recorded as
+        // a shortage) when the line is fulfilled.
+        const components = simpleStockActive ? mapping.components || [] : []
         const effectiveMappingMode = simpleStockActive
             ? MENU_INVENTORY_MODES.SIMPLE
-            : ingredientTrackingActive && !legacyAuthority
-                ? MENU_INVENTORY_MODES.RECIPE
-                : null
-        const sidecarComponents = ingredientTrackingActive &&
-            (simpleStockActive || legacyAuthority)
+            : null
+        const sidecarComponents = ingredientTrackingActive
             ? ingredientComponentsForMapping(mapping)
             : []
-        const validMode = effectiveMappingMode === MENU_INVENTORY_MODES.SIMPLE ||
-            effectiveMappingMode === MENU_INVENTORY_MODES.RECIPE || legacyAuthority
-        const validShape = validMode && (legacyAuthority || (
-            components.length > 0 &&
-            (effectiveMappingMode !== MENU_INVENTORY_MODES.SIMPLE || components.length === 1)
-        ))
+        const validShape = legacyAuthority || (
+            simpleStockActive && components.length === 1
+        ) || (
+            ingredientTrackingActive && sidecarComponents.length > 0
+        )
         if (!validShape) {
             addFailure(failures, entry, "INVALID_ACTIVE_INVENTORY_MAPPING")
             continue
@@ -473,13 +468,15 @@ export async function resolveInventoryRequirements({
         }
         if (!mappingValid) continue
 
-        menuRequirements.push({
-            menuItemId: menuItem._id,
-            orderQuantity: entry.quantity,
-            authority: legacyAuthority ? "legacy_menu_item" : "canonical",
-            mappingMode: legacyAuthority ? null : effectiveMappingMode,
-            mappingVersion: mapping.version,
-        })
+        if (legacyAuthority || simpleStockActive) {
+            menuRequirements.push({
+                menuItemId: menuItem._id,
+                orderQuantity: entry.quantity,
+                authority: legacyAuthority ? "legacy_menu_item" : "canonical",
+                mappingMode: legacyAuthority ? null : effectiveMappingMode,
+                mappingVersion: mapping.version,
+            })
+        }
         for (const component of normalizedComponents) {
             const id = component.inventoryItem.inventoryItemId
             const requirement = requirementByInventoryId.get(id) || {
@@ -534,7 +531,6 @@ export async function resolveInventoryRequirements({
                 continue
             }
             for (const line of allocationLines) {
-                if (line.fulfillmentBehavior !== FULFILLMENT_BEHAVIORS.PREPARED) continue
                 const canonicalQuantity = canonicalQuantityPerMenuUnit * line.quantity
                 if (!positiveQuantity(canonicalQuantity)) continue
                 sidecarAllocationRequirements.push({
@@ -580,7 +576,8 @@ export async function resolveInventoryRequirements({
         menuRequirements,
         untrackedMenuItemIds,
         failures,
-        tracked: requirements.length > 0 || legacyRequirements.length > 0,
+        tracked: requirements.length > 0 || legacyRequirements.length > 0 ||
+            sidecarAllocationRequirements.length > 0,
     }
 }
 
@@ -643,11 +640,11 @@ async function createReservationMovement({
     return movement
 }
 
-function inventorySemanticsFor({ canonicalCount, legacyCount }) {
-    if (canonicalCount > 0 && legacyCount > 0) {
+function inventorySemanticsFor({ canonicalCount, legacyCount, sidecarCount = 0 }) {
+    if ((canonicalCount > 0 || sidecarCount > 0) && legacyCount > 0) {
         return ORDER_INVENTORY_SEMANTICS.MIXED_RESERVATION_V1
     }
-    if (canonicalCount > 0) {
+    if (canonicalCount > 0 || sidecarCount > 0) {
         return ORDER_INVENTORY_SEMANTICS.CANONICAL_RESERVATION_V1
     }
     return ORDER_INVENTORY_SEMANTICS.LEGACY_MENU_STOCK_V1
@@ -886,6 +883,7 @@ export async function reserveInventoryForSource({
         order.inventorySemanticsVersion = inventorySemanticsFor({
             canonicalCount: canonicalComponents.length,
             legacyCount: legacyComponents.length,
+            sidecarCount: sidecarAllocations.length,
         })
         order.inventoryDeductionLines = legacyLines
         order.inventoryDeducted = legacyComponents.length > 0
@@ -1206,8 +1204,7 @@ export async function consumeReservedInventoryForFulfillment({
                 409,
             )
         }
-        const validSidecarTrigger = line.fulfillmentBehavior ===
-            FULFILLMENT_BEHAVIORS.PREPARED && action === FULFILLMENT_ACTIONS.START
+        const validSidecarTrigger = validReservedTrigger
         if (ownedSidecars.length > 0 && !validSidecarTrigger) {
             throw reservationError(
                 "Ingredient sidecar consumption was requested for an invalid fulfilment transition",
