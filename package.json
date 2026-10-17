@@ -19,6 +19,8 @@
     "test:reservation-payment": "node --import ./test/testEnvironment.js --test test/reservationPaymentIdempotency.test.js test/hotelReservationFlow.test.js test/reservationCancellationService.test.js test/transactionReadService.test.js test/orderReceiptFlow.test.js",
     "test:reservation-privacy": "node --import ./test/testEnvironment.js --test test/reservationPrivacy.test.js",
     "test:property-profile": "node --import ./test/testEnvironment.js --test test/propertyProfile.test.js",
+    "test:discovery-geo-repair": "node --import ./test/testEnvironment.js --test test/discoveryGeoPointRepair.test.js test/discoveryGeoPointRepair.integration.test.js",
+    "repair:discovery-geo-points": "node scripts/repair-discovery-geo-points.js",
     "test:hotel-service-points": "node --import ./test/testEnvironment.js --test test/hotelServicePoints.test.js test/hotelRoomTypes.test.js",
     "test:phase1": "node --import ./test/testEnvironment.js --test test/phase1SetupProgress.test.js",
     "test:order-receipt": "node --import ./test/testEnvironment.js --test test/orderReceiptFlow.test.js",

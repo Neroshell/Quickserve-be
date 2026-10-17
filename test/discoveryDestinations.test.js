@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getDiscoveryDestinationSuggestions } from "../src/controllers/discoveryDestinationController.js";
+import {
+  DiscoveryDestinationResolutionError,
+  resolveDiscoveryDestination,
+} from "../src/services/discoveryDestinationResolver.js";
 
 function response() {
   return {
@@ -67,4 +71,79 @@ test("Discovery autocomplete returns a generic 502 without revealing provider di
   assert.equal(res.statusCode, 502);
   assert.equal(res.body.error, "Destination suggestions are temporarily unavailable.");
   assert.equal(JSON.stringify(res.body).includes("secret provider detail"), false);
+});
+
+test("Discovery destination resolution shares concurrent Google lookups and builds a closed GeoJSON polygon", async t => {
+  const original = process.env.GOOGLE_PLACES_API_KEY;
+  t.after(() => {
+    if (original === undefined) delete process.env.GOOGLE_PLACES_API_KEY;
+    else process.env.GOOGLE_PLACES_API_KEY = original;
+  });
+  process.env.GOOGLE_PLACES_API_KEY = "test-key";
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls += 1;
+    return {
+      ok: true,
+      json: async () => ({
+        types: ["locality", "political"],
+        addressComponents: [
+          { types: ["locality", "political"], longText: "St. Paul's Bay" },
+          { types: ["country", "political"], shortText: "MT" },
+        ],
+        viewport: {
+          low: { latitude: 35.93, longitude: 14.4 },
+          high: { latitude: 35.97, longitude: 14.44 },
+        },
+      }),
+    };
+  });
+
+  const results = await Promise.all([
+    resolveDiscoveryDestination("ChIJStPaulsBay"),
+    resolveDiscoveryDestination("ChIJStPaulsBay"),
+    resolveDiscoveryDestination("ChIJStPaulsBay"),
+  ]);
+
+  assert.equal(calls, 1);
+  assert.deepEqual(results[0], {
+    countryCode: "mt",
+    city: "St. Paul's Bay",
+    geometry: {
+      type: "Polygon",
+      coordinates: [[[14.4, 35.93], [14.44, 35.93], [14.44, 35.97], [14.4, 35.97], [14.4, 35.93]]],
+    },
+  });
+  assert.deepEqual(results[1], results[0]);
+  assert.deepEqual(results[2], results[0]);
+});
+
+test("Discovery destination resolution rejects unsupported map bounds without broadening search", async t => {
+  const original = process.env.GOOGLE_PLACES_API_KEY;
+  t.after(() => {
+    if (original === undefined) delete process.env.GOOGLE_PLACES_API_KEY;
+    else process.env.GOOGLE_PLACES_API_KEY = original;
+  });
+  process.env.GOOGLE_PLACES_API_KEY = "test-key";
+  t.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    json: async () => ({
+      types: ["locality"],
+      addressComponents: [
+        { types: ["locality"], longText: "Dateline Town" },
+        { types: ["country"], shortText: "FJ" },
+      ],
+      viewport: {
+        low: { latitude: -18, longitude: 179 },
+        high: { latitude: -17, longitude: -179 },
+      },
+    }),
+  }));
+
+  await assert.rejects(
+    resolveDiscoveryDestination("ChIJDatelineTown"),
+    error => error instanceof DiscoveryDestinationResolutionError
+      && error.code === "DISCOVERY_DESTINATION_BOUNDS_ANTIMERIDIAN"
+      && error.statusCode === 422,
+  );
 });

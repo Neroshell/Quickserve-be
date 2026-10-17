@@ -1,5 +1,8 @@
 import Business from "../models/Business.js"
-import { resolveDiscoveryDestination } from "../services/discoveryDestinationResolver.js"
+import {
+    DiscoveryDestinationResolutionError,
+    resolveDiscoveryDestination,
+} from "../services/discoveryDestinationResolver.js"
 import {
     DISCOVERY_BUSINESS_SELECT,
     DISCOVERY_VISIBLE_BUSINESS_STATUSES,
@@ -25,6 +28,19 @@ const CATEGORY_BUSINESS_TYPES = Object.freeze({
     stay: ["hotel"],
 })
 const BUSINESS_TYPES = new Set(["restaurant", "bar_lounge", "hotel"])
+const DISCOVERY_SEARCH_QUERY_PARAMETERS = new Set([
+    "countryCode",
+    "city",
+    "placeId",
+    "category",
+    "businessType",
+    "sort",
+    "latitude",
+    "longitude",
+    "radiusKm",
+    "page",
+    "limit",
+])
 
 function setDiscoveryNoStore(res) {
     const headers = {
@@ -82,11 +98,26 @@ function optionalCoordinate(value, { name, min, max }) {
     return parsed
 }
 
+function rejectUnsupportedDiscoverySearchParameters(rawQuery) {
+    for (const key of Object.keys(rawQuery || {})) {
+        if (!DISCOVERY_SEARCH_QUERY_PARAMETERS.has(key)) {
+            throw new PublicBusinessResolutionError(`Unsupported Discovery search parameter: ${key}`)
+        }
+    }
+}
+
 function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-function queryForDiscoverySearch({ countryCode, city, bounds, nearby, category, businessType }) {
+export function queryForDiscoverySearch({
+    countryCode,
+    city,
+    destinationGeometry,
+    nearby,
+    category,
+    businessType,
+}) {
     const query = {
         status: { $in: [...DISCOVERY_VISIBLE_BUSINESS_STATUSES] },
         "propertyProfile.discoveryPublished": true,
@@ -107,7 +138,13 @@ function queryForDiscoverySearch({ countryCode, city, bounds, nearby, category, 
                 ],
             },
         }
-    } else if (bounds) query.discoveryGeoPoint = { $geoWithin: { $box: bounds } }
+    } else if (destinationGeometry) {
+        query.discoveryGeoPoint = {
+            $geoWithin: {
+                $geometry: destinationGeometry,
+            },
+        }
+    }
     else if (city) query["propertyProfile.city"] = new RegExp(`^${escapeRegExp(city)}$`, "i")
 
     const categoryTypes = category ? CATEGORY_BUSINESS_TYPES[category] : null
@@ -124,6 +161,7 @@ function queryForDiscoverySearch({ countryCode, city, bounds, nearby, category, 
 }
 
 export function parseDiscoverySearchQuery(rawQuery = {}) {
+    rejectUnsupportedDiscoverySearchParameters(rawQuery)
     const rawCountryCode = optionalText(rawQuery.countryCode, { name: "countryCode", maxLength: 2 })
     const countryCode = rawCountryCode ? normalizePublicCountryCode(rawCountryCode) : null
     const city = optionalText(rawQuery.city, { name: "city", maxLength: 120 })
@@ -159,6 +197,7 @@ export function parseDiscoverySearchQuery(rawQuery = {}) {
     return {
         countryCode,
         city,
+        destinationGeometry: null,
         nearby: latitude === null ? null : { latitude, longitude, radiusKm },
         category,
         businessType,
@@ -179,7 +218,10 @@ async function lean(query) {
  * authoritative visibility check so publication revocation and suspension fail
  * closed even if Redis, CDN, or a later Discovery frontend cache is stale.
  */
-export async function searchDiscoveryPlaces(req, res, { businessModel = Business } = {}) {
+export async function searchDiscoveryPlaces(req, res, {
+    businessModel = Business,
+    resolveDestination = resolveDiscoveryDestination,
+} = {}) {
     try {
         const options = parseDiscoverySearchQuery(req.query)
         const placeId = optionalText(req.query?.placeId, { name: "placeId", maxLength: 255 })
@@ -187,10 +229,10 @@ export async function searchDiscoveryPlaces(req, res, { businessModel = Business
             throw new PublicBusinessResolutionError("Choose a destination or nearby coordinates, not both")
         }
         if (placeId) {
-            const resolved = await resolveDiscoveryDestination(placeId)
+            const resolved = await resolveDestination(placeId)
             options.countryCode = resolved.countryCode
             options.city = null
-            options.bounds = resolved.bounds
+            options.destinationGeometry = resolved.geometry
         }
         const query = queryForDiscoverySearch(options)
         const sort = options.sort === "name_desc"
@@ -219,7 +261,8 @@ export async function searchDiscoveryPlaces(req, res, { businessModel = Business
             },
         })
     } catch (error) {
-        if (error instanceof PublicBusinessResolutionError) {
+        if (error instanceof PublicBusinessResolutionError ||
+            error instanceof DiscoveryDestinationResolutionError) {
             return res.status(error.statusCode).json({ error: error.message })
         }
         console.error("[discovery:search]", error)

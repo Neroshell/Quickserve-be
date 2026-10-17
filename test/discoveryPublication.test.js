@@ -14,6 +14,7 @@ import {
     evaluateDiscoveryPublicationEligibility,
     getDiscoveryPublicationState,
 } from "../src/services/discoveryPublicationService.js"
+import { DiscoveryDestinationResolutionError } from "../src/services/discoveryDestinationResolver.js"
 
 function makeBusiness(overrides = {}) {
     return {
@@ -248,6 +249,7 @@ test("Discovery search query validation bounds pagination and rejects ambiguous 
     assert.deepEqual(parseDiscoverySearchQuery({}), {
         countryCode: null,
         city: null,
+        destinationGeometry: null,
         nearby: null,
         category: null,
         businessType: null,
@@ -257,6 +259,90 @@ test("Discovery search query validation bounds pagination and rejects ambiguous 
     })
     assert.throws(() => parseDiscoverySearchQuery({ limit: "51" }), /between 1 and 50/)
     assert.throws(() => parseDiscoverySearchQuery({ countryCode: ["mt", "us"] }), /provided once/)
+})
+
+test("Discovery selected destinations use a 2dsphere-compatible polygon without country-wide fallback", async () => {
+    let capturedQuery
+    const businessModel = {
+        find(query) {
+            capturedQuery = query
+            return queryResult([makeBusiness({
+                propertyProfile: {
+                    ...makeBusiness().propertyProfile,
+                    city: "St. Paul's Bay",
+                },
+            })])
+        },
+    }
+    const { req, res } = mockReqRes({ query: { placeId: "ChIJStPaulsBay", category: "stay" } })
+    const geometry = {
+        type: "Polygon",
+        coordinates: [[[14.4, 35.93], [14.44, 35.93], [14.44, 35.97], [14.4, 35.97], [14.4, 35.93]]],
+    }
+
+    await searchDiscoveryPlaces(req, res, {
+        businessModel,
+        resolveDestination: async () => ({ countryCode: "mt", city: "St. Paul's Bay", geometry }),
+    })
+
+    assert.equal(res.statusCode, 200)
+    assert.equal(capturedQuery.countryCode, "mt")
+    assert.equal(capturedQuery.businessType, "hotel")
+    assert.deepEqual(capturedQuery.discoveryGeoPoint, {
+        $geoWithin: { $geometry: geometry },
+    })
+    assert.equal("propertyProfile.city" in capturedQuery, true)
+    assert.equal(res.body.results.length, 1)
+})
+
+test("Discovery returns a destination error instead of a misleading empty or broad result", async () => {
+    let findCalled = false
+    const businessModel = {
+        find() {
+            findCalled = true
+            return queryResult([])
+        },
+    }
+    const { req, res } = mockReqRes({ query: { placeId: "ChIJUnavailable", category: "stay" } })
+
+    await searchDiscoveryPlaces(req, res, {
+        businessModel,
+        resolveDestination: async () => {
+            throw new DiscoveryDestinationResolutionError(
+                "Destination search is temporarily unavailable. Please try again shortly.",
+                { code: "DISCOVERY_DESTINATION_PROVIDER_UNAVAILABLE", statusCode: 503 },
+            )
+        },
+    })
+
+    assert.equal(res.statusCode, 503)
+    assert.equal(res.body.error, "Destination search is temporarily unavailable. Please try again shortly.")
+    assert.equal(findCalled, false)
+})
+
+test("Discovery rejects unsupported location-like parameters before a broad search can run", async () => {
+    let findCalled = false
+    let destinationResolved = false
+    const businessModel = {
+        find() {
+            findCalled = true
+            return queryResult([])
+        },
+    }
+    const { req, res } = mockReqRes({ query: { category: "stay", placeI: "ChIJStPaulsBay" } })
+
+    await searchDiscoveryPlaces(req, res, {
+        businessModel,
+        resolveDestination: async () => {
+            destinationResolved = true
+            return null
+        },
+    })
+
+    assert.equal(res.statusCode, 400)
+    assert.equal(res.body.error, "Unsupported Discovery search parameter: placeI")
+    assert.equal(findCalled, false)
+    assert.equal(destinationResolved, false)
 })
 
 test("Discovery nearby query uses bounded geospatial radius, country and publication filters", async () => {

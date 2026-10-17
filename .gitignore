@@ -71,6 +71,9 @@ test/*
 !test/qrCapability.test.js
 !test/orderFulfillmentService.test.js
 !test/orderFulfillment.integration.test.js
+!test/discoveryGeospatial.integration.test.js
+!test/discoveryGeoPointRepair.test.js
+!test/discoveryGeoPointRepair.integration.test.js
 !test/customerTimingWaiterCall.test.js
 !test/waiterCallCurrentVisit.test.js
 !test/inventoryPhase5B.test.js
