@@ -1,6 +1,11 @@
 import express from "express"
-import { waiterOrders, waiterPastOrders, createWaiterOrder, cancelWaiterOrder } from "../controllers/waitstaffOrdersController.js"
-import { markPaid, reconcileComplete, updateOrderStatus } from "../controllers/orderController.js"
+import {
+    waiterOrders,
+    waiterPastOrders,
+    createWaiterOrder,
+    cancelWaiterOrder,
+} from "../controllers/waitstaffOrdersController.js"
+import { confirmHistoricalReconciliation, markPaid, markPaidForReconciliation, reconcileComplete, updateOrderStatus } from "../controllers/orderController.js"
 import {
     createWaiterCall,
     listWaiterCalls,
@@ -10,7 +15,7 @@ import {
 
 import { listServicePoints } from "../controllers/servicePointController.js"
 
-import { requireAuth, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { requireAuth, requireOperationalPermission, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 import { requireOfflineServiceActive } from "../middleware/billingMiddleware.js"
 
@@ -96,7 +101,22 @@ const requireReconciliationRole = requireRole("waiter", "manager", "owner", "co_
  *       200:
  *         description: Paginated past orders
  */
-router.get("/past-orders", requireAuth, requireReconciliationRole, requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW), waiterPastOrders)
+router.get(
+    "/past-orders",
+    requireAuth,
+    requireReconciliationRole,
+    requireOperationalPermission(PERMISSIONS.ORDERS_RECONCILIATION_VIEW, PERMISSIONS.ORDERS_RECONCILE),
+    waiterPastOrders,
+)
+
+// Reconciliation is the only recovery path that records a historic offline
+// payment without automatically sending a receipt. The generic mark-paid
+// endpoint retains its normal receipt behavior and ignores browser flags.
+router.patch("/reconciliation/orders/:orderId/mark-paid", requireAuth, requireReconciliationRole, requireOperationalPermission(PERMISSIONS.ORDERS_RECONCILE), markPaidForReconciliation)
+
+// This exceptional path requires the dedicated reconciliation permission and
+// preserves the recorded preparation and inventory history.
+router.patch("/reconciliation/orders/:orderId/historical-service-correction", requireAuth, requireReconciliationRole, requireOperationalPermission(PERMISSIONS.ORDERS_RECONCILE), confirmHistoricalReconciliation)
 
 /**
  * @openapi
@@ -122,7 +142,7 @@ router.patch("/orders/:orderId/mark-paid", requireAuth, requireReconciliationRol
  *       200:
  *         description: Order marked as completed
  */
-router.patch("/orders/:orderId/reconcile-complete", requireAuth, requireReconciliationRole, requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), reconcileComplete)
+router.patch("/orders/:orderId/reconcile-complete", requireAuth, requireReconciliationRole, requireOperationalPermission(PERMISSIONS.ORDERS_RECONCILE), reconcileComplete)
 
 router.use(requireAuth, requireRole("waiter"))
 

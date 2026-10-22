@@ -10,6 +10,7 @@ import {
 } from "../services/publicBusinessResolverService.js";
 import { findHotelRoomAvailability } from "../services/hotelReservationAvailabilityService.js";
 import { toPublicHotelAvailabilityRoomDto } from "./reservationController.js";
+import { assertReservationEligibility } from "../services/reservationEligibilityService.js";
 
 function publicImage(value) {
   if (typeof value !== "string") return null;
@@ -71,6 +72,7 @@ async function handleDiscoveryHotel(req, res, withAvailability) {
       return res.json({ currency: business.currency || 'EUR', rooms: rooms.map(roomCatalogDto) });
     }
 
+    assertReservationEligibility(business);
     if (business.settings?.reservationsEnabled === false) {
       return res.status(403).json({ error: "Reservations are disabled." });
     }

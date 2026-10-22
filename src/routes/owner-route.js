@@ -36,7 +36,9 @@ import {
     getStaff,
     createStaff,
     deleteStaff,
-    updateManagerPermissions
+    updateManagerPermissions,
+    updateReconciliationPermission,
+    updateReconciliationViewPermission,
 } from "../controllers/staffController.js"
 import {
     listServicePoints,
@@ -533,6 +535,18 @@ router.patch(
     "/staff/:staffId/permissions",
     requireManagementArea(MANAGEMENT_ACCESS_AREAS.STAFF_MANAGEMENT),
     updateManagerPermissions,
+)
+router.patch(
+    "/staff/:staffId/reconciliation-permission",
+    requireRole("owner", "restaurant_owner", "co_owner"),
+    requireManagementArea(MANAGEMENT_ACCESS_AREAS.STAFF_MANAGEMENT),
+    updateReconciliationPermission,
+)
+router.patch(
+    "/staff/:staffId/reconciliation-view-permission",
+    requireRole("owner", "restaurant_owner", "co_owner"),
+    requireManagementArea(MANAGEMENT_ACCESS_AREAS.STAFF_MANAGEMENT),
+    updateReconciliationViewPermission,
 )
 router.delete("/staff/:staffId", requirePermission(PERMISSIONS.STAFF_MANAGE), deleteStaff)
 

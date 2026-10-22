@@ -2,7 +2,7 @@ import express from "express"
 import rateLimit from "express-rate-limit"
 import { listOrders, listCurrentOrders, createOrder, getOrderById, updateOrderStatus, deleteOrdersBySession, markPaid, sendReceipt, saveReceiptEmail, reconcileComplete } from "../controllers/orderController.js"
 import { reorderFromOrder } from "../controllers/reorderController.js"
-import { requireAuth, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
+import { requireAuth, requireOperationalPermission, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
 
 const router = express.Router()
@@ -275,7 +275,7 @@ router.post("/:orderId/receipt", receiptLimiter, requireAuth, requireRole("waite
  *       409:
  *         description: Concurrent update conflict
  */
-router.patch("/:orderId/reconcile-complete", requireAuth, requireRole("waiter", "manager", "owner", "co_owner"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), reconcileComplete)
+router.patch("/:orderId/reconcile-complete", requireAuth, requireRole("waiter", "manager", "owner", "co_owner"), requireOperationalPermission(PERMISSIONS.ORDERS_RECONCILE), reconcileComplete)
 
 /**
  * @openapi

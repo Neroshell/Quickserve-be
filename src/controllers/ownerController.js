@@ -21,7 +21,59 @@ import {
     invalidatePublicBusinessConfig,
     invalidatePublicBusinessRoute,
 } from "../services/cacheInvalidationService.js"
+import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
+import { hotelDashboardService } from "../services/dashboard/hotelDashboardService.js"
+import { PERMISSIONS } from "../constants/permissions.js"
+import {
+    MANAGEMENT_ACCESS_AREAS,
+    resolveManagementAccess,
+} from "../constants/managementAccess.js"
 import { resolveBusinessDay } from "../utils/businessDate.js"
+
+function dashboardAccessForRequest(req) {
+    const user = req.session?.user
+    const accessUser = {
+        ...user,
+        permissions: req.resolvedManagerPermissions || user?.permissions || [],
+        coOwnerRestrictions:
+            req.resolvedCoOwnerRestrictions || user?.coOwnerRestrictions || [],
+    }
+    const canAccess = (area, permission) => resolveManagementAccess(
+        accessUser,
+        {
+            area,
+            managerPermissions: permission ? [permission] : [],
+        }
+    )
+
+    return {
+        reservations: canAccess(
+            MANAGEMENT_ACCESS_AREAS.RESERVATIONS,
+            PERMISSIONS.RESERVATIONS_VIEW
+        ),
+        housekeeping: canAccess(
+            MANAGEMENT_ACCESS_AREAS.HOUSEKEEPING,
+            PERMISSIONS.HOUSEKEEPING_VIEW
+        ),
+        transactions: canAccess(
+            MANAGEMENT_ACCESS_AREAS.TRANSACTIONS,
+            PERMISSIONS.TRANSACTIONS_VIEW
+        ),
+        servicePoints: canAccess(
+            MANAGEMENT_ACCESS_AREAS.SERVICE_POINTS,
+            PERMISSIONS.SERVICE_POINTS_VIEW
+        ),
+        staff: canAccess(
+            MANAGEMENT_ACCESS_AREAS.STAFF_MANAGEMENT,
+            PERMISSIONS.STAFF_VIEW
+        ),
+        billing: canAccess(MANAGEMENT_ACCESS_AREAS.PAYMENTS_AND_BILLING),
+        foodServiceOrders: canAccess(
+            MANAGEMENT_ACCESS_AREAS.ORDERS,
+            PERMISSIONS.ORDERS_VIEW
+        ),
+    }
+}
 
 // GET /owner/orders?range=today|yesterday|7days|thisMonth|custom&from=...&to=...&status=all|placed|in_progress|ready|completed&search=...&orderType=...&paymentStatus=...&servicePointId=...&cursor=...&direction=next|previous&limit=25
 export async function ownerOrders(req, res) {
@@ -234,6 +286,16 @@ export async function getDashboardData(req, res) {
         const business = await Business.findOne({ businessId }).lean()
         if (!business) return res.status(404).json({ error: "Business not found" })
 
+        const capabilities = resolveBusinessCapabilities(business)
+        if (capabilities.visibleModules.includes("lodging")) {
+            const hotelDashboard = await hotelDashboardService({
+                business,
+                access: dashboardAccessForRequest(req),
+                hasFoodService: capabilities.visibleModules.includes("foodService"),
+            })
+            return res.json(hotelDashboard)
+        }
+
         const { foodOperationalRange: todayOperationalRange } = resolveAnalyticsDomainRanges({ preset: "today", business });
         const todayStartJS = todayOperationalRange.startUtc;
         const todayEndJS = todayOperationalRange.endUtcExclusive;
@@ -424,6 +486,7 @@ export async function getDashboardData(req, res) {
         }))
 
         return res.json({
+            dashboardType: "foodService",
             snapshot: {
                 todayOrders,
                 todayRevenue: +todayRevenue.toFixed(2),

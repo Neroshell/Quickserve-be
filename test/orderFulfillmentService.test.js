@@ -486,6 +486,52 @@ test("waitstaff alone performs final handoff after every line is ready and payme
   assert.equal(replay.replayed, true)
 })
 
+test("reconciliation through the normal handoff records the real before and after state", async () => {
+  const order = {
+    orderId: "ord_reconcile_ready",
+    businessId: "biz_a",
+    status: "ready",
+    paymentChannel: "online",
+    paymentStatus: "paid",
+    items: [line({ status: "ready" })],
+    reconciliationHistory: [],
+  }
+  const completed = await completeOrderForWaitstaff({
+    businessId: "biz_a",
+    orderId: order.orderId,
+    actor: waiterActor,
+    reconciliation: { source: "individual_reconciliation" },
+  }, fakeDependencies(order))
+
+  assert.equal(completed.order.status, "completed")
+  assert.equal(completed.order.reconciliationHistory.length, 1)
+  assert.equal(completed.order.reconciliationHistory[0].operation, "normal_completion")
+  assert.equal(completed.order.reconciliationHistory[0].before.status, "ready")
+  assert.equal(completed.order.reconciliationHistory[0].after.status, "completed")
+})
+
+test("final handoff requires confirmed payment for online and offline orders", async () => {
+  const order = {
+    orderId: "ord_online_payment_pending",
+    businessId: "biz_a",
+    status: "ready",
+    paymentChannel: "online",
+    paymentStatus: "pending",
+    items: [line({ status: "ready" })],
+  }
+
+  await assert.rejects(
+    completeOrderForWaitstaff({
+      businessId: "biz_a",
+      orderId: order.orderId,
+      actor: waiterActor,
+      reconciliation: { source: "individual_reconciliation" },
+    }, fakeDependencies(order)),
+    { code: "ORDER_PAYMENT_REQUIRED" },
+  )
+  assert.equal(order.status, "ready")
+})
+
 test("customer projection is deterministic and hides internal fulfilment terminology", () => {
   const paidAt = new Date("2026-09-04T11:59:00.000Z")
   const mixed = {

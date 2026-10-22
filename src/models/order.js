@@ -102,6 +102,91 @@ const InventoryDeductionLineSchema = new mongoose.Schema(
   { _id: false },
 )
 
+const ReconciliationPreparationEvidenceSchema = new mongoose.Schema(
+  {
+    totalLines: { type: Number, required: true, min: 0 },
+    readyLines: { type: Number, required: true, min: 0 },
+    inProgressLines: { type: Number, required: true, min: 0 },
+    pendingLines: { type: Number, required: true, min: 0 },
+  },
+  { _id: false },
+)
+
+const ReconciliationStateSchema = new mongoose.Schema(
+  {
+    status: { type: String, enum: ["placed", "in_progress", "ready", "completed", "cancelled", null], default: null },
+    paymentStatus: { type: String, default: null, maxlength: 80 },
+    paidVia: { type: String, default: null, maxlength: 80 },
+    preparationEvidence: { type: ReconciliationPreparationEvidenceSchema, required: true },
+  },
+  { _id: false },
+)
+
+// A bounded audit trail for the explicit recovery workflow. This is distinct
+// from normal operational history and stores the actual before/after state.
+const ReconciliationHistoryEntrySchema = new mongoose.Schema(
+  {
+    reconciliationId: { type: String, required: true, trim: true, maxlength: 100 },
+    operation: {
+      type: String,
+      enum: ["offline_payment_recorded", "normal_completion", "administrative_completion"],
+      required: true,
+    },
+    businessId: { type: String, required: true, trim: true, maxlength: 160 },
+    recordedAt: { type: Date, required: true },
+    performedBy: { type: FulfillmentActorSchema, required: true },
+    reason: { type: String, default: null, trim: true, maxlength: 1000 },
+    servedDeclaration: { type: Boolean, default: null },
+    before: { type: ReconciliationStateSchema, required: true },
+    after: { type: ReconciliationStateSchema, required: true },
+    inventoryDisposition: {
+      type: String,
+      enum: ["not_applicable", "normal_lifecycle_recorded", "unchanged", "unchanged_with_existing_reservation"],
+      required: true,
+    },
+  },
+  { _id: false },
+)
+
+// An exceptional completion is deliberately separate from the normal
+// fulfilment lifecycle. It captures the authority for setting the current
+// order to completed without fabricating missing kitchen/bar events.
+const HistoricalServiceCorrectionSchema = new mongoose.Schema(
+  {
+    correctionId: { type: String, required: true, trim: true, maxlength: 100 },
+    type: {
+      type: String,
+      enum: ["served_without_recorded_preparation"],
+      required: true,
+    },
+    reason: { type: String, default: null, trim: true, maxlength: 1000 },
+    independentlyVerified: { type: Boolean, required: true },
+    confirmedAt: { type: Date, required: true },
+    confirmedBy: { type: FulfillmentActorSchema, required: true },
+    originalStatus: {
+      type: String,
+      enum: ["placed", "in_progress"],
+      required: true,
+    },
+    originalPreparationEvidence: {
+      totalLines: { type: Number, required: true, min: 0 },
+      readyLines: { type: Number, required: true, min: 0 },
+      inProgressLines: { type: Number, required: true, min: 0 },
+      pendingLines: { type: Number, required: true, min: 0 },
+    },
+    // Administrative completion leaves stock exactly as the original record
+    // left it. A pre-existing reservation remains visible for a later,
+    // separately-authorised inventory review rather than being consumed or
+    // released on guesswork.
+    inventoryDisposition: {
+      type: String,
+      enum: ["unchanged", "unchanged_with_existing_reservation"],
+      required: true,
+    },
+  },
+  { _id: false },
+)
+
 InventoryDeductionLineSchema.pre("validate", function () {
   const canonical = this.authority === ORDER_INVENTORY_AUTHORITIES.CANONICAL_INVENTORY_ITEM
   if (
@@ -259,6 +344,20 @@ const OrderSchema = new mongoose.Schema(
     servedByStaffId: { type: String, default: null, index: true },
     servedByName:    { type: String, default: null },
     servedAt:        { type: Date,   default: null },
+
+    // Exceptional, management-confirmed completion for an order whose source
+    // fulfilment evidence is missing. It never rewrites that source history.
+    historicalServiceCorrection: { type: HistoricalServiceCorrectionSchema, default: null },
+    reconciliationHistory: {
+      type: [ReconciliationHistoryEntrySchema],
+      default: [],
+      validate: {
+        validator(value) {
+          return Array.isArray(value) && value.length <= 20
+        },
+        message: "reconciliationHistory cannot contain more than 20 entries",
+      },
+    },
 
     // Offline commission tracking â€” prevents duplicate usage reports to Stripe
     commissionReportedToStripe: { type: Boolean, default: false, index: true },

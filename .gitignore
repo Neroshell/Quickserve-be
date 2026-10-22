@@ -70,7 +70,10 @@ test/*
 !test/customerOrderVisitScope.test.js
 !test/qrCapability.test.js
 !test/orderFulfillmentService.test.js
+!test/hotelDashboardService.test.js
+!test/waitstaffPastOrders.test.js
 !test/orderFulfillment.integration.test.js
+!test/reconciliationWorkflow.integration.test.js
 !test/discoveryGeospatial.integration.test.js
 !test/discoveryGeoPointRepair.test.js
 !test/discoveryGeoPointRepair.integration.test.js

@@ -494,7 +494,7 @@ test("Phase 1 wiring reuses canonical Room Usage and content-free realtime witho
     assert.match(roomUsage, /housekeepingOperationId[\s\S]*supplyOutcome:\s*"recorded"[\s\S]*roomUsageOperationId/)
     assert.match(roomUsage, /withCanonicalInventoryTransaction/)
     assert.match(realtime, /HOUSEKEEPING_CHANGED_EVENT = "housekeeping_changed"/)
-    assert.match(realtime, /\["housekeeping"\],[\s\S]*\{ invalidated: true \}/)
+    assert.match(realtime, /\["housekeeping", "owner"\],[\s\S]*\{ invalidated: true \}/)
     assert.match(route, /HOUSEKEEPING_VIEW[\s\S]*HOUSEKEEPING_PERFORM/)
     assert.doesNotMatch(controller, /Notification|BullMQ|queue/i)
 })
@@ -508,7 +508,7 @@ test("Housekeeping realtime publishes only a tenant-scoped content-free invalida
     assert.deepEqual(calls, [[
         HOUSEKEEPING_CHANGED_EVENT,
         "hotel_a",
-        ["housekeeping"],
+        ["housekeeping", "owner"],
         { invalidated: true },
     ]])
 })

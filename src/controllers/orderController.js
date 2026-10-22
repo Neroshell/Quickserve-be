@@ -55,6 +55,11 @@ import {
 import { publishOrderRealtime } from "../services/orderRealtimeService.js"
 import { safelyNotifyInventoryStockTransitions } from "../services/inventoryNotificationIntegrationService.js"
 import { resolveCurrentCustomerVisit } from "../services/customerOrderAccessService.js"
+import { confirmHistoricalServiceCorrection } from "../services/historicalOrderCorrectionService.js"
+import {
+  createReconciliationHistoryEntry,
+  reconciliationStateSnapshot,
+} from "../services/orderReconciliationAudit.js"
 // Restaurant-flow defect safeguards for direct/offline orders:
 // validate and normalize the cart, enforce business ordering/payment settings,
 // and derive currency from the business instead of accepting client values.
@@ -685,10 +690,10 @@ export async function updateOrderStatus(req, res) {
   }
 }
 
-export async function markPaid(req, res) {
+async function recordOfflinePayment(req, res, { suppressAutomaticReceipt = false, reconciliation = false } = {}) {
   try {
     const { orderId } = req.params
-    const { paidVia } = req.body
+    const { paidVia } = req.body || {}
     // Staff-only action: businessId is taken from the authenticated session,
     // never from the request, so a staffer can't mark another business's orders paid.
     const businessId = req.session?.user?.businessId
@@ -739,10 +744,11 @@ export async function markPaid(req, res) {
     }
 
     // ✅ ATOMIC UPDATE: Prevent double mark-paid race condition
+    const paidAt = new Date()
     const updateObj = {
       paymentStatus: "paid",
       paidVia,
-      paidAt: new Date()
+      paidAt,
     }
     if (order.receiptEmail) {
       updateObj.crmEmail = order.receiptEmail.toLowerCase().trim()
@@ -778,13 +784,45 @@ export async function markPaid(req, res) {
     if (order.commissionRateAtOrder == null) updateObj.commissionRateAtOrder = lockedRate
     if (order.platformFeeRateAtOrder == null) updateObj.platformFeeRateAtOrder = lockedRate
 
+    const update = { $set: updateObj }
+    if (reconciliation) {
+      const historyEntry = createReconciliationHistoryEntry({
+        businessId,
+        operation: "offline_payment_recorded",
+        actor: req.session?.user,
+        before: reconciliationStateSnapshot(order),
+        after: reconciliationStateSnapshot({ ...order, ...updateObj }),
+        inventoryDisposition: "not_applicable",
+        recordedAt: paidAt,
+      })
+      update.$push = {
+        reconciliationHistory: {
+          $each: [historyEntry],
+          $slice: -20,
+        },
+      }
+    }
+
     const updatedOrder = await Order.findOneAndUpdate(
       { orderId, businessId, paymentChannel: "offline", status: { $ne: "cancelled" }, paymentStatus: { $ne: "paid" } },
-      { $set: updateObj },
+      update,
       { new: true }
     )
 
     if (!updatedOrder) {
+      const latest = await Order.findOne({ orderId, businessId }).lean()
+      if (latest?.paymentStatus === "paid") {
+        return res.json({
+          success: true,
+          alreadyPaid: true,
+          orderId: latest.orderId,
+          paymentStatus: latest.paymentStatus,
+          paidVia: latest.paidVia,
+          paidAt: latest.paidAt || null,
+          reconciliation: reconciliation ? latest.reconciliationHistory?.at(-1) || null : null,
+          automaticReceiptSuppressed: suppressAutomaticReceipt === true,
+        })
+      }
       return res.status(409).json({ message: "Order was already marked paid by another request." })
     }
 
@@ -802,7 +840,10 @@ export async function markPaid(req, res) {
 
     // ✅ Step 3: Respond immediately — do NOT wait for email
 
-    if (updatedOrder.receiptEmail && !updatedOrder.receiptSent) {
+    // Routine reconciliation can record a previously missed cash/POS payment.
+    // That recovery must not itself send a historical receipt. Staff can still
+    // use the explicit receipt action after checking the order.
+    if (updatedOrder.receiptEmail && !updatedOrder.receiptSent && suppressAutomaticReceipt !== true) {
       await dispatchAutomaticOrderReceipt({
         businessId: updatedOrder.businessId,
         orderId: updatedOrder.orderId,
@@ -838,6 +879,9 @@ export async function markPaid(req, res) {
       orderId: order.orderId,
       paymentStatus: updatedOrder.paymentStatus,
       paidVia: updatedOrder.paidVia,
+      paidAt: updatedOrder.paidAt || null,
+      reconciliation: reconciliation ? updatedOrder.reconciliationHistory?.at(-1) || null : null,
+      automaticReceiptSuppressed: suppressAutomaticReceipt === true,
     })
 
     // ✅ Step 4: Fire-and-forget receipt email — runs AFTER response is sent
@@ -847,6 +891,17 @@ export async function markPaid(req, res) {
     console.error("[markPaid] Error:", err)
     return res.status(500).json({ message: "Server error" })
   }
+}
+
+// The ordinary payment route preserves its existing receipt behaviour.
+// Reconciliation receives its own server-authorized entry point below, so a
+// browser cannot choose to suppress customer communication on this route.
+export async function markPaid(req, res) {
+  return recordOfflinePayment(req, res)
+}
+
+export async function markPaidForReconciliation(req, res) {
+  return recordOfflinePayment(req, res, { suppressAutomaticReceipt: true, reconciliation: true })
 }
 
 export async function sendReceipt(req, res) {
@@ -1053,6 +1108,7 @@ export async function reconcileComplete(req, res) {
         businessId,
         orderId,
         actor: req.session.user,
+        reconciliation: { source: "individual_reconciliation" },
       })
       if (completion.changed) {
         await publishOrderRealtime("order_updated", completion.order, {
@@ -1066,6 +1122,7 @@ export async function reconcileComplete(req, res) {
         status: completion.order.status,
         completedAt: completion.order.completedAt,
         replayed: completion.replayed,
+        reconciliation: completion.order.reconciliationHistory?.at(-1) || null,
       })
     }
 
@@ -1075,5 +1132,45 @@ export async function reconcileComplete(req, res) {
       return res.status(err.statusCode).json({ error: err.message, code: err.code })
     }
     return res.status(500).json({ error: "Failed to reconcile order" })
+  }
+}
+
+/**
+ * Authorized historical correction for an order whose recorded
+ * preparation cannot support the normal path. It changes the authoritative
+ * current status without inventing readiness, served, or inventory history.
+ */
+export async function confirmHistoricalReconciliation(req, res) {
+  try {
+    const { orderId } = req.params
+    const businessId = req.session?.user?.businessId
+    if (!businessId) return res.status(401).json({ error: "Unauthorized" })
+
+    const correction = await confirmHistoricalServiceCorrection({
+      businessId,
+      orderId,
+      actor: req.session.user,
+      reason: req.body?.reason,
+    })
+    if (correction.changed) {
+      await publishOrderRealtime("order_updated", correction.order, {
+        action: "administrative_reconciliation_completed",
+      })
+    }
+    return res.json({
+      success: true,
+      orderId: correction.order.orderId,
+      status: correction.order.status,
+      completedAt: correction.order.completedAt,
+      replayed: correction.replayed,
+      historicalServiceCorrection: correction.order.historicalServiceCorrection,
+      reconciliationHistory: correction.order.reconciliationHistory || [],
+    })
+  } catch (err) {
+    console.error("[confirmHistoricalReconciliation]", err)
+    if (Number.isInteger(err?.statusCode)) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code })
+    }
+    return res.status(500).json({ error: "Unable to reconcile the order" })
   }
 }

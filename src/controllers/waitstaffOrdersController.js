@@ -42,7 +42,11 @@ import {
 } from "../utils/restaurantOrderValidation.js"
 
 import { resolveBusinessDay, resolvePreviousBusinessDay } from "../utils/businessDate.js"
-import { createOrderLineFulfillmentSnapshot } from "../services/orderFulfillmentService.js"
+import {
+  createOrderLineFulfillmentSnapshot,
+  materializeLegacyOrderFulfillment,
+  deriveOrderStatusFromLines,
+} from "../services/orderFulfillmentService.js"
 import { publishOrderRealtime } from "../services/orderRealtimeService.js"
 import { safelyNotifyInventoryStockTransitions } from "../services/inventoryNotificationIntegrationService.js"
 import { buildSafeSearchRegex } from "../utils/searchUtils.js"
@@ -103,15 +107,30 @@ function getHistoryDateRange(business, range = "yesterday", from, to) {
 }
 
 function buildHistoryTimeline(order) {
+  const reconciliationTimeline = (order.reconciliationHistory || []).map((entry) => ({
+    label: entry.operation === "offline_payment_recorded"
+      ? "Payment recorded during review"
+      : entry.operation === "administrative_completion"
+        ? "Completed after verified review"
+        : "Completed after review",
+    at: entry.recordedAt,
+    by: entry.performedBy?.name || null,
+    reason: entry.reason || null,
+  }))
+  const hasReconciliationPayment = (order.reconciliationHistory || [])
+    .some((entry) => entry.operation === "offline_payment_recorded")
+  const hasReconciliationCompletion = (order.reconciliationHistory || [])
+    .some((entry) => ["normal_completion", "administrative_completion"].includes(entry.operation))
   return [
     order.createdAt ? { label: "Created", at: order.createdAt } : null,
     order.readyAt ? { label: "Ready", at: order.readyAt } : null,
-    order.completedAt ? { label: "Completed", at: order.completedAt } : null,
+    order.completedAt && !hasReconciliationCompletion ? { label: "Completed", at: order.completedAt } : null,
     order.servedAt ? { label: "Served", at: order.servedAt, by: order.servedByName || null } : null,
-    order.paidAt ? { label: "Paid", at: order.paidAt, by: order.paidByName || null } : null,
+    order.paidAt && !hasReconciliationPayment ? { label: "Paid", at: order.paidAt, by: order.paidByName || null } : null,
     order.receiptSentAt ? { label: "Receipt sent", at: order.receiptSentAt } : null,
+    ...reconciliationTimeline,
     order.cancelledAt ? { label: "Cancelled", at: order.cancelledAt } : null,
-  ].filter(Boolean)
+  ].filter(Boolean).sort((left, right) => new Date(left.at).getTime() - new Date(right.at).getTime())
 }
 
 function normalizePaymentMethod(order) {
@@ -126,11 +145,295 @@ function getWaiterName(order, staffById) {
     order.servedByName ||
     order.paidByName ||
     order.completedBy ||
+    order.historicalServiceCorrection?.confirmedBy?.name ||
     staffById.get(order.servedByStaffId) ||
     staffById.get(order.paidByStaffId) ||
     staffById.get(order.createdByStaffId) ||
     ""
   )
+}
+
+function reconciliationPreparationEvidence(items, derivedStatus) {
+  const lines = items || []
+  const readyLines = lines.filter((item) => item.fulfillmentStatus === "ready").length
+  const inProgressLines = lines.filter((item) => item.fulfillmentStatus === "in_progress").length
+  const pendingLines = Math.max(0, lines.length - readyLines - inProgressLines)
+
+  return {
+    totalLines: lines.length,
+    readyLines,
+    inProgressLines,
+    pendingLines,
+    derivedStatus,
+  }
+}
+
+export function assessOrderReconciliation(order) {
+  if (order.status === "cancelled") {
+    return {
+      canMarkCompleted: false,
+      canMarkPaid: false,
+      reconciliationStatus: "cancelled",
+      reconciliationReason: "Order was cancelled",
+      preparationEvidence: null,
+    }
+  }
+
+  const isOfflineUnpaid = order.paymentChannel === "offline" && ["pending", "unpaid"].includes(order.paymentStatus)
+  const canMarkPaid = isOfflineUnpaid && order.status !== "cancelled"
+
+  // Materialize line fulfillment to check line-level readiness according to canonical fulfillment rules
+  const tempItems = (order.items || []).map((it) => ({ ...it }))
+  const tempOrder = {
+    status: order.status,
+    items: tempItems,
+    updatedAt: order.updatedAt,
+    createdAt: order.createdAt,
+    readyAt: order.readyAt,
+  }
+  materializeLegacyOrderFulfillment(tempOrder)
+  const derivedStatus = deriveOrderStatusFromLines(tempOrder.items)
+  const preparationEvidence = reconciliationPreparationEvidence(tempOrder.items, derivedStatus)
+
+  const isFulfillmentReady = derivedStatus === "ready" || order.status === "ready"
+
+  // A completed order can still need a legitimate offline-payment recovery.
+  // Keep the completion state immutable here, but let the unified review flow
+  // expose the existing, authorized payment-recording operation.  This avoids
+  // hiding a real financial issue simply because service was already recorded.
+  if (order.status === "completed") {
+    if (isOfflineUnpaid) {
+      return {
+        canMarkCompleted: false,
+        canMarkPaid,
+        reconciliationStatus: "payment_required",
+        reconciliationReason: "Offline payment has not been recorded",
+        preparationEvidence,
+      }
+    }
+    return {
+      canMarkCompleted: false,
+      canMarkPaid: false,
+      reconciliationStatus: "already_completed",
+      reconciliationReason: null,
+      preparationEvidence,
+    }
+  }
+
+  // A payment problem can be resolved through the existing payment flow. It is
+  // the first actionable blocker, while preparation still remains independently
+  // revalidated by canonical completion after payment has been recorded.
+  if (isOfflineUnpaid) {
+    return {
+      canMarkCompleted: false,
+      canMarkPaid,
+      reconciliationStatus: "payment_required",
+      reconciliationReason: "Offline payment must be recorded before order can be completed",
+      preparationEvidence,
+    }
+  }
+
+  if (!isFulfillmentReady) {
+    return {
+      canMarkCompleted: false,
+      canMarkPaid,
+      reconciliationStatus: "prep_not_confirmed",
+      reconciliationReason: "Kitchen or bar preparation has not been marked ready",
+      preparationEvidence,
+    }
+  }
+
+  return {
+    canMarkCompleted: true,
+    canMarkPaid: false,
+    reconciliationStatus: "ready_to_complete",
+    reconciliationReason: null,
+    preparationEvidence,
+  }
+}
+
+function getPastOrdersInput(query = {}) {
+  const value = (key, fallback = "") => typeof query[key] === "string" ? query[key] : fallback
+  const range = value("range", "today")
+  const status = value("status", "all")
+  const paymentStatus = value("paymentStatus", "all")
+  const paymentMethod = value("paymentMethod", "all")
+  const search = value("search", "")
+  const from = value("from", "")
+  const to = value("to", "")
+  const isNeedsReconciliation = status === "needs_reconciliation" || value("needsReconciliation") === "true"
+
+  return {
+    range,
+    status,
+    paymentStatus,
+    paymentMethod,
+    search,
+    from,
+    to,
+    isNeedsReconciliation,
+  }
+}
+
+async function buildPastOrdersFilter({ businessId, business, query = {} }) {
+  const input = getPastOrdersInput(query)
+  const { range, status, paymentStatus, paymentMethod, search, from, to, isNeedsReconciliation } = input
+
+  let startJS = null
+  let endJS = null
+  if (isNeedsReconciliation && (!query.range || range === "all")) {
+    const { foodOperationalRange: todayRange } = resolveAnalyticsDomainRanges({ preset: "today", business })
+    endJS = todayRange.startUtc
+  } else {
+    const dateRange = getHistoryDateRange(business, range, from, to)
+    startJS = dateRange.startJS
+    endJS = dateRange.endJS
+  }
+
+  const andClauses = [{ businessId }]
+  if (startJS && endJS) {
+    andClauses.push({ createdAt: { $gte: startJS, $lt: endJS } })
+  } else if (endJS) {
+    andClauses.push({ createdAt: { $lt: endJS } })
+  }
+
+  if (isNeedsReconciliation) {
+    andClauses.push({
+      $or: [
+        { status: { $in: ["placed", "in_progress", "ready"] } },
+        { paymentChannel: "offline", paymentStatus: { $ne: "paid" }, status: { $ne: "cancelled" } },
+      ],
+    })
+  } else {
+    const allowedStatuses = ["placed", "in_progress", "ready", "completed", "cancelled"]
+    if (status !== "all" && allowedStatuses.includes(status)) {
+      andClauses.push({ status })
+    } else {
+      andClauses.push({ status: { $in: allowedStatuses } })
+    }
+  }
+
+  if (paymentStatus === "paid") {
+    andClauses.push({ paymentStatus: "paid" })
+  } else if (paymentStatus === "pending") {
+    andClauses.push({ paymentStatus: { $in: ["pending", "unpaid"] } })
+  }
+
+  if (paymentMethod === "online") {
+    andClauses.push({ paymentChannel: "online" })
+  } else if (paymentMethod === "offline") {
+    andClauses.push({ paymentChannel: "offline" })
+  } else if (paymentMethod === "cash") {
+    andClauses.push({ paidVia: "cash" })
+  } else if (paymentMethod === "pos_card") {
+    andClauses.push({ paidVia: "pos_card" })
+  }
+
+  const searchRegex = buildSafeSearchRegex(search)
+  if (searchRegex) {
+    const [matchingStaff, matchingServicePoints] = await Promise.all([
+      Staff.find({ businessId, name: { $regex: searchRegex } }, { staffId: 1 }).lean(),
+      ServicePoint.find({ businessId, label: { $regex: searchRegex } }, { servicePointId: 1 }).lean(),
+    ])
+    const matchingStaffIds = matchingStaff.map((staff) => staff.staffId).filter(Boolean)
+    const matchingServicePointIds = matchingServicePoints.map((point) => point.servicePointId).filter(Boolean)
+    const searchOr = [
+      { orderId: { $regex: searchRegex } },
+      { receiptEmail: { $regex: searchRegex } },
+      { crmEmail: { $regex: searchRegex } },
+      { servicePointId: { $regex: searchRegex } },
+      { displayLabel: { $regex: searchRegex } },
+      { paidByName: { $regex: searchRegex } },
+      { servedByName: { $regex: searchRegex } },
+      { completedBy: { $regex: searchRegex } },
+    ]
+    if (matchingServicePointIds.length > 0) searchOr.push({ servicePointId: { $in: matchingServicePointIds } })
+    if (matchingStaffIds.length > 0) {
+      searchOr.push(
+        { createdByStaffId: { $in: matchingStaffIds } },
+        { paidByStaffId: { $in: matchingStaffIds } },
+        { servedByStaffId: { $in: matchingStaffIds } },
+      )
+    }
+    andClauses.push({ $or: searchOr })
+  }
+
+  return {
+    filter: andClauses.length === 1 ? andClauses[0] : { $and: andClauses },
+    input,
+    startJS,
+    endJS,
+  }
+}
+
+const PAST_ORDERS_PROJECTION = {
+  _id: 0,
+  orderId: 1,
+  businessId: 1,
+  servicePointId: 1,
+  displayLabel: 1,
+  orderType: 1,
+  status: 1,
+  createdAt: 1,
+  updatedAt: 1,
+  readyAt: 1,
+  completedAt: 1,
+  servedAt: 1,
+  cancelledAt: 1,
+  items: 1,
+  subtotal: 1,
+  taxAmount: 1,
+  platformFeeTotal: 1,
+  tipAmount: 1,
+  tipType: 1,
+  tipPercentage: 1,
+  total: 1,
+  currency: 1,
+  paymentChannel: 1,
+  paymentStatus: 1,
+  paidVia: 1,
+  paidAt: 1,
+  receiptEmail: 1,
+  receiptSent: 1,
+  receiptSentAt: 1,
+  crmEmail: 1,
+  createdByStaffId: 1,
+  completedBy: 1,
+  paidByStaffId: 1,
+  paidByName: 1,
+  servedByStaffId: 1,
+  servedByName: 1,
+  historicalServiceCorrection: 1,
+  reconciliationHistory: 1,
+}
+
+function isRawServicePointId(value) {
+  return /^sp_[a-z0-9]+$/i.test(String(value || "").trim())
+}
+
+function servicePointDisplayLabel(order, labelByServicePointId) {
+  const storedLabel = String(order.displayLabel || "").trim()
+  if (storedLabel && storedLabel !== order.servicePointId && !isRawServicePointId(storedLabel)) return storedLabel
+
+  const canonicalLabel = labelByServicePointId.get(order.servicePointId)
+  if (canonicalLabel) return canonicalLabel
+  return order.orderType === "takeout" ? "Takeaway" : "Service point unavailable"
+}
+
+async function getServicePointLabelMap(businessId, orders) {
+  const ids = Array.from(new Set(orders
+    .filter((order) => {
+      const storedLabel = String(order.displayLabel || "").trim()
+      return order.servicePointId && (!storedLabel || storedLabel === order.servicePointId || isRawServicePointId(storedLabel))
+    })
+    .map((order) => order.servicePointId)))
+  if (ids.length === 0) return new Map()
+
+  const rows = await ServicePoint.find(
+    { businessId, servicePointId: { $in: ids } },
+    { servicePointId: 1, label: 1 },
+  ).lean()
+  return new Map(rows.filter((row) => row.servicePointId && row.label).map((row) => [row.servicePointId, row.label]))
 }
 
 export async function waiterPastOrders(req, res) {
@@ -139,16 +442,6 @@ export async function waiterPastOrders(req, res) {
     if (!businessId) {
       return res.status(401).json({ error: "Unauthorized" })
     }
-
-    const {
-      range = "today",
-      from,
-      to,
-      status = "all",
-      paymentStatus = "all",
-      paymentMethod = "all",
-      search = "",
-    } = req.query
 
     const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1)
     const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || "25"), 10) || 25))
@@ -159,110 +452,14 @@ export async function waiterPastOrders(req, res) {
       return res.status(404).json({ error: "Business not found" })
     }
 
-    const { startJS, endJS } = getHistoryDateRange(business, range, from, to)
-
-    const filter = {
+    const { filter, input, startJS, endJS } = await buildPastOrdersFilter({
       businessId,
-      createdAt: { $gte: startJS, $lt: endJS },
-    }
-
-    const allowedStatuses = ["placed", "in_progress", "ready", "completed", "cancelled"]
-    if (status !== "all" && allowedStatuses.includes(status)) {
-      filter.status = status
-    } else {
-      filter.status = { $in: allowedStatuses }
-    }
-
-    if (paymentStatus === "paid") {
-      filter.paymentStatus = "paid"
-    } else if (paymentStatus === "pending") {
-      filter.paymentStatus = { $in: ["pending", "unpaid"] }
-    }
-
-    if (paymentMethod === "online") {
-      filter.paymentChannel = "online"
-    } else if (paymentMethod === "offline") {
-      filter.paymentChannel = "offline"
-    } else if (paymentMethod === "cash") {
-      filter.paidVia = "cash"
-    } else if (paymentMethod === "pos_card") {
-      filter.paidVia = "pos_card"
-    }
-
-    const searchRegex = buildSafeSearchRegex(search)
-    if (searchRegex) {
-      const matchingStaff = await Staff.find(
-        {
-          businessId,
-          name: { $regex: searchRegex },
-        },
-        { staffId: 1, staffId: 1 }
-      ).lean()
-
-      const matchingStaffIds = matchingStaff
-        .flatMap((staff) => [staff.staffId, staff.staffId])
-        .filter(Boolean)
-
-      filter.$or = [
-        { orderId: { $regex: searchRegex } },
-        { receiptEmail: { $regex: searchRegex } },
-        { crmEmail: { $regex: searchRegex } },
-        { servicePointId: { $regex: searchRegex } },
-        { displayLabel: { $regex: searchRegex } },
-        { paidByName: { $regex: searchRegex } },
-        { servedByName: { $regex: searchRegex } },
-        { completedBy: { $regex: searchRegex } },
-      ]
-
-      if (matchingStaffIds.length > 0) {
-        filter.$or.push(
-          { createdByStaffId: { $in: matchingStaffIds } },
-          { paidByStaffId: { $in: matchingStaffIds } },
-          { servedByStaffId: { $in: matchingStaffIds } }
-        )
-      }
-    }
-
-    const projection = {
-      _id: 0,
-      orderId: 1,
-      businessId: 1,
-      servicePointId: 1,
-      orderType: 1,
-      status: 1,
-      createdAt: 1,
-      updatedAt: 1,
-      readyAt: 1,
-      completedAt: 1,
-      servedAt: 1,
-      cancelledAt: 1,
-      items: 1,
-      subtotal: 1,
-      taxAmount: 1,
-      platformFeeTotal: 1,
-      tipAmount: 1,
-      tipType: 1,
-      tipPercentage: 1,
-      total: 1,
-      currency: 1,
-      paymentChannel: 1,
-      paymentStatus: 1,
-      paidVia: 1,
-      paidAt: 1,
-      receiptEmail: 1,
-      receiptSent: 1,
-      receiptSentAt: 1,
-      crmEmail: 1,
-      createdByStaffId: 1,
-      completedBy: 1,
-      paidByStaffId: 1,
-      paidByName: 1,
-      servedByStaffId: 1,
-      servedByName: 1,
-    }
+      business,
+      query: req.query,
+    })
 
     const [rawOrders, totalCount] = await Promise.all([
-      Order.find(filter, projection)
+      Order.find(filter, PAST_ORDERS_PROJECTION)
         .sort({ createdAt: -1, updatedAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -270,6 +467,7 @@ export async function waiterPastOrders(req, res) {
       Order.countDocuments(filter),
     ])
 
+    const servicePointLabels = await getServicePointLabelMap(businessId, rawOrders)
     const staffIds = Array.from(new Set(rawOrders.flatMap((order) => [
       order.createdByStaffId,
       order.paidByStaffId,
@@ -280,63 +478,68 @@ export async function waiterPastOrders(req, res) {
       ? await Staff.find(
         {
           businessId,
-          $or: [
-            { staffId: { $in: staffIds } },
-            { staffId: { $in: staffIds } },
-          ],
+          staffId: { $in: staffIds },
         },
-        { staffId: 1, staffId: 1, name: 1 }
+        { staffId: 1, name: 1 }
       ).lean()
       : []
 
     const staffById = new Map()
     for (const staff of staffRows) {
       if (staff.staffId) staffById.set(staff.staffId, staff.name)
-      if (staff.staffId) staffById.set(staff.staffId, staff.name)
     }
 
-    const orders = rawOrders.map((order) => ({
-      orderId: order.orderId,
-      businessId: order.businessId,
-      servicePointId: order.servicePointId,
-      servicePoint: order.displayLabel || order.servicePointId,
-      orderType: order.orderType,
-      status: order.status,
-      createdAt: order.createdAt,
-      updatedAt: order.updatedAt,
-      readyAt: order.readyAt,
-      completedAt: order.completedAt,
-      servedAt: order.servedAt,
-      cancelledAt: order.cancelledAt,
-      customerEmail: order.receiptEmail || order.crmEmail || "",
-      waiter: getWaiterName(order, staffById),
-      paymentChannel: order.paymentChannel || "offline",
-      paymentStatus: order.paymentStatus || "unpaid",
-      paymentMethod: normalizePaymentMethod(order),
-      paidVia: order.paidVia || null,
-      paidAt: order.paidAt,
-      receiptEmail: order.receiptEmail || "",
-      receiptSent: Boolean(order.receiptSent),
-      receiptSentAt: order.receiptSentAt,
-      subtotal: order.subtotal || 0,
-      taxAmount: order.taxAmount || 0,
-      platformFeeTotal: order.platformFeeTotal || 0,
-      tipAmount: order.tipAmount || 0,
-      tipType: order.tipType || null,
-      tipPercentage: order.tipPercentage ?? null,
-      total: order.total || 0,
-      currency: order.currency || "EUR",
-      canMarkPaid: order.paymentChannel === "offline" && ["pending", "unpaid"].includes(order.paymentStatus) && order.status !== "cancelled",
-      canMarkCompleted: order.status === "ready",
-      items: (order.items || []).map((item) => ({
-        itemName: item.itemName,
-        quantity: item.quantity,
-        lineTotal: item.lineTotal || 0,
-        notes: item.notes || "",
-        allergies: item.allergies || [],
-      })),
-      timeline: buildHistoryTimeline(order),
-    }))
+    const orders = rawOrders.map((order) => {
+      const assessment = assessOrderReconciliation(order)
+      return {
+        orderId: order.orderId,
+        businessId: order.businessId,
+        servicePointId: order.servicePointId,
+        servicePoint: servicePointDisplayLabel(order, servicePointLabels),
+        servicePointLabel: servicePointDisplayLabel(order, servicePointLabels),
+        orderType: order.orderType,
+        status: order.status,
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+        readyAt: order.readyAt,
+        completedAt: order.completedAt,
+        servedAt: order.servedAt,
+        cancelledAt: order.cancelledAt,
+        customerEmail: order.receiptEmail || order.crmEmail || "",
+        waiter: getWaiterName(order, staffById),
+        paymentChannel: order.paymentChannel || "offline",
+        paymentStatus: order.paymentStatus || "unpaid",
+        paymentMethod: normalizePaymentMethod(order),
+        paidVia: order.paidVia || null,
+        paidAt: order.paidAt,
+        receiptEmail: order.receiptEmail || "",
+        receiptSent: Boolean(order.receiptSent),
+        receiptSentAt: order.receiptSentAt,
+        subtotal: order.subtotal || 0,
+        taxAmount: order.taxAmount || 0,
+        platformFeeTotal: order.platformFeeTotal || 0,
+        tipAmount: order.tipAmount || 0,
+        tipType: order.tipType || null,
+        tipPercentage: order.tipPercentage ?? null,
+        total: order.total || 0,
+        currency: order.currency || "EUR",
+        canMarkPaid: assessment.canMarkPaid,
+        canMarkCompleted: assessment.canMarkCompleted,
+        reconciliationStatus: assessment.reconciliationStatus,
+        reconciliationReason: assessment.reconciliationReason,
+        preparationEvidence: assessment.preparationEvidence,
+        historicalServiceCorrection: order.historicalServiceCorrection || null,
+        reconciliationHistory: order.reconciliationHistory || [],
+        items: (order.items || []).map((item) => ({
+          itemName: item.itemName,
+          quantity: item.quantity,
+          lineTotal: item.lineTotal || 0,
+          notes: item.notes || "",
+          allergies: item.allergies || [],
+        })),
+        timeline: buildHistoryTimeline(order),
+      }
+    })
 
     return res.json({
       orders,
@@ -349,13 +552,13 @@ export async function waiterPastOrders(req, res) {
         hasPreviousPage: page > 1,
       },
       filters: {
-        range,
+        range: input.isNeedsReconciliation && (!req.query.range || input.range === "all") ? "all" : input.range,
         from: startJS,
         to: endJS,
-        status,
-        paymentStatus,
-        paymentMethod,
-        search: trimmedSearch,
+        status: input.isNeedsReconciliation ? "needs_reconciliation" : input.status,
+        paymentStatus: input.paymentStatus,
+        paymentMethod: input.paymentMethod,
+        search: input.search,
       },
     })
   } catch (err) {
@@ -465,7 +668,6 @@ export async function waiterOrders(req, res) {
 
       return {
         businessId: o.businessId,
-        businessId: o.businessId, // legacy alias
         orderId: o.orderId,
         servicePointId: o.servicePointId,
         orderType: o.orderType,

@@ -1083,7 +1083,7 @@ export async function publishHousekeepingChanged({
         await publish(
             HOUSEKEEPING_CHANGED_EVENT,
             businessId,
-            ["housekeeping"],
+            ["housekeeping", "owner"],
             { invalidated: true },
         )
     } catch (error) {

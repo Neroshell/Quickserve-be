@@ -3,6 +3,13 @@ export const PERMISSIONS = Object.freeze({
 
     ORDERS_VIEW: "orders.view",
     ORDERS_MANAGE: "orders.manage",
+    // A deliberately narrow recovery authority. It does not imply ordinary
+    // order-management access and is granted through the dedicated owner
+    // control rather than the generic Manager permission editor.
+    ORDERS_RECONCILE: "orders.reconcile",
+    // Read-only access to historical orders in the reconciliation workspace.
+    // The reconciliation permission itself also grants this access.
+    ORDERS_RECONCILIATION_VIEW: "orders.reconciliation.view",
 
     TRANSACTIONS_VIEW: "transactions.view",
 

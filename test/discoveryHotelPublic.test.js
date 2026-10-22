@@ -30,7 +30,7 @@ function business(id, countryCode = "mt", published = true) {
     businessId: id, slug: "same-hotel", countryCode, country: "Malta",
     name: "Hotel", displayName: "Hotel", businessType: "hotel",
     addressPlaceId: "ChIJVerifiedHotelTest", latitude: 35.8992, longitude: 14.5141,
-    status: "active", address: "1 Main Street", timezone: "UTC",
+    status: "active", onboardingCompleted: true, address: "1 Main Street", timezone: "UTC",
     currency: "EUR", modules: ["lodging"], settings: { reservationsEnabled: true },
     propertyProfile: {
       city: "Valletta", discoveryPublished: published,
@@ -129,6 +129,23 @@ test("Discovery availability rejects invalid dates without querying reservations
     await getDiscoveryHotelAvailability(request("mt", params), res);
     assert.equal(res.statusCode, 400);
   }
+});
+
+test("Discovery availability rejects an active but incompletely onboarded hotel without hiding its catalog", async (t) => {
+  mockBusiness(t, [{ ...business("hotel-incomplete"), onboardingCompleted: false }]);
+  t.mock.method(ServicePoint, "find", () => query([]));
+  t.mock.method(Reservation, "find", () => { throw new Error("Ineligible businesses must not query availability"); });
+
+  const availability = response();
+  await getDiscoveryHotelAvailability(request("mt", {
+    checkInDate: "2099-01-01", checkOutDate: "2099-01-03", guestCount: "2",
+  }), availability);
+  assert.equal(availability.statusCode, 403);
+  assert.equal(availability.body.error, "This business is not yet accepting reservations.");
+
+  const catalog = response();
+  await getDiscoveryHotelRooms(request("mt"), catalog);
+  assert.equal(catalog.statusCode, 200);
 });
 
 test("Discovery availability uses canonical quote and excludes booked, oversized and unpriced rooms", async (t) => {

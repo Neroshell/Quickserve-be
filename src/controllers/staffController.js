@@ -7,7 +7,7 @@ import { hashToken } from "../utils/tokenHash.js"
 import { assertEmailAvailable, isEmailAlreadyInUseError, normalizeAccountEmail, sendEmailInUseResponse } from "../utils/emailAvailability.js"
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 import { getStaffPresence } from "../services/presenceService.js"
-import { HOUSEKEEPING_DEFAULT_PERMISSIONS, normalizePermissions } from "../constants/permissions.js"
+import { HOUSEKEEPING_DEFAULT_PERMISSIONS, normalizePermissions, PERMISSIONS } from "../constants/permissions.js"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
 
 const ALLOWED_ROLES = ["waiter", "kitchen", "manager", "bartender", "housekeeping"]
@@ -86,7 +86,7 @@ export async function getStaff(req, res) {
                 role: s.role,
                 name: s.name,
                 email: s.email,
-                ...(MANAGER_ADMIN_ROLES.has(requesterRole) && ["manager", "housekeeping"].includes(s.role)
+                ...(MANAGER_ADMIN_ROLES.has(requesterRole) && ["manager", "waiter", "housekeeping"].includes(s.role)
                     ? { permissions: s.permissions || [] }
                     : {}),
                 accountStatus: s.accountStatus,
@@ -158,6 +158,14 @@ export async function createStaff(req, res) {
         if (role === "manager") {
             if (!MANAGER_ADMIN_ROLES.has(requesterRole)) {
                 return res.status(403).json({ error: "Only an Owner or Co-Owner may create a Manager." })
+            }
+            if (Array.isArray(permissions) && permissions.some((permission) => (
+                permission === PERMISSIONS.ORDERS_RECONCILE
+                || permission === PERMISSIONS.ORDERS_RECONCILIATION_VIEW
+            ))) {
+                return res.status(400).json({
+                    error: "Past order access must be changed from the dedicated control after the staff member is created.",
+                })
             }
             try {
                 normalizedPermissions = normalizePermissions(permissions)
@@ -236,7 +244,7 @@ export async function createStaff(req, res) {
         return res.status(201).json({
             staffId: staff.staffId,
             role: staff.role,
-            ...(["manager", "housekeeping"].includes(staff.role) ? { permissions: staff.permissions || [] } : {}),
+            ...(["manager", "waiter", "housekeeping"].includes(staff.role) ? { permissions: staff.permissions || [] } : {}),
             name: staff.name,
             email: staff.email,
             accountStatus: staff.accountStatus,
@@ -315,9 +323,19 @@ export async function updateManagerPermissions(req, res) {
             return res.status(401).json({ error: "Unauthorized" })
         }
 
+        const submittedPermissions = req.body?.permissions
+        if (Array.isArray(submittedPermissions) && submittedPermissions.some((permission) => (
+            permission === PERMISSIONS.ORDERS_RECONCILE
+            || permission === PERMISSIONS.ORDERS_RECONCILIATION_VIEW
+        ))) {
+            return res.status(400).json({
+                error: "Past order access must be changed from the dedicated control.",
+            })
+        }
+
         let permissions
         try {
-            permissions = normalizePermissions(req.body?.permissions)
+            permissions = normalizePermissions(submittedPermissions)
         } catch (err) {
             return res.status(400).json({ error: err.message })
         }
@@ -327,6 +345,13 @@ export async function updateManagerPermissions(req, res) {
             return res.status(404).json({ error: "Manager not found" })
         }
 
+        // Preserve separate Past Orders grants. Generic Manager updates must
+        // never grant, revoke, or accidentally erase either capability.
+        const preservedPastOrderPermissions = (manager.permissions || []).filter((permission) => (
+            permission === PERMISSIONS.ORDERS_RECONCILE
+            || permission === PERMISSIONS.ORDERS_RECONCILIATION_VIEW
+        ))
+        permissions = normalizePermissions([...permissions, ...preservedPastOrderPermissions])
         manager.permissions = permissions
         await manager.save()
 
@@ -350,5 +375,116 @@ export async function updateManagerPermissions(req, res) {
     } catch (err) {
         console.error("[updateManagerPermissions]", err)
         return res.status(500).json({ error: "Failed to update Manager permissions" })
+    }
+}
+
+/**
+ * Owner/Co-Owner-only control for the narrow reconciliation capability.
+ * The route requires both a current owner/co-owner role and Staff Management
+ * access. The staff document is the current source of truth for every
+ * subsequent operational request, so revocation takes effect immediately.
+ */
+export async function updateReconciliationPermission(req, res) {
+    try {
+        const businessId = resolveBusinessId(req)
+        const { staffId } = req.params
+        const { allowed } = req.body || {}
+
+        if (!businessId) return res.status(401).json({ error: "Unauthorized" })
+        if (typeof allowed !== "boolean") {
+            return res.status(400).json({ error: "allowed must be true or false" })
+        }
+
+        const staff = await Staff.findOne({
+            businessId,
+            staffId,
+            role: { $in: ["manager", "waiter"] },
+        })
+        if (!staff) {
+            return res.status(404).json({ error: "Only a Manager or Waiter can be given reconciliation access." })
+        }
+
+        const current = new Set(Array.isArray(staff.permissions) ? staff.permissions : [])
+        if (allowed) current.add(PERMISSIONS.ORDERS_RECONCILE)
+        else current.delete(PERMISSIONS.ORDERS_RECONCILE)
+        staff.permissions = normalizePermissions([...current])
+        await staff.save()
+
+        try {
+            const { publishStaffAccessRevocation } = await import("../utils/sseManager.js")
+            await publishStaffAccessRevocation({
+                businessId,
+                staffObjectId: staff._id,
+                staffId: staff.staffId,
+            })
+        } catch (streamError) {
+            console.error("[updateReconciliationPermission] Failed to refresh Staff live streams", streamError)
+        }
+
+        return res.json({
+            staffId: staff.staffId,
+            role: staff.role,
+            allowed: staff.permissions.includes(PERMISSIONS.ORDERS_RECONCILE),
+            permissions: staff.permissions,
+            updatedAt: staff.updatedAt,
+        })
+    } catch (err) {
+        console.error("[updateReconciliationPermission]", err)
+        return res.status(500).json({ error: "Failed to update reconciliation access" })
+    }
+}
+
+/**
+ * Owner/Co-Owner-only control for read-only Past Orders access. Reconciliation
+ * remains a separate, higher permission and also grants Past Orders access at
+ * the route boundary without changing this stored view-only grant.
+ */
+export async function updateReconciliationViewPermission(req, res) {
+    try {
+        const businessId = resolveBusinessId(req)
+        const { staffId } = req.params
+        const { allowed } = req.body || {}
+
+        if (!businessId) return res.status(401).json({ error: "Unauthorized" })
+        if (typeof allowed !== "boolean") {
+            return res.status(400).json({ error: "allowed must be true or false" })
+        }
+
+        const staff = await Staff.findOne({
+            businessId,
+            staffId,
+            role: { $in: ["manager", "waiter"] },
+        })
+        if (!staff) {
+            return res.status(404).json({ error: "Only a Manager or Waiter can be given Past Orders access." })
+        }
+
+        const current = new Set(Array.isArray(staff.permissions) ? staff.permissions : [])
+        if (allowed) current.add(PERMISSIONS.ORDERS_RECONCILIATION_VIEW)
+        else current.delete(PERMISSIONS.ORDERS_RECONCILIATION_VIEW)
+        staff.permissions = normalizePermissions([...current])
+        await staff.save()
+
+        try {
+            const { publishStaffAccessRevocation } = await import("../utils/sseManager.js")
+            await publishStaffAccessRevocation({
+                businessId,
+                staffObjectId: staff._id,
+                staffId: staff.staffId,
+            })
+        } catch (streamError) {
+            console.error("[updateReconciliationViewPermission] Failed to refresh Staff live streams", streamError)
+        }
+
+        return res.json({
+            staffId: staff.staffId,
+            role: staff.role,
+            allowed: staff.permissions.includes(PERMISSIONS.ORDERS_RECONCILIATION_VIEW),
+            permissions: staff.permissions,
+            updatedAt: staff.updatedAt,
+        })
+    } catch (err) {
+        console.error("[updateReconciliationViewPermission]", err)
+        return res.status(500).json({ error: "Failed to update Past Orders access" })
     }
 }

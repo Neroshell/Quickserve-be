@@ -13,6 +13,11 @@ import { safelyNotifyInventoryStockTransitions } from "./inventoryNotificationIn
 import { resolveOrderStartAssistanceDelayMinutes } from "../utils/customerOrderTiming.js"
 import { generateOrderLineId } from "../utils/orderLineId.js"
 import { withCanonicalTransaction } from "../utils/transactionExecution.js"
+import {
+  appendReconciliationHistory,
+  createReconciliationHistoryEntry,
+  reconciliationStateSnapshot,
+} from "./orderReconciliationAudit.js"
 
 const TERMINAL_ORDER_STATUSES = new Set(["completed", "cancelled"])
 const STATION_ROLES = Object.freeze({
@@ -868,7 +873,7 @@ export async function transitionOrderFulfillment({
   return result
 }
 
-export async function completeOrderForWaitstaff({ businessId, orderId, actor }, dependencies = {}) {
+export async function completeOrderForWaitstaff({ businessId, orderId, actor, reconciliation = null }, dependencies = {}) {
   const OrderModel = dependencies.OrderModel || Order
   const runTransaction = dependencies.runTransaction || ((work) => withCanonicalTransaction(work, dependencies))
   const nowFactory = dependencies.now || (() => new Date())
@@ -892,6 +897,7 @@ export async function completeOrderForWaitstaff({ businessId, orderId, actor }, 
     }
 
     const now = nowFactory()
+    const reconciliationBefore = reconciliation ? reconciliationStateSnapshot(order) : null
     materializeLegacyOrderFulfillment(order, now)
     const derivedStatus = deriveOrderStatusFromLines(order.items)
     if (derivedStatus !== "ready") {
@@ -901,9 +907,9 @@ export async function completeOrderForWaitstaff({ businessId, orderId, actor }, 
         409,
       )
     }
-    if (order.paymentChannel === "offline" && order.paymentStatus !== "paid") {
+    if (order.paymentStatus !== "paid") {
       throw new OrderFulfillmentError(
-        "Offline orders must be paid before being served",
+        "Payment must be confirmed before this order can be completed",
         "ORDER_PAYMENT_REQUIRED",
         409,
       )
@@ -915,6 +921,19 @@ export async function completeOrderForWaitstaff({ businessId, orderId, actor }, 
     order.completedBy = order.completedBy || performedBy.name
     order.servedByStaffId = order.servedByStaffId || performedBy.staffId
     order.servedByName = order.servedByName || performedBy.name
+    if (reconciliation) {
+      appendReconciliationHistory(order, createReconciliationHistoryEntry({
+        businessId,
+        operation: "normal_completion",
+        actor: performedBy,
+        reason: null,
+        servedDeclaration: true,
+        before: reconciliationBefore,
+        after: reconciliationStateSnapshot(order),
+        inventoryDisposition: "normal_lifecycle_recorded",
+        recordedAt: now,
+      }))
+    }
     await order.save({ session })
     return {
       order,

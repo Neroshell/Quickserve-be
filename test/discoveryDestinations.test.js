@@ -73,6 +73,38 @@ test("Discovery autocomplete returns a generic 502 without revealing provider di
   assert.equal(JSON.stringify(res.body).includes("secret provider detail"), false);
 });
 
+test("Discovery destination resolution prefers the canonical Places credential", async t => {
+  const originalPlaces = process.env.GOOGLE_PLACES_API_KEY;
+  const originalMaps = process.env.GOOGLE_MAPS_API_KEY;
+  t.after(() => {
+    if (originalPlaces === undefined) delete process.env.GOOGLE_PLACES_API_KEY;
+    else process.env.GOOGLE_PLACES_API_KEY = originalPlaces;
+    if (originalMaps === undefined) delete process.env.GOOGLE_MAPS_API_KEY;
+    else process.env.GOOGLE_MAPS_API_KEY = originalMaps;
+  });
+  process.env.GOOGLE_PLACES_API_KEY = "canonical-test-key";
+  process.env.GOOGLE_MAPS_API_KEY = "legacy-fallback-key";
+  t.mock.method(globalThis, "fetch", async (_url, init) => ({
+    ok: true,
+    json: async () => {
+      assert.equal(init.headers["X-Goog-Api-Key"], "canonical-test-key");
+      return {
+        types: ["locality"],
+        addressComponents: [
+          { types: ["locality"], longText: "Key Priority City" },
+          { types: ["country"], shortText: "MT" },
+        ],
+        viewport: {
+          low: { latitude: 35.9, longitude: 14.4 },
+          high: { latitude: 35.91, longitude: 14.41 },
+        },
+      };
+    },
+  }));
+
+  await resolveDiscoveryDestination("ChIJKeyPriority");
+});
+
 test("Discovery destination resolution shares concurrent Google lookups and builds a closed GeoJSON polygon", async t => {
   const original = process.env.GOOGLE_PLACES_API_KEY;
   t.after(() => {

@@ -1477,9 +1477,9 @@ export async function updateAdminBusiness(req, res) {
             })
         }
 
-        const existingBusinessForUpdate = await Business.findOne({
-            $or: [{ businessId: paramId }, { businessId: paramId }]
-        }).select("_id businessId businessId businessType modules countryCode slug address").lean()
+        const existingBusinessForUpdate = await Business.findOne({ businessId: paramId })
+            .select("_id businessId businessType modules countryCode slug address")
+            .lean()
         if (!existingBusinessForUpdate) {
             return res.status(404).json({ message: "Business not found" })
         }
@@ -1562,7 +1562,7 @@ export async function updateAdminBusiness(req, res) {
             ? withReservationEligibilityFence(locationUpdate)
             : locationUpdate
         const business = await Business.findOneAndUpdate(
-            { $or: [{ businessId: paramId }, { businessId: paramId }] },
+            { businessId: paramId },
             businessUpdate,
             { new: true, runValidators: true }
         )

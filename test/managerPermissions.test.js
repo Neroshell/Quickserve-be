@@ -12,6 +12,7 @@ import {
 import {
     requirePermission,
     requirePermissionForAuthenticatedManager,
+    requireOperationalPermission,
     requireManagementArea,
     requirePrimaryOwner,
 } from "../src/middleware/authMiddleware.js"
@@ -94,6 +95,8 @@ test("permission catalog contains only the approved Manager permissions", () => 
         "dashboard.view",
         "orders.view",
         "orders.manage",
+        "orders.reconcile",
+        "orders.reconciliation.view",
         "transactions.view",
         "reservations.view",
         "reservations.manage",
@@ -221,6 +224,39 @@ test("Manager with manage permission can pass the corresponding mutation guard",
     )
     assert.equal(nextCalled, true)
     assert.equal(res.statusCode, 200)
+})
+
+test("Past Orders view and reconciliation permissions are separate current-staff capabilities", async (t) => {
+    let permissions = normalizePermissions([PERMISSIONS.ORDERS_MANAGE])
+    mockManagerLookup(t, () => managerRecord({ permissions }))
+    const session = managerSession().session
+    const readPastOrders = requireOperationalPermission(
+        PERMISSIONS.ORDERS_RECONCILIATION_VIEW,
+        PERMISSIONS.ORDERS_RECONCILE,
+    )
+    const reconcile = requireOperationalPermission(PERMISSIONS.ORDERS_RECONCILE)
+
+    const neither = await runMiddleware(readPastOrders, { session })
+    permissions = [PERMISSIONS.ORDERS_RECONCILIATION_VIEW]
+    const viewOnly = await runMiddleware(readPastOrders, { session })
+    const viewOnlyReconcile = await runMiddleware(reconcile, { session })
+    permissions = [PERMISSIONS.ORDERS_RECONCILE]
+    const reconcileIncludesView = await runMiddleware(readPastOrders, { session })
+    const reconcileAllowed = await runMiddleware(reconcile, { session })
+    permissions = [PERMISSIONS.ORDERS_RECONCILIATION_VIEW, PERMISSIONS.ORDERS_RECONCILE]
+    const bothAllowed = await runMiddleware(readPastOrders, { session })
+    const bothCanReconcile = await runMiddleware(reconcile, { session })
+    permissions = []
+    const afterRevocation = await runMiddleware(readPastOrders, { session })
+
+    assert.equal(neither.res.statusCode, 403)
+    assert.equal(viewOnly.nextCalled, true)
+    assert.equal(viewOnlyReconcile.res.statusCode, 403)
+    assert.equal(reconcileIncludesView.nextCalled, true)
+    assert.equal(reconcileAllowed.nextCalled, true)
+    assert.equal(bothAllowed.nextCalled, true)
+    assert.equal(bothCanReconcile.nextCalled, true)
+    assert.equal(afterRevocation.res.statusCode, 403)
 })
 
 test("disabled and cross-tenant Manager records are denied", async (t) => {
@@ -527,12 +563,20 @@ test("owner-only and permission route declarations remain explicit", async () =>
     assert.match(businessRoutes, /requireManagementArea\(\s*MANAGEMENT_ACCESS_AREAS\.BUSINESS_SETTINGS,\s*PERMISSIONS\.SETTINGS_OPERATIONAL_MANAGE/)
     assert.match(waitstaffRoutes, /"\/calls",\s*requirePermissionForAuthenticatedManager\(PERMISSIONS\.ORDERS_VIEW\)/)
     assert.match(waitstaffRoutes, /"\/calls",\s*requirePermissionForAuthenticatedManager\(PERMISSIONS\.ORDERS_MANAGE\)/)
+    assert.match(waitstaffRoutes, /"\/past-orders",\s*requireAuth,\s*requireReconciliationRole,\s*requireOperationalPermission\(PERMISSIONS\.ORDERS_RECONCILIATION_VIEW, PERMISSIONS\.ORDERS_RECONCILE\),\s*waiterPastOrders/)
+    assert.match(waitstaffRoutes, /"\/reconciliation\/orders\/:orderId\/mark-paid",\s*requireAuth,\s*requireReconciliationRole,\s*requireOperationalPermission\(PERMISSIONS\.ORDERS_RECONCILE\),\s*markPaidForReconciliation/)
+    assert.match(waitstaffRoutes, /"\/reconciliation\/orders\/:orderId\/historical-service-correction",\s*requireAuth,\s*requireReconciliationRole,\s*requireOperationalPermission\(PERMISSIONS\.ORDERS_RECONCILE\),\s*confirmHistoricalReconciliation/)
     assert.match(orderRoutes, /"\/:orderId\/reorder",\s*requirePermissionForAuthenticatedManager\(PERMISSIONS\.ORDERS_VIEW\)/)
+    assert.match(orderRoutes, /"\/:orderId\/reconcile-complete",\s*requireAuth,\s*requireRole\("waiter", "manager", "owner", "co_owner"\),\s*requireOperationalPermission\(PERMISSIONS\.ORDERS_RECONCILE\),\s*reconcileComplete/)
     assert.match(server, /requirePermission\(PERMISSIONS\.CRM_VIEW\)/)
     assert.match(authController, /role === "co_owner" \? \{\s*coOwnerRestrictions: staff\.coOwnerRestrictions \|\| \[\]/)
     assert.match(authController, /const currentStaff = await resolveCurrentStaff\(req\)/)
     assert.match(authController, /user = await Staff\.findOne\(\{\s*_id: currentStaff\._id,\s*businessId: currentStaff\.businessId,\s*accountStatus: "active",\s*role: currentStaff\.role/)
     assert.match(staffController, /requesterRole === "manager" && !OPERATIONAL_ROLES\.includes\(role\)/)
     assert.match(staffController, /Staff\.findOne\(\{ businessId, staffId, role: "manager" \}\)/)
-    assert.match(staffController, /normalizePermissions\(req\.body\?\.permissions\)/)
+    assert.match(staffController, /normalizePermissions\(submittedPermissions\)/)
+    assert.match(ownerRoutes, /"\/staff\/:staffId\/reconciliation-permission",\s*requireRole\("owner", "restaurant_owner", "co_owner"\),\s*requireManagementArea\(MANAGEMENT_ACCESS_AREAS\.STAFF_MANAGEMENT\),\s*updateReconciliationPermission/)
+    assert.match(ownerRoutes, /"\/staff\/:staffId\/reconciliation-view-permission",\s*requireRole\("owner", "restaurant_owner", "co_owner"\),\s*requireManagementArea\(MANAGEMENT_ACCESS_AREAS\.STAFF_MANAGEMENT\),\s*updateReconciliationViewPermission/)
+    assert.match(staffController, /Past order access must be changed from the dedicated control/)
+    assert.match(staffController, /after the staff member is created/)
 })
