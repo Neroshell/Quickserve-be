@@ -1,6 +1,6 @@
 import express from "express"
 import rateLimit from "express-rate-limit"
-import { listOrders, listCurrentOrders, createOrder, getOrderById, updateOrderStatus, deleteOrdersBySession, markPaid, sendReceipt, saveReceiptEmail, reconcileComplete } from "../controllers/orderController.js"
+import { listOrders, listGuestOrderHistory, listCurrentOrders, createOrder, getOrderById, updateOrderStatus, deleteOrdersBySession, markPaid, sendReceipt, saveReceiptEmail, reconcileComplete } from "../controllers/orderController.js"
 import { reorderFromOrder } from "../controllers/reorderController.js"
 import { requireAuth, requireOperationalPermission, requirePermissionForAuthenticatedManager, requireRole } from "../middleware/authMiddleware.js"
 import { PERMISSIONS } from "../constants/permissions.js"
@@ -100,6 +100,31 @@ router.post("/", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MAN
  *         description: Orders session deleted
  */
 router.delete("/session", requireAuth, requireRole("owner", "co_owner", "admin", "manager"), requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_MANAGE), deleteOrdersBySession)
+
+/**
+ * @openapi
+ * /orders/history:
+ *   get:
+ *     summary: Retrieve cursor-paginated order history for one guest device
+ *     tags:
+ *       - Orders
+ *     parameters:
+ *       - in: query
+ *         name: businessId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: cursor
+ *         schema:
+ *           type: string
+ */
+router.get("/history", requirePermissionForAuthenticatedManager(PERMISSIONS.ORDERS_VIEW), listGuestOrderHistory)
 
 // GuestSession-authoritative live visit orders. Keep this before /:orderId so
 // "current" is never interpreted as an order identifier.

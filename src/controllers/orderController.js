@@ -98,6 +98,124 @@ function getRequestIdempotencyKey(req, fallback) {
   return `order:${fallback || crypto.randomUUID()}`
 }
 
+const GUEST_HISTORY_PAGE_SIZE = 20
+const GUEST_HISTORY_CURSOR_MAX_LENGTH = 512
+const GUEST_HISTORY_FIELDS = {
+  orderId: 1,
+  businessId: 1,
+  status: 1,
+  createdAt: 1,
+  updatedAt: 1,
+  total: 1,
+  currency: 1,
+  items: 1,
+}
+
+function encodeGuestHistoryCursor(order) {
+  return Buffer.from(JSON.stringify({
+    createdAt: new Date(order.createdAt).toISOString(),
+    id: String(order._id),
+  })).toString("base64url")
+}
+
+function decodeGuestHistoryCursor(value) {
+  if (typeof value !== "string" || value.length === 0) return null
+  if (value.length > GUEST_HISTORY_CURSOR_MAX_LENGTH) {
+    throw new Error("Invalid guest history cursor")
+  }
+
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"))
+    const createdAt = new Date(decoded?.createdAt)
+    const id = typeof decoded?.id === "string" ? decoded.id : ""
+
+    if (
+      !Number.isFinite(createdAt.getTime()) ||
+      !/^[a-f\d]{24}$/i.test(id)
+    ) {
+      throw new Error("Invalid guest history cursor")
+    }
+
+    return { createdAt, id }
+  } catch {
+    throw new Error("Invalid guest history cursor")
+  }
+}
+
+function toGuestHistoryOrderDTO(order, businessId) {
+  return {
+    orderId: order.orderId,
+    businessId,
+    status: order.status,
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt || order.createdAt,
+    total: order.total || 0,
+    currency: order.currency || "EUR",
+    items: (order.items || []).map((item) => ({
+      itemName: item.itemName,
+      quantity: item.quantity,
+    })),
+  }
+}
+
+/**
+ * Read-only device history deliberately remains separate from current-visit
+ * access. A historical order belongs to the persistent device session and can
+ * be read after the QR visit expires, while live orders require GuestSession
+ * proof in listCurrentOrders.
+ */
+export async function listGuestOrderHistory(req, res) {
+  try {
+    const businessId = resolveBusinessId(req)
+    const sessionId = req.query?.sessionId
+
+    if (!businessId) {
+      return res.status(400).json({ message: "businessId is required" })
+    }
+    if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
+      return res.status(400).json({ message: "sessionId is required" })
+    }
+
+    let cursor
+    try {
+      cursor = decodeGuestHistoryCursor(req.query?.cursor)
+    } catch {
+      return res.status(400).json({ message: "Invalid guest history cursor" })
+    }
+
+    const filter = {
+      businessId,
+      sessionId,
+      ...(cursor
+        ? {
+          $or: [
+            { createdAt: { $lt: cursor.createdAt } },
+            { createdAt: cursor.createdAt, _id: { $lt: cursor.id } },
+          ],
+        }
+        : {}),
+    }
+
+    const rows = await Order.find(filter, GUEST_HISTORY_FIELDS)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(GUEST_HISTORY_PAGE_SIZE + 1)
+      .lean()
+
+    const hasMore = rows.length > GUEST_HISTORY_PAGE_SIZE
+    const page = hasMore ? rows.slice(0, GUEST_HISTORY_PAGE_SIZE) : rows
+    const lastOrder = page.at(-1)
+
+    return res.json({
+      orders: page.map((order) => toGuestHistoryOrderDTO(order, businessId)),
+      nextCursor: hasMore && lastOrder ? encodeGuestHistoryCursor(lastOrder) : null,
+      hasMore,
+    })
+  } catch (err) {
+    console.error("List guest order history error:", err)
+    return res.status(500).json({ message: "Server error" })
+  }
+}
+
 export async function listOrders(req, res) {
   try {
     const { sessionId, servicePointId } = req.query

@@ -13,6 +13,10 @@ import {
   ORDER_FULFILLMENT_SCHEMA_VERSION,
 } from "../constants/orderFulfillment.js"
 import { generateOrderLineId } from "../utils/orderLineId.js"
+import {
+  countOrderSpecialInstructionCharacters,
+  MAX_ORDER_SPECIAL_INSTRUCTION_CHARACTERS,
+} from "../utils/restaurantOrderValidation.js"
 
 const FulfillmentActorSchema = new mongoose.Schema(
   {
@@ -39,7 +43,15 @@ const OrderItemSchema = new mongoose.Schema(
       type: String,
       default: "mains"
     },
-    notes: { type: String, default: "" },
+    notes: {
+      type: String,
+        default: "",
+        validate: {
+          validator: (value) =>
+          countOrderSpecialInstructionCharacters(value) <= MAX_ORDER_SPECIAL_INSTRUCTION_CHARACTERS,
+        message: `Special instructions cannot contain more than ${MAX_ORDER_SPECIAL_INSTRUCTION_CHARACTERS} characters.`,
+      },
+    },
     image: { type: String, default: "" },
     lineTotal: { type: Number, required: true },
     prepTimeMinutes: { type: Number, default: null },
@@ -497,6 +509,9 @@ OrderSchema.index({ businessId: 1, paymentStatus: 1, paidAt: 1 })
 OrderSchema.index({ businessId: 1, createdAt: 1, status: 1 })
 // Supports stable owner-order cursor pagination without a status filter.
 OrderSchema.index({ businessId: 1, createdAt: -1, _id: -1 })
+// Supports bounded, device-scoped guest order history reads without scanning
+// another guest's orders in the same business.
+OrderSchema.index({ businessId: 1, sessionId: 1, createdAt: -1, _id: -1 })
 // Phase 2B migration/rollback guards first narrow to the small set of open,
 // unrestored stock-bearing orders before examining item linkage.
 OrderSchema.index({

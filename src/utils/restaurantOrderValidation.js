@@ -26,6 +26,11 @@ function readBoolean(primary, fallback, defaultValue = true) {
 
 export const MAX_ORDER_ITEMS = 100;
 export const MAX_ITEM_QUANTITY = 99;
+export const MAX_ORDER_SPECIAL_INSTRUCTION_CHARACTERS = 50;
+
+export function countOrderSpecialInstructionCharacters(value) {
+  return String(value ?? "").length;
+}
 
 export function getOrderItemsValidationError(items) {
   if (!Array.isArray(items) || items.length === 0) {
@@ -44,6 +49,10 @@ export function getOrderItemsValidationError(items) {
     const quantity = Number(item.quantity);
     if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > MAX_ITEM_QUANTITY) {
       return `Item '${String(item.itemName).trim()}' quantity must be an integer between 1 and ${MAX_ITEM_QUANTITY}`;
+    }
+
+    if (countOrderSpecialInstructionCharacters(item.notes) > MAX_ORDER_SPECIAL_INSTRUCTION_CHARACTERS) {
+      return `Special instructions cannot contain more than ${MAX_ORDER_SPECIAL_INSTRUCTION_CHARACTERS} characters.`;
     }
   }
 

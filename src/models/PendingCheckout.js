@@ -6,6 +6,10 @@ import {
     FULFILLMENT_STATUS_VALUES,
 } from "../constants/orderFulfillment.js"
 import { generateOrderLineId } from "../utils/orderLineId.js"
+import {
+    countOrderSpecialInstructionCharacters,
+    MAX_ORDER_SPECIAL_INSTRUCTION_CHARACTERS,
+} from "../utils/restaurantOrderValidation.js"
 
 /**
  * Durable Stripe Checkout attempt storage.
@@ -25,7 +29,15 @@ const PendingItemSchema = new mongoose.Schema(
         prepTimeMinutes: { type: Number, default: null },
         category: { type: String, default: "mains" },
         type: { type: String, enum: ["food", "drinks"], default: "food" },
-        notes: { type: String, default: "" },
+        notes: {
+            type: String,
+            default: "",
+            validate: {
+                validator: (value) =>
+                    countOrderSpecialInstructionCharacters(value) <= MAX_ORDER_SPECIAL_INSTRUCTION_CHARACTERS,
+                message: `Special instructions cannot contain more than ${MAX_ORDER_SPECIAL_INSTRUCTION_CHARACTERS} characters.`,
+            },
+        },
         allergies: { type: [String], default: [] },
         fulfillmentStation: { type: String, enum: [...FULFILLMENT_STATION_VALUES, null], default: null },
         fulfillmentBehavior: { type: String, enum: [...FULFILLMENT_BEHAVIOR_VALUES, null], default: null },
