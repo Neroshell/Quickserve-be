@@ -33,6 +33,38 @@ function handleMenuError(res, err, fallback) {
     return res.status(500).json({ error: fallback })
 }
 
+// Guest menu responses intentionally expose the sellability result, but not
+// inventory balances, reservation quantities, or mapping details. Owners and
+// authenticated staff retain the richer operational DTO used by their menu
+// workspace through the owner cache variant below.
+function toPublicMenuItemDTO(item) {
+    const source = item || {}
+    const id = source.id || source._id
+    const availableQuantity = source.inventory?.availableQuantity ?? source.stockQuantity
+    const availabilityStatus = source.isAvailable === true
+        ? "available"
+        : source.manualIsAvailable !== false && availableQuantity === 0
+            ? "sold_out"
+            : "unavailable"
+    const payload = {
+        ...(id ? { id: String(id), _id: source._id || id } : {}),
+        businessId: source.businessId,
+        name: source.name,
+        description: source.description || "",
+        imageUrl: source.imageUrl || "",
+        fulfillmentStation: source.fulfillmentStation ?? null,
+        fulfillmentBehavior: source.fulfillmentBehavior ?? null,
+        isAvailable: source.isAvailable === true,
+        availabilityStatus,
+    }
+    if (source.price !== undefined) payload.price = source.price
+    if (source.prepTimeMinutes !== undefined) payload.prepTimeMinutes = source.prepTimeMinutes
+    if (source.category !== undefined) payload.category = source.category
+    if (source.type !== undefined) payload.type = source.type
+    if (Number.isFinite(source.orderCount)) payload.orderCount = source.orderCount
+    return payload
+}
+
 // GET /menu-items?businessId=...
 export async function getMenuItems(req, res) {
     try {
@@ -54,9 +86,12 @@ export async function getMenuItems(req, res) {
 
         const items = await MenuItem.find(filter).sort({ createdAt: -1 })
         const enriched = await enrichMenuItemsWithInventory({ businessId, menuItems: items })
+        // Visibility is a guest-interface preference. The API must return the
+        // canonical availability state for every non-archived item so guests
+        // can either hide unavailable items or display them as unavailable.
         const payload = isOwningStaff
             ? enriched
-            : enriched.filter((item) => item.isAvailable === true)
+            : enriched.map(toPublicMenuItemDTO)
 
         await responseCache.set(
             cacheKey,
@@ -351,14 +386,14 @@ export async function getPopularItems(req, res) {
         // Sort by popularity rank, inject orderCount for frontend use
         const enrichedItems = await enrichMenuItemsWithInventory({ businessId, menuItems: items })
         const sorted = enrichedItems
-            .filter((item) => item.isAvailable === true)
             .map(item => ({
                 ...item,
                 orderCount: aggregated.find(a => a._id === item.name)?.totalOrdered ?? 0
             }))
             .sort((a, b) => (rankMap[a.name] ?? 99) - (rankMap[b.name] ?? 99))
 
-        return res.json(sorted)
+        const isOwningStaff = req.session?.user?.businessId === businessId
+        return res.json(isOwningStaff ? sorted : sorted.map(toPublicMenuItemDTO))
     } catch (err) {
         console.error("[getPopularItems]", err)
         return handleMenuError(res, err, "Failed to fetch popular items")

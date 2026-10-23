@@ -408,7 +408,10 @@ test("menu cache separates public and owner views, avoids DB reads, and refreshe
 
     const publicMiss = mockReqRes({ query: { businessId: "biz_alpha" } })
     await getMenuItems(publicMiss.req, publicMiss.res)
-    assert.deepEqual(publicMiss.res.body.map(item => item.name), ["Soup"])
+    assert.deepEqual(publicMiss.res.body.map(item => item.name), ["Soup", "Hidden special"])
+    assert.equal(publicMiss.res.body.find(item => item.name === "Hidden special").isAvailable, false)
+    assert.equal("inventory" in publicMiss.res.body[0], false)
+    assert.equal("stockQuantity" in publicMiss.res.body[0], false)
     assert.equal(menuReads, 1)
     const publicMissPayload = structuredClone(publicMiss.res.body)
 

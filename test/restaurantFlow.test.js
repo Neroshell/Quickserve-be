@@ -22,7 +22,7 @@ const [
   },
   { createCheckoutSession },
   { getBusinessBySlug, getPublicBusinessConfig },
-  { getMenuItems },
+  { getMenuItems, getPopularItems },
   { kitchenOrders },
   { barOrders },
   { waiterOrders, createWaiterOrder },
@@ -159,6 +159,12 @@ function installOfflineOrderMocks(t, options = {}) {
     return Array.isArray(fields) ? [createdOrder] : createdOrder;
   });
   t.mock.method(Order, "findOne", () => mockQuery(createdOrder));
+  t.mock.method(Order, "exists", (filter) => {
+    const matches = createdOrder &&
+      createdOrder.businessId === filter.businessId &&
+      createdOrder.creationIdempotencyKey === filter.creationIdempotencyKey;
+    return Promise.resolve(matches ? { _id: createdOrder._id } : null);
+  });
 
   return { business, servicePoint, guestSession, menuItems, plan, capture };
 }
@@ -217,6 +223,12 @@ function installOnlineCheckoutMocks(t, options = {}) {
       (filter._id === undefined || String(candidate._id) === String(filter._id)) &&
       (filter.idempotencyKey === undefined || candidate.idempotencyKey === filter.idempotencyKey));
     return mockQuery(pending || null);
+  });
+  t.mock.method(PendingCheckout, "exists", (filter) => {
+    const pending = capture.pendingCreates.find((candidate) =>
+      candidate.businessId === filter.businessId &&
+      candidate.idempotencyKey === filter.idempotencyKey);
+    return Promise.resolve(pending ? { _id: pending._id } : null);
   });
   t.mock.method(PendingCheckout, "updateOne", async (filter, update) => {
     const pending = capture.pendingCreates.find((candidate) =>
@@ -434,7 +446,7 @@ test("public hotel business payload exposes the active room showcase catalogue",
   assert.equal("stripeAccountId" in response.body, false);
 });
 
-test("public menu is tenant-scoped and hides unavailable items while owning staff can manage them", async (t) => {
+test("public menu is tenant-scoped, returns unavailable items safely, and keeps operational inventory private", async (t) => {
   const items = [
     createMenuItemFixture(),
     createMenuItemFixture({
@@ -456,7 +468,12 @@ test("public menu is tenant-scoped and hides unavailable items while owning staf
     publicRes,
   );
   assert.deepEqual(filters[0], { businessId: "business-a", archivedAt: null });
-  assert.deepEqual(publicRes.body.map((item) => item.name), ["Margherita Pizza"]);
+  assert.deepEqual(publicRes.body.map((item) => item.name), ["Margherita Pizza", "Sold Out Soup"]);
+  assert.equal(publicRes.body[1].isAvailable, false);
+  assert.equal(publicRes.body[1].availabilityStatus, "unavailable");
+  assert.equal("inventory" in publicRes.body[0], false);
+  assert.equal("stockQuantity" in publicRes.body[0], false);
+  assert.equal("manualIsAvailable" in publicRes.body[0], false);
 
   const staffRes = createResponse();
   await getMenuItems(
@@ -469,6 +486,64 @@ test("public menu is tenant-scoped and hides unavailable items while owning staf
   );
   assert.deepEqual(filters[1], { businessId: "business-a", archivedAt: null });
   assert.equal(staffRes.body.length, 2);
+});
+
+test("public popular menu retains unavailable items with only guest-safe availability data", async (t) => {
+  const items = [
+    createMenuItemFixture(),
+    createMenuItemFixture({
+      _id: "mongo-menu-sold-out",
+      name: "Sold Out Soup",
+      isAvailable: false,
+    }),
+  ];
+  t.mock.method(Order, "aggregate", async () => [
+    { _id: "Sold Out Soup", totalOrdered: 8 },
+    { _id: "Margherita Pizza", totalOrdered: 4 },
+  ]);
+  t.mock.method(MenuItem, "find", (filter) => {
+    assert.deepEqual(filter, {
+      businessId: "business-a",
+      name: { $in: ["Sold Out Soup", "Margherita Pizza"] },
+      archivedAt: null,
+    });
+    return mockQuery(items);
+  });
+  t.mock.method(MenuInventoryRecipe, "find", () => mockQuery([]));
+
+  const response = createResponse();
+  await getPopularItems(
+    { query: { businessId: "business-a" }, body: {}, session: {} },
+    response,
+  );
+
+  assert.deepEqual(response.body.map((item) => item.name), ["Sold Out Soup", "Margherita Pizza"]);
+  assert.equal(response.body[0].isAvailable, false);
+  assert.equal(response.body[0].availabilityStatus, "unavailable");
+  assert.equal(response.body[0].orderCount, 8);
+  assert.equal("inventory" in response.body[0], false);
+  assert.equal("stockQuantity" in response.body[0], false);
+});
+
+test("public menu exposes a safe sold-out status when canonical stock reaches zero", async (t) => {
+  const item = createMenuItemFixture({
+    isAvailable: false,
+    manualIsAvailable: true,
+    trackStock: true,
+    stockQuantity: 0,
+  });
+  t.mock.method(MenuItem, "find", () => mockQuery([item]));
+  t.mock.method(MenuInventoryRecipe, "find", () => mockQuery([]));
+
+  const response = createResponse();
+  await getMenuItems(
+    { query: { businessId: "business-a" }, body: {}, session: {} },
+    response,
+  );
+
+  assert.equal(response.body[0].isAvailable, false);
+  assert.equal(response.body[0].availabilityStatus, "sold_out");
+  assert.equal("stockQuantity" in response.body[0], false);
 });
 
 test("valid active ServicePoint creates a tenant-bound guest session", async (t) => {
@@ -883,6 +958,18 @@ test("item disabled after menu load and inactive ServicePoint are rejected befor
   await createOrder(createPublicOrderRequest(), unavailableRes);
   assert.equal(unavailableRes.statusCode, 409);
   assert.match(unavailableRes.body.message, /no longer available/i);
+  assert.equal(capture.orderCreates.length, 0);
+});
+
+test("waitstaff cannot create an order for a currently unavailable item", async (t) => {
+  const unavailable = createMenuItemFixture({ isAvailable: false });
+  const { capture } = installOfflineOrderMocks(t, { menuItems: [unavailable] });
+  const response = createResponse();
+
+  await createWaiterOrder(createWaitstaffOrderRequest(), response);
+
+  assert.equal(response.statusCode, 409);
+  assert.match(response.body.message, /no longer available/i);
   assert.equal(capture.orderCreates.length, 0);
 });
 
@@ -1983,6 +2070,7 @@ test("database failure during order creation returns an error without a persiste
   t.mock.method(MenuInventoryRecipe, "find", () => mockQuery([]));
   t.mock.method(InventoryReservation, "findOne", () => mockQuery(null));
   t.mock.method(Order, "findOne", () => mockQuery(null));
+  t.mock.method(Order, "exists", async () => null);
   t.mock.method(Order, "create", async () => {
     createAttempts += 1;
     throw new Error("database unavailable");
