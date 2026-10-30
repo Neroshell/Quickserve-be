@@ -34,13 +34,13 @@ The frontend implementation is concentrated in one 1,112-line client component:
 
 | File | Current responsibility | Audit result |
 | --- | --- | --- |
-| `../Quick-serve-qr-menu/app/owner/analytics/page.tsx` | Authentication access, settings request, analytics request, fallback orders request, polling, range state, calculations, all cards/charts/tables, loading, and empty states | Monolithic and food-service-specific |
-| `../Quick-serve-qr-menu/app/owner/analytics/loading.tsx` | Route-level generic skeleton | Reusable visual direction, but it does not reflect enabled modules and is bypassed by the page's own initial full-screen spinner after hydration |
-| `../Quick-serve-qr-menu/types/owner-dashboard.ts` | Types for the analytics response | Misnamed: it is used only by `/owner/analytics`, not the owner dashboard |
-| `../Quick-serve-qr-menu/hooks/use-auth-guard.ts` | Calls `/auth/me` and exposes the authenticated business's type, modules, and capabilities | Correct capability source is already available |
-| `../Quick-serve-qr-menu/contexts/BusinessContext.tsx` | Exposes `businessType`, `modules`, `capabilities`, and ServicePoint terminology | Suitable for analytics module selection |
-| `../Quick-serve-qr-menu/app/owner/layout.tsx` | Creates `BusinessProvider` and builds owner navigation from capabilities | Analytics navigation is capability-aware, but the analytics page body is not |
-| `../Quick-serve-qr-menu/lib/axios-config.ts` | Shared credentialed Axios client | Safe to retain |
+| `../chillow-app/app/owner/analytics/page.tsx` | Authentication access, settings request, analytics request, fallback orders request, polling, range state, calculations, all cards/charts/tables, loading, and empty states | Monolithic and food-service-specific |
+| `../chillow-app/app/owner/analytics/loading.tsx` | Route-level generic skeleton | Reusable visual direction, but it does not reflect enabled modules and is bypassed by the page's own initial full-screen spinner after hydration |
+| `../chillow-app/types/owner-dashboard.ts` | Types for the analytics response | Misnamed: it is used only by `/owner/analytics`, not the owner dashboard |
+| `../chillow-app/hooks/use-auth-guard.ts` | Calls `/auth/me` and exposes the authenticated business's type, modules, and capabilities | Correct capability source is already available |
+| `../chillow-app/contexts/BusinessContext.tsx` | Exposes `businessType`, `modules`, `capabilities`, and ServicePoint terminology | Suitable for analytics module selection |
+| `../chillow-app/app/owner/layout.tsx` | Creates `BusinessProvider` and builds owner navigation from capabilities | Analytics navigation is capability-aware, but the analytics page body is not |
+| `../chillow-app/lib/axios-config.ts` | Shared credentialed Axios client | Safe to retain |
 
 There are no dedicated analytics hooks or analytics components. Metric cards, Recharts charts, service-call cards, ServicePoint performance, and waitstaff performance are all inline in the page.
 

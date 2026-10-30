@@ -54,6 +54,16 @@ import {
 } from "../services/hotelReservationAvailabilityService.js";
 
 import { assertReservationEligibility } from "../services/reservationEligibilityService.js";
+import { assertHotelWalkInEligibility } from "../services/hotelWalkInEligibilityService.js";
+import { assertHotelOnlinePaymentReady } from "../services/hotelOnlinePaymentReadinessService.js";
+import { getHotelBookingReadiness as buildHotelBookingReadiness } from "../services/hotelBookingReadinessService.js";
+import {
+  buildReservationModeQuery,
+  getReservationMode,
+  ReservationModeError,
+  resolveReservationMode,
+} from "../services/reservationModeService.js";
+import { assertPublicReservationModeBookable } from "../services/publicReservationBookabilityService.js";
 const MAX_CHECK_IN_CODE_ATTEMPTS = 5;
 const ARCHIVABLE_RESERVATION_STATUSES = new Set([
   "cancelled",
@@ -176,6 +186,7 @@ export function toOwnerReservationResponse(reservation) {
 
   return {
     ...safeReservation,
+    reservationMode: getReservationMode(safeReservation),
     paymentUrl: canUsePaymentLink
       ? `${getCanonicalFrontendOrigin()}/reservation/pay/${secureToken}`
       : null,
@@ -209,6 +220,7 @@ export async function getReservations(req, res) {
       sortBy,
       sortDirection,
       reservationId,
+      mode: requestedMode,
     } = req.query;
 
     const sessionUser = req.session?.user;
@@ -239,14 +251,23 @@ export async function getReservations(req, res) {
       return res.status(404).json({ error: "Business not found" });
     }
 
-    const caps = resolveBusinessCapabilities(business)?.reservations;
-    const isHotel = caps && caps.primaryMode === "stay";
+    const capabilities = resolveBusinessCapabilities(business);
+    const reservationMode = resolveReservationMode({
+      business,
+      requestedMode,
+      capabilities,
+    });
+    const isHotel = reservationMode === "stay";
 
     // Keep the owner view synchronized with the same persisted expiry state as
     // the scheduled job, without client-side polling or duplicate UI state.
     await expireAwaitingPaymentReservations({ businessId });
 
-    const baseQuery = { businessId, archivedAt: null };
+    const baseQuery = {
+      businessId,
+      archivedAt: null,
+      ...buildReservationModeQuery(reservationMode),
+    };
 
     // Narrow, tenant-scoped lookup used by Owner notification deep links.
     if (reservationId) {
@@ -308,6 +329,7 @@ export async function getReservations(req, res) {
 
       const occupiedRooms = await Reservation.distinct("servicePointId", {
         businessId,
+        ...buildReservationModeQuery("stay"),
         status: { $in: [...BLOCKING_STAY_STATUSES] },
         checkInDate: { $lt: tomorrowStr },
         checkOutDate: { $gt: businessDay }
@@ -534,6 +556,7 @@ export async function getReservations(req, res) {
         );
         const occupiedRooms = await Reservation.distinct("servicePointId", {
           businessId,
+          ...buildReservationModeQuery("stay"),
           status: { $in: [...BLOCKING_STAY_STATUSES] },
           checkInDate: { $lt: tomorrowStr },
           checkOutDate: { $gt: todayStr }
@@ -658,6 +681,9 @@ export async function getReservations(req, res) {
     const reservations = await Reservation.find(activeQuery).sort({ date: 1, time: 1 }).lean();
     res.json(reservations.map(toOwnerReservationResponse));
   } catch (error) {
+    if (error instanceof ReservationModeError || Number.isInteger(error?.statusCode)) {
+      return res.status(error.statusCode || 400).json({ error: error.message, code: error.code });
+    }
     console.error("[reservationController.getReservations] Error:", error);
     res.status(500).json({ error: "Server error" });
   }
@@ -707,7 +733,16 @@ export async function updateReservationStatus(req, res) {
     }
 
     // Conflict check when confirming (restaurant/café only — hotels use date-overlap via accepted_awaiting_payment)
-    const isHotel = resolveBusinessCapabilities(business).reservations.primaryMode === "stay";
+    // Existing records determine their own lifecycle. A hybrid business's
+    // primary mode must never cause a dining reservation to use stay rules.
+    const reservationMode = getReservationMode(reservation);
+    if (!reservationMode) {
+      return res.status(409).json({
+        error: "Reservation has an unsupported historical shape and cannot be transitioned automatically.",
+        code: "RESERVATION_MODE_AMBIGUOUS",
+      });
+    }
+    const isHotel = reservationMode === "stay";
     if (
       !isHotel &&
       RESTAURANT_BLOCKING_STATUSES.includes(status) &&
@@ -776,6 +811,9 @@ export async function updateReservationStatus(req, res) {
 
     let housekeepingChanged = false;
     if (status === "accepted_awaiting_payment") {
+      // An approval must never create a payment link that Checkout cannot use.
+      // The checkout endpoint repeats this check immediately before collection.
+      if (isHotel) assertHotelOnlinePaymentReady(business);
       await ensureReservationPricingSnapshot({
         reservation,
         business,
@@ -911,6 +949,7 @@ export async function updateReservationStatus(req, res) {
             endTime: isHotel ? null : reservation.endTime,
             servicePointLabel: reservation.servicePointLabel || null,
             type: isHotel ? "hotel" : "restaurant",
+            reservationMode,
           },
         }).catch(err => console.error("[Reservation] SSE publish failed", {
           reservationId: String(reservation._id),
@@ -1247,14 +1286,13 @@ export async function getAvailableStayServicePoints(req, res) {
       countryCode,
       statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
     });
-    if (!business || !resolveBusinessCapabilities(business).reservations.modes.includes("stay")) {
+    if (!business) {
       return res.status(404).json({ error: "Hotel not found" });
     }
-    assertReservationEligibility(business);
-
     if (business.settings?.reservationsEnabled === false) {
-      return res.status(403).json({ error: "Reservations are disabled." });
+      return res.status(403).json({ error: "Reservations are disabled for this business" });
     }
+    assertPublicReservationModeBookable(business, "stay");
 
     const { rooms } = await findHotelRoomAvailability({
       business,
@@ -1270,7 +1308,7 @@ export async function getAvailableStayServicePoints(req, res) {
     res.json(availableRooms);
   } catch (error) {
     if (error.statusCode) {
-      return res.status(error.statusCode).json({ error: error.message });
+      return res.status(error.statusCode).json({ error: error.message, code: error.code });
     }
     console.error("[reservationController.getAvailableStayServicePoints] Error:", error);
     res.status(500).json({ error: "Server error" });
@@ -1427,6 +1465,7 @@ export async function resendReservationPaymentLink(req, res) {
     if (!business) {
       return res.status(404).json({ error: "Business not found" });
     }
+    assertHotelOnlinePaymentReady(business);
 
     const sent = await sendReservationPaymentEmail({
       to: reservation.email,
@@ -1446,6 +1485,12 @@ export async function resendReservationPaymentLink(req, res) {
       reservation: toOwnerReservationResponse(reservation),
     });
   } catch (error) {
+    if (Number.isInteger(error?.statusCode)) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        code: error.code || "RESERVATION_PAYMENT_LINK_UNAVAILABLE",
+      });
+    }
     console.error(
       "[reservationController.resendReservationPaymentLink] Error:",
       error,
@@ -1477,10 +1522,17 @@ export async function createStaffReservation(req, res) {
     if (!business) {
       return res.status(404).json({ error: "Business not found" });
     }
-    assertReservationEligibility(business);
-
     const capabilities = resolveBusinessCapabilities(business);
-    const reservationMode = capabilities?.reservations?.primaryMode;
+    const reservationMode = resolveReservationMode({
+      business,
+      requestedMode: req.query?.mode,
+      capabilities,
+    });
+    if (reservationMode === "stay") {
+      assertHotelWalkInEligibility(business, { paymentMethod: req.body?.paymentMethod });
+    } else {
+      assertReservationEligibility(business);
+    }
 
     // Extract ONLY safe, allowlisted fields from the request body.
     // We deliberately ignore any attempt by the client to send:
@@ -1503,6 +1555,17 @@ export async function createStaffReservation(req, res) {
       seatingPreference,
       seatNow,
     } = req.body;
+
+    const hasOppositeModeFields = reservationMode === "stay"
+      ? [date, startTime, endTime].some((value) => value !== undefined && value !== null && value !== "")
+      : [checkInDate, checkOutDate].some((value) => value !== undefined && value !== null && value !== "");
+    if (hasOppositeModeFields) {
+      return res.status(400).json({
+        error: reservationMode === "stay"
+          ? "Stay reservations cannot include dining date or time fields."
+          : "Dining reservations cannot include stay date fields.",
+      });
+    }
 
     // Phase E: Build staff attribution server-side
     const staffSnapshot = buildReservationStaffSnapshot(sessionUser);    let result;
@@ -1593,7 +1656,7 @@ export async function getOwnerRestaurantAvailability(req, res) {
     if (!business) {
       return res.status(404).json({ error: "Business not found" });
     }
-    if (resolveBusinessCapabilities(business).reservations.primaryMode !== "timeslot") {
+    if (!resolveBusinessCapabilities(business).reservations.modes.includes("timeslot")) {
       return res.status(404).json({ error: "Restaurant availability is not available for this business" });
     }
 
@@ -1623,6 +1686,43 @@ export async function getOwnerRestaurantAvailability(req, res) {
 }
 
 /**
+ * GET /owner/reservations/booking-readiness
+ * Tenant-scoped, safe projection for hotel operations UI. The creation and
+ * checkout endpoints remain the final authoritative eligibility checks.
+ */
+export async function getHotelBookingReadiness(req, res) {
+  try {
+    const businessId = req.session?.user?.businessId;
+    if (!businessId) return res.status(401).json({ error: "Unauthorized" });
+
+    const business = await Business.findOne({ businessId }).lean();
+    if (!business) return res.status(404).json({ error: "Business not found" });
+    if (!resolveBusinessCapabilities(business).reservations.modes.includes("stay")) {
+      return res.status(404).json({ error: "Hotel booking readiness is not available for this business" });
+    }
+
+    const accommodationReady = Boolean(await ServicePoint.exists({
+      businessId,
+      servicePointType: "room",
+      isActive: { $ne: false },
+      reservable: { $ne: false },
+      pricePerNight: { $gt: 0 },
+      maxGuests: { $gt: 0 },
+      $or: [
+        { "roomReadiness.state": "ready" },
+        { roomReadiness: { $exists: false } },
+        { roomReadiness: null },
+      ],
+    }));
+
+    return res.json(buildHotelBookingReadiness({ business, accommodationReady }));
+  } catch (error) {
+    console.error("[reservationController.getHotelBookingReadiness] Error:", error);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
  * GET /owner/reservations/availability
  * Returns all room-type service points for the business, annotated with
  * availability for the requested checkInDate/checkOutDate range.
@@ -1647,6 +1747,10 @@ export async function getHotelRoomAvailability(req, res) {
     const business = await Business.findOne({ businessId }).lean();
     if (!business) {
       return res.status(404).json({ error: "Business not found" });
+    }
+
+    if (!resolveBusinessCapabilities(business).reservations.modes.includes("stay")) {
+      return res.status(404).json({ error: "Stay availability is not available for this business" });
     }
 
     const { rooms: canonicalRooms } = await findHotelRoomAvailability({
@@ -1699,6 +1803,10 @@ export async function getHotelPricingPreview(req, res) {
     const business = await Business.findOne({ businessId }).lean();
     if (!business) {
       return res.status(404).json({ error: "Business not found" });
+    }
+
+    if (!resolveBusinessCapabilities(business).reservations.modes.includes("stay")) {
+      return res.status(404).json({ error: "Stay pricing is not available for this business" });
     }
 
     const customerPricing = await getHotelRoomPricingPreview({

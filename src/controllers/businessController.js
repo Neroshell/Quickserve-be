@@ -13,11 +13,11 @@ import {
     attachBusinessCapabilities,
     getBusinessModuleCatalog,
     resolveBusinessCapabilities,
-    getDefaultBusinessModules,
     resolveBusinessModules,
     setBusinessModuleEnabled,
     validateBusinessModulesForType,
 } from "../services/businessCapabilityService.js"
+import { resolveVenueClassification } from "../constants/venueTypeCatalog.js"
 import {
     invalidateAllBusinessReadCaches,
     invalidateBusinessConfiguration,
@@ -33,6 +33,7 @@ import {
 } from "../services/hotelRoomSupplyTemplateService.js"
 
 import { hasReservationEligibilityMutation, withReservationEligibilityFence } from "../services/reservationEligibilityService.js"
+import { PUBLIC_RESERVATION_MODES } from "../services/publicReservationBookabilityService.js"
 function generateBusinessId() {
     return `biz_${crypto.randomBytes(7).toString("hex")}`
 }
@@ -149,6 +150,7 @@ function buildManagerSettingsPayload(business, permissions = []) {
         name: business.name,
         displayName: business.displayName,
         businessType: business.businessType,
+        venueType: business.venueType,
         currency: business.currency,
         timezone: business.timezone,
         taxRate: business.taxRate,
@@ -190,14 +192,14 @@ function buildManagerSettingsPayload(business, permissions = []) {
 // cannot escalate their plan, bypass billing, or hijack ownership.
 const ALLOWED_SETTINGS_UPDATE_FIELDS = [
     "name", "displayName", "slug", "address", "phoneNumber", "contactEmail",
-    "currency", "timezone", "country", "language", "taxRate", "businessType",
+    "currency", "timezone", "country", "language", "taxRate", "businessType", "venueType",
     "menuCategories",
 ]
 
 const PUBLIC_BUSINESS_SOURCE_FIELDS = new Set([
     "businessId", "slug", "name", "displayName", "address", "phoneNumber",
     "country", "countryCode", "currency", "timezone", "logoUrl", "branding",
-    "operatingHours", "settings", "hotelSettings", "businessType", "modules",
+    "operatingHours", "settings", "hotelSettings", "businessType", "venueType", "modules",
 ])
 
 function changesPublicBusinessDto(update) {
@@ -300,21 +302,24 @@ export async function updateSettings(req, res) {
             if (req.body[field] !== undefined) updateObj[field] = req.body[field]
         }
 
-        if (updateObj.businessType !== undefined) {
-            if (!VALID_BUSINESS_TYPES.includes(updateObj.businessType)) {
-                return res.status(400).json({ message: `Invalid businessType. Must be one of: ${VALID_BUSINESS_TYPES.join(", ")}` })
-            }
-
-            const existingIdentity = await Business.findOne({ businessId }).select("businessType modules").lean()
+        if (updateObj.businessType !== undefined || updateObj.venueType !== undefined) {
+            const existingIdentity = await Business.findOne({ businessId }).select("businessType venueType modules propertyProfile.accommodationType").lean()
             if (!existingIdentity) {
                 return res.status(404).json({ message: "Business not found" })
             }
 
             try {
+                const classification = resolveVenueClassification({
+                    venueType: updateObj.venueType ?? existingIdentity.venueType,
+                    businessType: updateObj.businessType ?? existingIdentity.businessType,
+                    accommodationType: existingIdentity.propertyProfile?.accommodationType,
+                })
+                updateObj.businessType = classification.businessType
+                updateObj.venueType = classification.venueType
                 const preservedModules = resolveBusinessModules(existingIdentity)
                 updateObj.modules = validateBusinessModulesForType(
-                    updateObj.businessType,
-                    [...preservedModules, ...getDefaultBusinessModules(updateObj.businessType)]
+                    classification.businessType,
+                    [...preservedModules, ...classification.defaultModules]
                 )
             } catch (err) {
                 return res.status(400).json({ message: err.message })
@@ -599,6 +604,21 @@ export async function updateOrderingPreferences(req, res) {
         if (settings && typeof settings.reservationsEnabled === "boolean") {
             safePrefs["settings.reservationsEnabled"] = settings.reservationsEnabled
         }
+        if (settings && Object.hasOwn(settings, "publicReservationModes")) {
+            if (!Array.isArray(settings.publicReservationModes) ||
+                settings.publicReservationModes.some((mode) => !PUBLIC_RESERVATION_MODES.includes(mode))) {
+                return res.status(400).json({ message: "publicReservationModes must contain only stay or timeslot" })
+            }
+            const businessForModes = await Business.findOne({ businessId }).lean()
+            if (!businessForModes) {
+                return res.status(404).json({ message: "Business not found" })
+            }
+            const supportedModes = resolveBusinessCapabilities(businessForModes).reservations.modes
+            if (settings.publicReservationModes.some((mode) => !supportedModes.includes(mode))) {
+                return res.status(400).json({ message: "A public reservation mode must be enabled by this business's operational modules" })
+            }
+            safePrefs["settings.publicReservationModes"] = [...new Set(settings.publicReservationModes)]
+        }
         if (settings && typeof settings.tipsEnabled === "boolean") {
             safePrefs["settings.tipsEnabled"] = settings.tipsEnabled
         }
@@ -709,7 +729,6 @@ export async function updateTablePreferences(req, res) {
     }
 }
 
-const VALID_BUSINESS_TYPES = ["restaurant", "bar_lounge", "hotel"]
 const VALID_PLANS = ["basic", "starter", "growth", "pro"]
 
 function normalizeRoomTypeText(value, field, maxLength) {
@@ -1159,6 +1178,7 @@ export async function createBusiness(req, res) {
             language,
             settings,
             businessType,
+            venueType,
             modules,
             plan,
             planId,
@@ -1170,18 +1190,19 @@ export async function createBusiness(req, res) {
             return res.status(400).json({ message: "Missing required fields (name, displayName, slug)" })
         }
 
-        // businessType validation
-        if (businessType && !VALID_BUSINESS_TYPES.includes(businessType)) {
-            return res.status(400).json({ message: `Invalid businessType. Must be one of: ${VALID_BUSINESS_TYPES.join(", ")}` })
-        }
-
-        const resolvedBusinessType = businessType || "restaurant"
+        let classification
         let resolvedModules
         try {
-            resolvedModules = validateBusinessModulesForType(
-                resolvedBusinessType,
-                modules === undefined ? getDefaultBusinessModules(resolvedBusinessType) : modules
-            )
+            classification = resolveVenueClassification({
+                venueType,
+                businessType: businessType || "restaurant",
+            })
+            resolvedModules = venueType !== undefined
+                ? classification.defaultModules
+                : validateBusinessModulesForType(
+                    classification.businessType,
+                    modules === undefined ? classification.defaultModules : modules,
+                )
         } catch (err) {
             return res.status(400).json({ message: err.message })
         }
@@ -1237,7 +1258,8 @@ export async function createBusiness(req, res) {
                 takeoutEnabled: false,
                 callWaiterEnabled: true
             },
-            businessType: resolvedBusinessType,
+            businessType: classification.businessType,
+            venueType: classification.venueType,
             modules: resolvedModules,
             plan,
             planId,
@@ -1478,25 +1500,35 @@ export async function updateAdminBusiness(req, res) {
         }
 
         const existingBusinessForUpdate = await Business.findOne({ businessId: paramId })
-            .select("_id businessId businessType modules countryCode slug address")
+            .select("_id businessId businessType venueType modules propertyProfile.accommodationType countryCode slug address")
             .lean()
         if (!existingBusinessForUpdate) {
             return res.status(404).json({ message: "Business not found" })
         }
 
-        const nextBusinessType = updateData.businessType || existingBusinessForUpdate.businessType || "restaurant"
-        if (!VALID_BUSINESS_TYPES.includes(nextBusinessType)) {
-            return res.status(400).json({ message: `Invalid businessType. Must be one of: ${VALID_BUSINESS_TYPES.join(", ")}` })
-        }
-
         try {
+            const classificationRequested = updateData.venueType !== undefined || updateData.businessType !== undefined
+            const nextAccommodationType = classificationRequested
+                ? (updateData["propertyProfile.accommodationType"] ??
+                    updateData.propertyProfile?.accommodationType ??
+                    existingBusinessForUpdate.propertyProfile?.accommodationType)
+                : undefined
+            const classification = resolveVenueClassification({
+                venueType: updateData.venueType ?? existingBusinessForUpdate.venueType,
+                businessType: updateData.businessType ?? existingBusinessForUpdate.businessType ?? "restaurant",
+                accommodationType: nextAccommodationType,
+            })
+            if (classificationRequested) {
+                updateData.businessType = classification.businessType
+                updateData.venueType = classification.venueType
+            }
             if (updateData.modules !== undefined) {
-                updateData.modules = validateBusinessModulesForType(nextBusinessType, updateData.modules)
-            } else if (nextBusinessType !== existingBusinessForUpdate.businessType) {
+                updateData.modules = validateBusinessModulesForType(classification.businessType, updateData.modules)
+            } else if (classification.businessType !== existingBusinessForUpdate.businessType) {
                 const preservedModules = resolveBusinessModules(existingBusinessForUpdate)
                 updateData.modules = validateBusinessModulesForType(
-                    nextBusinessType,
-                    [...preservedModules, ...getDefaultBusinessModules(nextBusinessType)]
+                    classification.businessType,
+                    [...preservedModules, ...classification.defaultModules]
                 )
             }
         } catch (err) {

@@ -23,7 +23,7 @@ import {
   createReservationNotComingToken,
   hashReservationNotComingToken,
 } from "./reservationNotComingTokenService.js";
-import { resolveBusinessCapabilities } from "./businessCapabilityService.js";
+import { getReservationMode } from "./reservationModeService.js";
 
 export const DEFAULT_ARRIVAL_REMINDER_LEAD_MINUTES = 10;
 export const MAX_ARRIVAL_REMINDER_LEAD_MINUTES = 7 * 24 * 60;
@@ -103,7 +103,7 @@ export function getArrivalReminderSchedule({
 }) {
   const timing = getRestaurantReservationTiming(reservation, business);
   const { leadMinutes } = getArrivalReminderSettings(business);
-  const testDelaySeconds = isTimeslotBusiness(business)
+  const testDelaySeconds = getReservationMode(reservation) === "timeslot"
     ? getLocalArrivalReminderTestDelaySeconds(env)
     : null;
   const localTestDelayActive = testDelaySeconds !== null;
@@ -116,10 +116,6 @@ export function getArrivalReminderSchedule({
     delay: Math.max(0, desired.getTime() - now.getTime()),
     localTestDelayActive,
   };
-}
-
-function isTimeslotBusiness(business) {
-  return resolveBusinessCapabilities(business).reservations.primaryMode === "timeslot";
 }
 
 export async function scheduleReservationArrivalReminder({
@@ -141,7 +137,7 @@ export async function scheduleReservationArrivalReminder({
   if (!settings.enabled) {
     return { queued: false, reason: "business_reminder_disabled" };
   }
-  if (!isTimeslotBusiness(business) || record.checkInDate) {
+  if (getReservationMode(record) !== "timeslot") {
     return { queued: false, reason: "not_restaurant_reservation" };
   }
   if (record.status !== "confirmed") {
@@ -332,7 +328,7 @@ async function resolveArrivalContext({
       arrivalTokenHash: tokenHash,
     }),
   );
-  if (!reservation || reservation.checkInDate) return { outcome: "invalid" };
+  if (!reservation || getReservationMode(reservation) !== "timeslot") return { outcome: "invalid" };
   if (!reservationArrivalTokenMatches(token, reservation, { env })) {
     return { outcome: "invalid" };
   }
@@ -340,7 +336,7 @@ async function resolveArrivalContext({
   const business = typeof businessQuery?.lean === "function"
     ? await businessQuery.lean()
     : await businessQuery;
-  if (!business || !isTimeslotBusiness(business)) return { outcome: "inactive" };
+  if (!business) return { outcome: "inactive" };
   return {
     outcome: arrivalOutcome(reservation, now),
     tokenHash,
@@ -441,6 +437,7 @@ export async function checkInRestaurantReservationArrival({
     startTime: updated.startTime,
     endTime: updated.endTime,
     servicePointLabel: updated.servicePointLabel || null,
+    reservationMode: getReservationMode(updated),
   };
   try {
     await publish(

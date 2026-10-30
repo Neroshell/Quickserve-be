@@ -27,6 +27,8 @@ export const RESERVATION_REPAIR_SCHEDULER_ID =
     "reservation-expiry-repair-scan-every-5-minutes";
 export const BILLING_LIFECYCLE_SCHEDULER_ID =
     "billing-lifecycle-scan-hourly";
+export const COMMISSION_RECOVERY_SCHEDULER_ID = "commission-recovery-scan-hourly";
+export const COMMISSION_INVOICE_SCHEDULER_ID = "commission-invoice-scan-daily";
 export const CRM_ORDER_REPAIR_SCHEDULER_ID =
     "crm-order-repair-scan-every-10-minutes";
 export const AI_ANALYST_WEEKLY_SCHEDULER_ID =
@@ -104,6 +106,10 @@ export async function registerWorkerSchedulers({
             },
         );
         result.billing = true;
+        if (env.BULLMQ_OFFLINE_COMMISSION_AUTOMATION_ENABLED === "true") {
+            await billingQueue.upsertJobScheduler(COMMISSION_RECOVERY_SCHEDULER_ID, { every: 60 * 60 * 1000 }, { name: BILLING_JOB_NAMES.COMMISSION_RECOVERY_SCAN, data: {}, opts: BILLING_JOB_OPTIONS });
+            await billingQueue.upsertJobScheduler(COMMISSION_INVOICE_SCHEDULER_ID, { pattern: "0 2 * * *", tz: "UTC" }, { name: BILLING_JOB_NAMES.COMMISSION_INVOICE_SCAN, data: {}, opts: BILLING_JOB_OPTIONS });
+        }
     }
 
     if (isPostPaymentQueueEnabled(env)) {

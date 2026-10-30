@@ -2,7 +2,7 @@
 
 Date: 2026-09-07  
 Scope: Owner Dashboard remediation only  
-Repositories: `Quickserve-be` and sibling `Quick-serve-qr-menu`
+Repositories: `Quickserve-be` and sibling `chillow-app`
 
 ## Executive summary
 

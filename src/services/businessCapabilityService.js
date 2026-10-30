@@ -1,3 +1,5 @@
+import { getVenueTypeDefinition, resolveEffectiveVenueType } from "../constants/venueTypeCatalog.js"
+
 const MODULE_DEFINITIONS = Object.freeze([
     Object.freeze({ id: "lodging", label: "Lodging" }),
     Object.freeze({ id: "foodService", label: "Food Service" }),
@@ -34,7 +36,8 @@ function canonicalBusinessType(businessType) {
     if (businessType === "apartment" || businessType === "hotel_apartment") return "hotel"
     if (businessType === "bar_lounge") return "bar_lounge"
     if (businessType === "hotel") return "hotel"
-    return "restaurant"
+    if (businessType === "restaurant") return "restaurant"
+    throw new TypeError(`Unsupported business type: ${String(businessType)}`)
 }
 
 export function getDefaultBusinessModules(businessType) {
@@ -124,6 +127,8 @@ function buildNavigation(shell, modules) {
 export function resolveBusinessCapabilities(business) {
     const businessObject = typeof business?.toObject === "function" ? business.toObject() : business
     const businessType = canonicalBusinessType(businessObject?.businessType)
+    const venueType = resolveEffectiveVenueType({ ...businessObject, businessType })
+    const venueTypeDefinition = getVenueTypeDefinition(venueType)
     const shell = businessType === "hotel" ? "hotel" : "restaurant"
     const modules = resolveBusinessModules({ ...businessObject, businessType })
     const hasLodging = modules.includes("lodging")
@@ -134,8 +139,13 @@ export function resolveBusinessCapabilities(business) {
     if (hasFoodService) reservationModes.push("timeslot")
 
     const allowedServicePointTypes = []
-    if (hasLodging) allowedServicePointTypes.push("room")
-    if (hasFoodService) allowedServicePointTypes.push("table")
+    const addAllowedServicePointTypes = (...types) => {
+        for (const type of types) {
+            if (!allowedServicePointTypes.includes(type)) allowedServicePointTypes.push(type)
+        }
+    }
+    if (hasLodging) addAllowedServicePointTypes("room", "other")
+    if (hasFoodService) addAllowedServicePointTypes("table", "booth", "other")
 
     const primaryReservationMode = shell === "hotel" && hasLodging ? "stay" : "timeslot"
     const defaultServicePointType = shell === "hotel" && hasLodging ? "room" : "table"
@@ -148,7 +158,12 @@ export function resolveBusinessCapabilities(business) {
 
     return {
         version: 1,
-        identity: { businessType, shell },
+        identity: {
+            businessType,
+            venueType,
+            venueLabel: venueTypeDefinition?.label || null,
+            shell,
+        },
         visibleModules: modules,
         navigation: {
             shell,

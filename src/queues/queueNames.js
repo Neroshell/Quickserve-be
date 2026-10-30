@@ -34,6 +34,8 @@ export const RESERVATION_JOB_NAMES = Object.freeze({
 
 export const BILLING_JOB_NAMES = Object.freeze({
     LIFECYCLE_SCAN: "billing-lifecycle-scan",
+    COMMISSION_RECOVERY_SCAN: "commission-recovery-scan",
+    COMMISSION_INVOICE_SCAN: "commission-invoice-scan",
     UPCOMING_INVOICE: "billing-upcoming-invoice",
     OVERDUE_WARNING_DAY_3: "billing-overdue-warning-day-3",
     OVERDUE_WARNING_DAY_5: "billing-overdue-warning-day-5",

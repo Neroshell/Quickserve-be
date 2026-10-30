@@ -15,6 +15,10 @@ import {
     normalizePublicCountryCode,
     resolvePublicBusiness,
 } from "../services/publicBusinessResolverService.js"
+import {
+    DISCOVERY_MODE_IDS,
+    getLegacyBusinessTypesForDiscoveryMode,
+} from "../constants/venueTypeCatalog.js"
 
 const MAX_PAGE_SIZE = 50
 const DEFAULT_PAGE_SIZE = 20
@@ -33,6 +37,7 @@ const DISCOVERY_SEARCH_QUERY_PARAMETERS = new Set([
     "city",
     "placeId",
     "category",
+    "mode",
     "businessType",
     "sort",
     "latitude",
@@ -116,6 +121,7 @@ export function queryForDiscoverySearch({
     destinationGeometry,
     nearby,
     category,
+    mode,
     businessType,
 }) {
     const query = {
@@ -148,10 +154,12 @@ export function queryForDiscoverySearch({
     else if (city) query["propertyProfile.city"] = new RegExp(`^${escapeRegExp(city)}$`, "i")
 
     const categoryTypes = category ? CATEGORY_BUSINESS_TYPES[category] : null
+    const modeTypes = mode ? getLegacyBusinessTypesForDiscoveryMode(mode) : null
     const requestedTypes = businessType ? [businessType] : null
-    const allowedTypes = categoryTypes && requestedTypes
-        ? categoryTypes.filter((type) => requestedTypes.includes(type))
-        : categoryTypes || requestedTypes
+    const classificationTypes = modeTypes || categoryTypes
+    const allowedTypes = classificationTypes && requestedTypes
+        ? classificationTypes.filter((type) => requestedTypes.includes(type))
+        : classificationTypes || requestedTypes
 
     if (allowedTypes?.length === 1) query.businessType = allowedTypes[0]
     else if (allowedTypes?.length > 1) query.businessType = { $in: allowedTypes }
@@ -166,6 +174,7 @@ export function parseDiscoverySearchQuery(rawQuery = {}) {
     const countryCode = rawCountryCode ? normalizePublicCountryCode(rawCountryCode) : null
     const city = optionalText(rawQuery.city, { name: "city", maxLength: 120 })
     const category = optionalText(rawQuery.category, { name: "category", maxLength: 16 })?.toLowerCase() || null
+    const mode = optionalText(rawQuery.mode, { name: "mode", maxLength: 32 })?.toLowerCase() || null
     const businessType = optionalText(rawQuery.businessType, { name: "businessType", maxLength: 32 })?.toLowerCase() || null
     const sort = optionalText(rawQuery.sort, { name: "sort", maxLength: 16 }) || "name_asc"
     const latitude = optionalCoordinate(rawQuery.latitude, { name: "latitude", min: -90, max: 90 })
@@ -187,8 +196,14 @@ export function parseDiscoverySearchQuery(rawQuery = {}) {
     if (category && !Object.hasOwn(CATEGORY_BUSINESS_TYPES, category)) {
         throw new PublicBusinessResolutionError("category must be eat, drink, or stay")
     }
+    if (mode && !DISCOVERY_MODE_IDS.includes(mode)) {
+        throw new PublicBusinessResolutionError("mode must be chill, find_a_stay, or go_out")
+    }
     if (businessType && !BUSINESS_TYPES.has(businessType)) {
         throw new PublicBusinessResolutionError("businessType is invalid")
+    }
+    if (mode && (category || businessType)) {
+        throw new PublicBusinessResolutionError("mode cannot be combined with category or businessType")
     }
     if (!["name_asc", "name_desc"].includes(sort)) {
         throw new PublicBusinessResolutionError("sort must be name_asc or name_desc")
@@ -200,6 +215,7 @@ export function parseDiscoverySearchQuery(rawQuery = {}) {
         destinationGeometry: null,
         nearby: latitude === null ? null : { latitude, longitude, radiusKm },
         category,
+        mode,
         businessType,
         sort,
         page: positiveInteger(rawQuery.page, { name: "page", defaultValue: 1, maximum: MAX_PAGE }),

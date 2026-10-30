@@ -5,6 +5,7 @@ import {
   buildNotificationIdempotencyKey,
   createNotificationEvent,
 } from "./notificationService.js";
+import { getReservationMode } from "./reservationModeService.js";
 
 const RESERVATION_OCCURRENCES = Object.freeze({
   [NOTIFICATION_TYPES.RESERVATION_EXTERNAL_CREATED]: "external-created-v1",
@@ -60,6 +61,7 @@ export function buildReservationNotificationFacts(reservationValue) {
     reservationTime: formatNotificationReservationTime(reservation),
     servicePointDisplayName:
       reservation.servicePointLabel || reservation.servicePointDisplayName || "",
+    reservationMode: getReservationMode(reservation),
   };
 }
 

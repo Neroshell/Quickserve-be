@@ -1,6 +1,6 @@
 import Business from "../models/Business.js";
 import Reservation from "../models/Reservation.js";
-import { resolveBusinessCapabilities } from "./businessCapabilityService.js";
+import { getReservationMode } from "./reservationModeService.js";
 import { toPublicArrivalReservation } from "./reservationArrivalService.js";
 import {
   createReservationNotComingToken,
@@ -27,10 +27,6 @@ async function createCancellationNotification(...args) {
     "./reservationNotificationService.js"
   );
   return notifyGuestReservationCancelled(...args);
-}
-
-function isTimeslotBusiness(business) {
-  return resolveBusinessCapabilities(business).reservations.primaryMode === "timeslot";
 }
 
 async function resolveQuery(query) {
@@ -76,7 +72,7 @@ async function resolveNotComingContext({
       cancellationTokenHash: tokenHash,
     }),
   );
-  if (!reservation || reservation.checkInDate) return { outcome: "invalid" };
+  if (!reservation || getReservationMode(reservation) !== "timeslot") return { outcome: "invalid" };
   if (!reservationNotComingTokenMatches(token, reservation, { env })) {
     return { outcome: "invalid" };
   }
@@ -84,7 +80,7 @@ async function resolveNotComingContext({
   const business = typeof businessQuery?.lean === "function"
     ? await businessQuery.lean()
     : await businessQuery;
-  if (!business || !isTimeslotBusiness(business)) return { outcome: "invalid" };
+  if (!business) return { outcome: "invalid" };
   return {
     outcome: notComingOutcome(reservation, now),
     tokenHash,
@@ -194,6 +190,7 @@ export async function cancelRestaurantReservationNotComing({
     startTime: updated.startTime,
     endTime: updated.endTime,
     servicePointLabel: updated.servicePointLabel || null,
+    reservationMode: getReservationMode(updated),
   };
 
   try {

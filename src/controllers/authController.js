@@ -7,6 +7,7 @@ import { sendAuthEmail, sendEmailChangeVerification, sendEmailChangeNotification
 import { hashToken } from "../utils/tokenHash.js";
 import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from "../utils/emailAvailability.js";
 import { resolveBusinessCapabilities, resolveBusinessModules } from "../services/businessCapabilityService.js";
+import { resolveEffectiveVenueType } from "../constants/venueTypeCatalog.js";
 import { resolveSubscriptionEntitlements } from "../services/subscriptionEntitlementService.js";
 import { markStaffActive, markStaffOffline } from "../services/presenceService.js";
 import {
@@ -428,6 +429,7 @@ export async function getMe(req, res) {
                 displayName: business.displayName,
                 name: business.ownerName,
                 businessType: business.businessType || "restaurant",
+                venueType: resolveEffectiveVenueType(business),
                 modules: resolveBusinessModules(business),
                 capabilities: resolveBusinessCapabilities(business),
                 entitlements: resolveSubscriptionEntitlements(business),
@@ -450,7 +452,7 @@ export async function getMe(req, res) {
                     { businessId: staff.businessId },
                     { businessId: staff.businessId }
                 ]
-            }).select('name displayName businessType modules currency taxRate timezone currentPlan billingStatus').lean();
+            }).select('name displayName businessType venueType modules currency taxRate timezone currentPlan billingStatus').lean();
 
             const businessDisplayName = business?.displayName || business?.name;
 
@@ -469,6 +471,7 @@ export async function getMe(req, res) {
                     coOwnerRestrictions: staff.coOwnerRestrictions || [],
                 }),
                 businessType: business?.businessType || "restaurant",
+                venueType: resolveEffectiveVenueType(business),
                 modules: resolveBusinessModules(business),
                 capabilities: resolveBusinessCapabilities(business),
                 entitlements: resolveSubscriptionEntitlements(business),

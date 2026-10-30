@@ -53,6 +53,7 @@ import {
   createOrderLineFulfillmentSnapshot,
 } from "../services/orderFulfillmentService.js"
 import { publishOrderRealtime } from "../services/orderRealtimeService.js"
+import { recordOfflineCommissionAccrual } from "../services/offlineCommissionAccrualService.js"
 import { safelyNotifyInventoryStockTransitions } from "../services/inventoryNotificationIntegrationService.js"
 import { resolveCurrentCustomerVisit } from "../services/customerOrderAccessService.js"
 import { confirmHistoricalServiceCorrection } from "../services/historicalOrderCorrectionService.js"
@@ -942,6 +943,22 @@ async function recordOfflinePayment(req, res, { suppressAutomaticReceipt = false
         })
       }
       return res.status(409).json({ message: "Order was already marked paid by another request." })
+    }
+
+    // Accounting is deliberately post-confirmation and idempotent: a failure
+    // here cannot roll back a real cash/POS confirmation, and the unique
+    // payment-confirmation key prevents duplicate accruals on retried requests.
+    try {
+      await recordOfflineCommissionAccrual({
+        business,
+        sourceType: "order",
+        source: updatedOrder,
+        eligibleAmountCents: Math.round(Number(updatedOrder.subtotal || 0) * 100),
+      })
+    } catch (error) {
+      console.error("[recordOfflinePayment] Commission accrual recording failed", {
+        businessId, orderId: updatedOrder.orderId, reason: error?.code || error?.name,
+      })
     }
 
     if (updatedOrder.journeyId) {

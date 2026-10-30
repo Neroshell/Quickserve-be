@@ -1,6 +1,6 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { getBusinessBySlug, createReservation, getPublicBusinessConfig, getPublicRestaurantAvailability, getReservationByToken, getReservationById } from "../controllers/publicController.js";
+import { getBusinessBySlug, createReservation, getPublicBusinessConfig, getPublicReservationOptions, getPublicRestaurantAvailability, getReservationByToken, getReservationById } from "../controllers/publicController.js";
 import { getAvailableStayServicePoints } from "../controllers/reservationController.js";
 import { getPlans } from "../controllers/planController.js";
 import {
@@ -79,6 +79,7 @@ const arrivalLimiter = rateLimit({
  *         description: Business not found
  */
 router.get("/business/:countryCode/:slug", getBusinessBySlug);
+router.get("/reservation-options/:countryCode/:slug", reservationAvailabilityLimiter, getPublicReservationOptions);
 
 // Discovery is intentionally separate from the older storefront DTO. It has a
 // narrower public projection and evaluates effective publication visibility on

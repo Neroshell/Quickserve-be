@@ -7,7 +7,7 @@ import { hashToken } from '../utils/tokenHash.js'
 import { sendOnboardingVerificationCode } from '../utils/emailService.js'
 import { isCountryResolutionError, resolveCountryMetadata, validateCountryMetadataPayload } from '../utils/countryHelper.js'
 import { assertEmailAvailable, isEmailAlreadyInUseError, sendEmailInUseResponse } from '../utils/emailAvailability.js'
-import { getDefaultBusinessModules } from '../services/businessCapabilityService.js'
+import { getOnboardingVenueTypeCatalog, resolveVenueClassification, VenueTypeValidationError } from '../constants/venueTypeCatalog.js'
 import { establishOwnerSession } from './authController.js'
 import { normalizeInternationalPhoneNumber } from '../utils/phoneNumber.js'
 import { PlacesServiceError, resolveGooglePlace, searchGooglePlaces } from '../services/googlePlacesService.js'
@@ -112,6 +112,11 @@ export async function getAddressSuggestions(req, res) {
         console.error("Address suggestions error:", err)
         return res.status(502).json({ message: "Address search is temporarily unavailable" })
     }
+}
+
+// Backend-owned catalog for the unchanged Business Identity onboarding step.
+export function getVenueTypeCatalog(_req, res) {
+    return res.json(getOnboardingVenueTypeCatalog())
 }
 
 /**
@@ -394,6 +399,20 @@ export async function updateSession(req, res) {
         }
 
         const currentBusinessData = session.businessData?.toObject?.() ?? session.businessData ?? {}
+        if (normalizedBusinessData && (
+            Object.hasOwn(normalizedBusinessData, "venueType") ||
+            Object.hasOwn(normalizedBusinessData, "businessType")
+        )) {
+            const classification = resolveVenueClassification({
+                venueType: normalizedBusinessData.venueType ?? currentBusinessData.venueType,
+                businessType: normalizedBusinessData.businessType ?? currentBusinessData.businessType,
+            })
+            normalizedBusinessData = {
+                ...normalizedBusinessData,
+                venueType: classification.venueType,
+                businessType: classification.businessType,
+            }
+        }
         const submittedCountryValue = normalizedBusinessData?.countryCode || normalizedBusinessData?.country
         const submittedCountryCode = submittedCountryValue
             ? resolveCountryMetadata(submittedCountryValue).countryCode
@@ -453,7 +472,7 @@ export async function updateSession(req, res) {
 
         if (normalizedBusinessData) {
             session.businessData = {
-                ...session.businessData,
+                ...currentBusinessData,
                 ...normalizedBusinessData
             }
         }
@@ -483,6 +502,9 @@ export async function updateSession(req, res) {
             businessData: session.businessData
         })
     } catch (err) {
+        if (err instanceof VenueTypeValidationError) {
+            return res.status(400).json({ message: err.message })
+        }
         if (err instanceof PlacesServiceError) {
             return res.status(err.status).json({ message: err.message })
         }
@@ -599,15 +621,19 @@ export async function completeOnboarding(req, res) {
 
         const businessId = generateBusinessId()
 
-        const resolvedBusinessType = data.businessType || 'restaurant'
+        const classification = resolveVenueClassification({
+            venueType: data.venueType,
+            businessType: data.businessType || "restaurant",
+        })
         const business = await Business.create({
             businessId,
             businessId: businessId,
             name: businessName,
             displayName: data.displayName || businessName,
             slug: businessSlug,
-            businessType: resolvedBusinessType,
-            modules: getDefaultBusinessModules(resolvedBusinessType),
+            businessType: classification.businessType,
+            venueType: classification.venueType,
+            modules: classification.defaultModules,
             address: businessAddress,
             addressPlaceId: data.addressPlaceId.trim(),
             latitude: businessLatitude,
@@ -651,6 +677,9 @@ export async function completeOnboarding(req, res) {
             slug: business.slug
         });
     } catch (err) {
+        if (err instanceof VenueTypeValidationError) {
+            return res.status(400).json({ message: err.message })
+        }
         console.error("Complete onboarding error:", err)
         return res.status(500).json({ message: "Server error creating business" })
     }

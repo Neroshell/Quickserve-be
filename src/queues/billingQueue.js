@@ -37,7 +37,7 @@ function safeJobIdPart(value) {
 }
 
 export function validateBillingJobPayload(jobName, payload = {}) {
-    if (jobName === BILLING_JOB_NAMES.LIFECYCLE_SCAN) {
+    if ([BILLING_JOB_NAMES.LIFECYCLE_SCAN, BILLING_JOB_NAMES.COMMISSION_RECOVERY_SCAN, BILLING_JOB_NAMES.COMMISSION_INVOICE_SCAN].includes(jobName)) {
         return {};
     }
     if (!PER_BUSINESS_JOB_NAMES.has(jobName)) {
@@ -57,6 +57,8 @@ export function buildBillingJobId(jobName, payload) {
     if (jobName === BILLING_JOB_NAMES.LIFECYCLE_SCAN) {
         return "billing-lifecycle-scan";
     }
+    if (jobName === BILLING_JOB_NAMES.COMMISSION_RECOVERY_SCAN) return "commission-recovery-scan"
+    if (jobName === BILLING_JOB_NAMES.COMMISSION_INVOICE_SCAN) return "commission-invoice-scan"
     return [
         "billing",
         safeJobIdPart(jobName),

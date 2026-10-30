@@ -21,6 +21,7 @@ import {
   validateRestaurantPartySize,
   validateRestaurantReservationWindow,
 } from "./restaurantReservationAvailabilityService.js";
+import { getReservationMode } from "./reservationModeService.js";
 import {
   PUBLIC_SERVABLE_BUSINESS_STATUSES,
   resolvePublicBusiness,
@@ -35,6 +36,11 @@ import {
   acquireReservationEligibilityFence,
   assertReservationEligibility,
 } from "./reservationEligibilityService.js";
+import {
+  acquireHotelWalkInEligibilityFence,
+  assertHotelWalkInEligibility,
+} from "./hotelWalkInEligibilityService.js";
+import { recordOfflineCommissionAccrual } from "./offlineCommissionAccrualService.js";
 export {
   BLOCKING_STAY_STATUSES,
   assertNoRoomConflict,
@@ -502,9 +508,14 @@ export async function createHotelReservation({
   idempotencyKey: rawIdempotencyKey = null,
   sideEffects = {},
 }) {
-  assertReservationEligibility(business);
+  const isWalkIn = source === 'walk_in';
+  if (isWalkIn) {
+    assertHotelWalkInEligibility(business, { paymentMethod });
+  } else {
+    assertReservationEligibility(business);
+  }
   // Phase I: Validation
-  if (!customerName || !phone || !email || !checkInDate || !checkOutDate || !guestCount || !servicePointId) {
+  if (!customerName || !phone || (!isWalkIn && !email) || !checkInDate || !checkOutDate || !guestCount || !servicePointId) {
     const err = new Error('Missing required fields.');
     err.statusCode = 400;
     throw err;
@@ -529,7 +540,6 @@ export async function createHotelReservation({
     throw err;
   }
 
-  const isWalkIn = source === 'walk_in';
   if (isWalkIn) {
     const VALID_WALK_IN_PAYMENT = ['cash', 'pos_card'];
     if (!paymentMethod || !VALID_WALK_IN_PAYMENT.includes(paymentMethod)) {
@@ -569,10 +579,18 @@ export async function createHotelReservation({
           replayed = true;
           return;
         }
-        await acquireReservationEligibilityFence({
-          businessId: business.businessId,
-          session,
-        });
+        if (isWalkIn) {
+          await acquireHotelWalkInEligibilityFence({
+            businessId: business.businessId,
+            paymentMethod,
+            session,
+          });
+        } else {
+          await acquireReservationEligibilityFence({
+            businessId: business.businessId,
+            session,
+          });
+        }
 
         // Phase I rules 4-8: lock room, capacity, conflict
         const sp = await lockHotelRoomForReservation({ servicePointId, businessId: business.businessId, session });
@@ -585,7 +603,12 @@ export async function createHotelReservation({
 
         await assertNoRoomConflict({ businessId: business.businessId, servicePointId, checkInDate, checkOutDate, session });
 
-        const pricePerNight = sp.pricePerNight || 0;
+        const pricePerNight = Number(sp.pricePerNight);
+        if (!Number.isFinite(pricePerNight) || pricePerNight <= 0) {
+          const err = new Error('This room does not have valid pricing configured.');
+          err.statusCode = 400;
+          throw err;
+        }
         const now = new Date();
 
         let reservationStatus = 'pending';
@@ -679,6 +702,22 @@ export async function createHotelReservation({
   }
 
   // Post-save side-effects: only on FIRST creation, never on replay
+  if (!replayed && isWalkIn && hotelReservation.paymentChannel === "offline") {
+    try {
+      await recordOfflineCommissionAccrual({
+        business,
+        sourceType: "reservation",
+        source: hotelReservation,
+        // Accommodation subtotal excludes separately identified tax/fees.
+        eligibleAmountCents: Math.round(Number(hotelReservation.subtotal || 0) * 100),
+      });
+    } catch (error) {
+      console.error("[createHotelReservation] Commission accrual recording failed", {
+        businessId: business.businessId, reservationId: String(hotelReservation._id), reason: error?.code || error?.name,
+      });
+    }
+  }
+
   if (!replayed && !isWalkIn && !(business.hotelSettings && business.hotelSettings.onlineBookingConfirmationMode === 'confirmation_required')) {
     const enqueuePaymentExpiry =
       sideEffects.enqueueReservationPaymentExpiry ||
@@ -706,6 +745,7 @@ export async function createHotelReservation({
           servicePointLabel: hotelReservation.servicePointLabel || null,
           source: hotelReservation.source,
           type: 'hotel',
+          reservationMode: getReservationMode(hotelReservation),
         },
       });
     } catch (err) {
@@ -967,6 +1007,7 @@ export async function createRestaurantReservation({
           date: reservation.date,
           startTime: reservation.startTime,
           endTime: reservation.endTime,
+          reservationMode: getReservationMode(reservation),
           servicePointLabel: reservation.servicePointLabel || null,
           type: "restaurant",
         },

@@ -44,6 +44,7 @@ import {
     getStripeInvoiceSubscriptionId,
     upsertBillingInvoiceFromStripe,
 } from "../services/billingInvoiceLedgerService.js";
+import { reconcileCommissionInvoiceEvent } from "../services/offlineCommissionInvoiceService.js";
 import {
     claimStripeWebhookEvent,
     completeStripeWebhookEvent,
@@ -498,6 +499,7 @@ export async function handleStripeWebhook(req, res) {
                         invoice,
                         eventType: event.type,
                     });
+                    await reconcileCommissionInvoiceEvent({ businessId: biz.businessId, invoice, eventType: event.type });
                     let subscription = null;
                     if (subscriptionId) {
                         try {
@@ -658,6 +660,7 @@ export async function handleStripeWebhook(req, res) {
                         invoice,
                         eventType: event.type,
                     });
+                    await reconcileCommissionInvoiceEvent({ businessId: affectedBusiness.businessId, invoice, eventType: event.type });
                     await businessConfigurationInvalidator(affectedBusiness.businessId);
                     await safelyNotifyFinancialEvent({
                         method: FINANCIAL_NOTIFICATION_METHODS.INVOICE_PAYMENT_FAILED,

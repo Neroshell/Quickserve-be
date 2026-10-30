@@ -1,5 +1,5 @@
 import express from "express"
-import { startSignup, resendVerificationEmail, verifyEmail, getSession, updateSession, completeOnboarding, getAddressSuggestions } from "../controllers/onboardingController.js"
+import { startSignup, resendVerificationEmail, verifyEmail, getSession, updateSession, completeOnboarding, getAddressSuggestions, getVenueTypeCatalog } from "../controllers/onboardingController.js"
 import Plan from "../models/Plan.js"
 import { createAddressSearchLimiter } from "../middleware/addressSearchRateLimit.js"
 import {
@@ -45,6 +45,7 @@ const onboardingVerifyLimiter = createSharedSecurityRateLimit({
 router.post("/signup", onboardingSignupLimiter, startSignup)
 router.post("/resend-verification", onboardingResendLimiter, resendVerificationEmail)
 router.post("/verify-email", onboardingVerifyLimiter, verifyEmail)
+router.get("/venue-types", getVenueTypeCatalog)
 router.get("/session/:sessionId/address-suggestions", addressSearchLimiter, getAddressSuggestions)
 router.get("/session/:sessionId", getSession)
 router.patch("/session/:sessionId", updateSession)

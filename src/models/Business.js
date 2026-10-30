@@ -4,6 +4,7 @@ import {
     getDefaultBusinessModules,
     validateBusinessModulesForType,
 } from "../services/businessCapabilityService.js"
+import { VENUE_TYPE_IDS, resolveVenueClassification } from "../constants/venueTypeCatalog.js"
 import {
     DEFAULT_ORDER_START_ASSISTANCE_DELAY_MINUTES,
     MAX_ORDER_START_ASSISTANCE_DELAY_MINUTES,
@@ -363,6 +364,13 @@ const BusinessSchema = new mongoose.Schema({
         enum: ["restaurant", "bar_lounge", "hotel"],
         default: "restaurant"
     },
+    // Nullable for legacy businesses until an explicit, non-destructive
+    // backfill is approved.
+    venueType: {
+        type: String,
+        enum: VENUE_TYPE_IDS,
+        default: undefined,
+    },
     modules: {
         type: [{ type: String, enum: BUSINESS_MODULES }],
         default: function defaultBusinessModules() {
@@ -435,6 +443,11 @@ const BusinessSchema = new mongoose.Schema({
     // Stripe Payment Method (Safe display metadata only)
     stripeCustomerId: { type: String },
     defaultPaymentMethodId: { type: String },
+    // Explicit financial cutover for the automatic offline-commission invoice
+    // system.  It defaults off so historical metered orders can never be picked
+    // up by a newly deployed worker without an audited activation.
+    offlineCommissionInvoiceEnabled: { type: Boolean, default: false },
+    offlineCommissionInvoiceCutoverAt: { type: Date, default: null },
     paymentMethodBrand: { type: String },
     paymentMethodLast4: { type: String },
     paymentMethodExpMonth: { type: Number },
@@ -470,6 +483,12 @@ const BusinessSchema = new mongoose.Schema({
         takeoutEnabled: { type: Boolean, default: false },
         callWaiterEnabled: { type: Boolean, default: true },
         reservationsEnabled: { type: Boolean, default: true },
+        // Undefined preserves legacy public booking for the primary mode only.
+        // An explicit empty array disables all public reservation entry points.
+        publicReservationModes: {
+            type: [{ type: String, enum: ["stay", "timeslot"] }],
+            default: undefined,
+        },
         arrivalReminderEnabled: { type: Boolean, default: true },
         arrivalReminderLeadMinutes: {
             type: Number,
@@ -578,6 +597,18 @@ BusinessSchema.pre("validate", function normalizeDiscoveryGeoPoint() {
 })
 
 BusinessSchema.pre("validate", function normalizeModulesBeforeValidation() {
+    if (this.venueType) {
+        try {
+            const classification = resolveVenueClassification({
+                venueType: this.venueType,
+                businessType: this.businessType,
+                accommodationType: this.propertyProfile?.accommodationType,
+            })
+            this.businessType = classification.businessType
+        } catch (error) {
+            this.invalidate("venueType", error.message)
+        }
+    }
     this.modules = validateBusinessModulesForType(this.businessType, this.modules)
 })
 

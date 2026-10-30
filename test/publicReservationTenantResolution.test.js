@@ -8,7 +8,7 @@ process.env.BULLMQ_EMAILS_ENABLED = "false";
 process.env.BULLMQ_RESERVATION_SCHEDULERS_ENABLED = "false";
 
 const [
-  { createReservation, getPublicRestaurantAvailability },
+  { createReservation, getPublicReservationOptions, getPublicRestaurantAvailability },
   { getAvailableStayServicePoints },
   {
     PUBLIC_SERVABLE_BUSINESS_STATUSES,
@@ -49,6 +49,7 @@ function createResponse() {
     statusCode: 200,
     body: null,
     status(code) { this.statusCode = code; return this; },
+    set() { return this; },
     json(body) { this.body = body; return this; },
   };
 }
@@ -86,6 +87,27 @@ function business({
     operatingHours: operatingHours(),
   };
 }
+
+test("public reservation options expose only enabled modes for the country-resolved business", async () => {
+  const hybridHotel = business({
+    businessId: "hybrid-mt",
+    countryCode: "mt",
+    slug: "hybrid-stay-and-dine",
+    businessType: "hotel",
+  });
+  hybridHotel.modules = ["lodging", "foodService"];
+  hybridHotel.settings.publicReservationModes = ["stay", "timeslot"];
+  const res = createResponse();
+
+  await getPublicReservationOptions({
+    params: { countryCode: "mt", slug: "hybrid-stay-and-dine" },
+  }, res, {
+    resolveBusinessRequest: async () => ({ business: hybridHotel }),
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body, { modes: ["stay", "timeslot"] });
+});
 
 function matches(candidate, filter) {
   return Object.entries(filter).every(([field, expected]) => {

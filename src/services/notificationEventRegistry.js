@@ -60,6 +60,7 @@ const DEFINITIONS = Object.freeze({
             "partySize",
             "reservationTime",
             "servicePointDisplayName",
+            "reservationMode",
         ]),
         buildContent(facts) {
             return {
@@ -76,6 +77,7 @@ const DEFINITIONS = Object.freeze({
             "partySize",
             "reservationTime",
             "servicePointDisplayName",
+            "reservationMode",
         ]),
         buildContent(facts) {
             const guestName = text(facts.guestName, "A guest", STRING_LIMITS.guestName)
@@ -93,6 +95,7 @@ const DEFINITIONS = Object.freeze({
             "partySize",
             "reservationTime",
             "servicePointDisplayName",
+            "reservationMode",
         ]),
         buildContent(facts) {
             const guestName = text(facts.guestName, "A guest", STRING_LIMITS.guestName)

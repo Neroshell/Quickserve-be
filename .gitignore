@@ -174,3 +174,7 @@ test/ownerOrdersPagination.test.js
 !test/ownerOrdersPagination.test.js
 !test/phase1SetupProgress.test.js
 !test/reservationArrival.test.js
+!test/hotelBookingReadiness.test.js
+!test/hotelWalkInEmail.test.js
+!test/hotelBookingReadinessController.test.js
+!test/offlineCommissionBillingRead.test.js

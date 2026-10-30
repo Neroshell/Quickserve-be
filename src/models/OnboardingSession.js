@@ -4,6 +4,7 @@ const BusinessDataSchema = new mongoose.Schema({
     name: { type: String },
     displayName: { type: String },
     businessType: { type: String },
+    venueType: { type: String },
     slug: { type: String },
     
     country: { type: String },

@@ -65,7 +65,10 @@ const ReservationSchema = new mongoose.Schema(
     },
     email: {
       type: String,
-      required: true,
+      // Reception can record a verified cash/POS walk-in without an email.
+      // Public and online reservations still require it for payment and guest
+      // communication flows.
+      required: function() { return this.source !== "walk_in"; },
       trim: true,
       lowercase: true,
     },

@@ -77,7 +77,7 @@ export async function resolveCurrentOwner(req) {
         _id: sessionUser.userId,
         businessId: sessionUser.businessId,
     })
-        .select("_id businessId ownerEmail ownerName ownerStatus ownerAuthVersion displayName businessType modules capabilities currency taxRate timezone currentPlan billingStatus ownerPasswordHash")
+        .select("_id businessId ownerEmail ownerName ownerStatus ownerAuthVersion displayName businessType venueType modules capabilities currency taxRate timezone currentPlan billingStatus ownerPasswordHash")
         .lean()
 
     if (

@@ -12,10 +12,10 @@ This repository contains the backend API and authoritative business logic for th
 The backend is a modular, multi-tenant hospitality operating platform. It remains authoritative for business operations, security, financial decisions, and persistence.
 A2. Architectural source of truth
 Before planning or modifying backend architecture, read the existing canonical documents when available:
-- ../Quick-serve-qr-menu/.ai/approved/ARCHITECTURAL_CONSTITUTION.md
-- ../Quick-serve-qr-menu/.ai/approved/PRODUCT_PHILOSOPHY.md
-- ../Quick-serve-qr-menu/.ai/approved/ARCHITECTURAL_DECISIONS.md
-- ../Quick-serve-qr-menu/.ai/approved/ARCHITECTURAL_ANALYSIS.md
+- ../chillow-app/.ai/approved/ARCHITECTURAL_CONSTITUTION.md
+- ../chillow-app/.ai/approved/PRODUCT_PHILOSOPHY.md
+- ../chillow-app/.ai/approved/ARCHITECTURAL_DECISIONS.md
+- ../chillow-app/.ai/approved/ARCHITECTURAL_ANALYSIS.md
 These paths assume the legacy frontend and backend repositories are sibling directories. They may differ after the Chillow repository migration. Check actual locations; do not pretend documents were read if unavailable. Report missing documents before making broad architectural changes.
 
 Do not modify files inside the canonical .ai/approved/ directory unless the user explicitly asks for a documentation change.

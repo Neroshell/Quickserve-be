@@ -209,6 +209,22 @@ test("Discovery DTO excludes unpublished businesses before exposing operating st
     assert.equal(buildDiscoveryPlaceDto(unpublished), null)
 })
 
+test("Discovery DTO exposes catalog labels for new classifications and legacy businesses", () => {
+    const cases = [
+        ["cafe", "restaurant", "Café"],
+        ["bakery", "restaurant", "Bakery"],
+        ["resort", "hotel", "Resort"],
+        ["guest_house", "hotel", "Guest house"],
+        [undefined, "restaurant", "Restaurant"],
+    ]
+
+    for (const [venueType, businessType, venueLabel] of cases) {
+        const listing = buildDiscoveryPlaceDto(makeBusiness({ venueType, businessType }))
+        assert.equal(listing?.venueType, venueType || "restaurant")
+        assert.equal(listing?.venueLabel, venueLabel)
+    }
+})
+
 test("Discovery search filters active published records and sends no-store headers", async () => {
     const business = makeBusiness()
     let capturedQuery
@@ -242,7 +258,35 @@ test("Discovery search filters active published records and sends no-store heade
     assert.equal(capturedLimit, 11)
     assert.equal(res.body.results.length, 1)
     assert.equal(res.body.results[0].id, "biz_discovery_harbour")
+    assert.equal(res.body.results[0].venueType, "hotel")
+    assert.equal(res.body.results[0].venueLabel, "Hotel")
     assert.equal(res.body.results[0].operatingStatus.status, "unknown")
+})
+
+test("Discovery modes derive supported legacy shells from the canonical venue catalog", async () => {
+    const businessModel = {
+        find(query) {
+            return queryResult([makeBusiness()])
+        },
+    }
+
+    for (const [mode, expectedBusinessType] of [
+        ["chill", { $in: ["restaurant", "bar_lounge", "hotel"] }],
+        ["find_a_stay", "hotel"],
+        ["go_out", { $in: ["restaurant", "bar_lounge"] }],
+    ]) {
+        const { req, res } = mockReqRes({ query: { mode } })
+        let capturedQuery
+        const capturingModel = {
+            find(query) {
+                capturedQuery = query
+                return businessModel.find(query)
+            },
+        }
+        await searchDiscoveryPlaces(req, res, { businessModel: capturingModel })
+        assert.equal(res.statusCode, 200)
+        assert.deepEqual(capturedQuery.businessType, expectedBusinessType)
+    }
 })
 
 test("Discovery search query validation bounds pagination and rejects ambiguous values", () => {
@@ -252,6 +296,7 @@ test("Discovery search query validation bounds pagination and rejects ambiguous 
         destinationGeometry: null,
         nearby: null,
         category: null,
+        mode: null,
         businessType: null,
         sort: "name_asc",
         page: 1,
@@ -259,6 +304,8 @@ test("Discovery search query validation bounds pagination and rejects ambiguous 
     })
     assert.throws(() => parseDiscoverySearchQuery({ limit: "51" }), /between 1 and 50/)
     assert.throws(() => parseDiscoverySearchQuery({ countryCode: ["mt", "us"] }), /provided once/)
+    assert.throws(() => parseDiscoverySearchQuery({ mode: "spa" }), /mode must be chill/)
+    assert.throws(() => parseDiscoverySearchQuery({ mode: "chill", category: "eat" }), /cannot be combined/)
 })
 
 test("Discovery selected destinations use a 2dsphere-compatible polygon without country-wide fallback", async () => {

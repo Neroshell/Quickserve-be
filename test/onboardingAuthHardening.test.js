@@ -22,6 +22,7 @@ const {
     replaceVerificationChallenge,
     resendVerificationEmail,
     startSignup,
+    updateSession,
     verifyEmail,
 } = await import("../src/controllers/onboardingController.js")
 const { requireAuth } = await import("../src/middleware/authMiddleware.js")
@@ -340,6 +341,31 @@ test("public resend returns the same generic response for ineligible account sta
     assert.equal(missing.statusCode, 202)
     assert.equal(alreadyVerified.statusCode, 202)
     assert.deepEqual(missing.body, alreadyVerified.body)
+})
+
+test("Business Identity accepts a supported venueType and derives the legacy shell server-side", async (t) => {
+    const session = {
+        businessData: {},
+        async save() {},
+    }
+    t.mock.method(OnboardingSession, "findOne", async () => session)
+
+    const cafe = response()
+    await updateSession({
+        params: { sessionId: "sess-cafe" },
+        body: { businessData: { venueType: "cafe" } },
+    }, cafe)
+    assert.equal(cafe.statusCode, 200)
+    assert.equal(session.businessData.venueType, "cafe")
+    assert.equal(session.businessData.businessType, "restaurant")
+
+    const contradictory = response()
+    await updateSession({
+        params: { sessionId: "sess-cafe" },
+        body: { businessData: { venueType: "resort", businessType: "restaurant" } },
+    }, contradictory)
+    assert.equal(contradictory.statusCode, 400)
+    assert.match(contradictory.body.message, /incompatible with businessType/)
 })
 
 test("password reset and password change reject frontend-bypassed weak credentials", async () => {

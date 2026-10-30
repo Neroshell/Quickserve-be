@@ -15,6 +15,7 @@ export const NotificationMetadataSchema = new mongoose.Schema({
     reservationTime: { type: String, maxlength: 80, trim: true },
     servicePointDisplayName: { type: String, maxlength: 120, trim: true },
     reservationReference: { type: String, maxlength: 120, trim: true },
+    reservationMode: { type: String, enum: ["stay", "timeslot"] },
     rating: { type: Number, enum: [1, 2] },
     itemName: { type: String, maxlength: 160, trim: true },
     availableQuantity: { type: Number },
@@ -94,4 +95,3 @@ NotificationSchema.index(
 
 export default mongoose.models.Notification ||
     mongoose.model("Notification", NotificationSchema, "notifications")
-

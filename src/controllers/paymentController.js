@@ -21,6 +21,7 @@ import {
     ReservationPaymentAttemptError,
 } from "../services/reservationPaymentAttemptService.js";
 import { acquireReservationEligibilityFence } from "../services/reservationEligibilityService.js";
+import { assertHotelOnlinePaymentReady } from "../services/hotelOnlinePaymentReadinessService.js";
 import { getItemPrepTimeMinutes } from "../utils/orderEstimate.js";
 import { buildCanonicalOrderDraft } from "../services/orderConstructionService.js";
 import { normalizeTip } from "../utils/tips.js";
@@ -663,13 +664,10 @@ export async function createReservationCheckoutSession(req, res) {
             return res.status(404).json({ message: "Business not found" });
         }
 
-        if (
-            !business.stripeAccountId ||
-            business.stripeChargesEnabled !== true ||
-            business.stripePayoutsEnabled !== true
-        ) {
-            return res.status(400).json({ message: "Online payments are not available for this business." });
-        }
+        assertHotelOnlinePaymentReady(business, {
+            statusCode: 400,
+            message: "Online payments are not available for this business.",
+        });
 
         await ensureReservationPricingSnapshot({ reservation, business });
         const pricing = getCustomerReservationPricing(reservation);

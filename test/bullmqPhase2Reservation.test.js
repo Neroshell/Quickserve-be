@@ -256,6 +256,9 @@ test("acceptance enqueues delayed expiry only after payment expiry is persisted"
             businessId: "hotel-1",
             businessType: "hotel",
             modules: ["lodging"],
+            stripeAccountId: "acct_test_hotel_1",
+            stripeChargesEnabled: true,
+            stripePayoutsEnabled: true,
             ownerEmail: "owner@example.com",
         }),
     }));

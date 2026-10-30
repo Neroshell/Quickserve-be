@@ -19,11 +19,12 @@ function hotelBusiness() {
   };
 }
 
-test("inspectReservationNotComingToken returns invalid for hotel reservations (rejected by hotel business check)", async () => {
+test("inspectReservationNotComingToken returns invalid for persisted stay reservations", async () => {
   const hotelReservation = {
     _id: "reservation-hotel-1",
     businessId: "business-hotel-1",
     checkInDate: "2026-08-10",
+    checkOutDate: "2026-08-12",
     status: "confirmed",
     email: "hotel-guest@example.com",
     customerName: "Hotel Guest",

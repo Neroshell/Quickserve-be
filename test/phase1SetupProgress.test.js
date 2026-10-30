@@ -1,354 +1,239 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
+import { buildSetupProgressResponse } from "../src/controllers/setupProgressController.js";
 import { resolveBusinessCapabilities } from "../src/services/businessCapabilityService.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers replicated from setupProgressController.js
-// ─────────────────────────────────────────────────────────────────────────────
+const EMPTY_COUNTS = Object.freeze({
+    menuItemCount: 0,
+    servicePointCount: 0,
+    roomCount: 0,
+    readyRoomCount: 0,
+    staffCount: 0,
+    publicStayReservationsEnabled: true,
+});
 
-function hasText(value) {
-    return typeof value === "string" && value.trim().length > 0;
-}
-
-function buildTasks(business, counts, capabilities) {
-    const isHotel = capabilities.identity.shell === "hotel";
-    const hasFoodService = capabilities.visibleModules.includes("foodService");
-
-    const stripeConnected = business.stripeOnboardingComplete === true ||
-        (business.stripeChargesEnabled === true && business.stripePayoutsEnabled === true);
-
-    const offlinePaymentsConfigured = hasText(business.defaultPaymentMethodId);
-
-    const tasks = [];
-    let stage = 1;
-
-    const servicePointLabel = isHotel ? "room" : "table";
-    tasks.push({
-        id: "service_point",
-        stage: stage++,
-        title: `Add your first ${servicePointLabel}`,
-        classification: "required",
-        completed: counts.servicePointCount > 0
-    });
-
-    if (hasFoodService) {
-        tasks.push({
-            id: "menu_item",
-            stage: stage++,
-            classification: "required",
-            completed: counts.menuItemCount > 0
-        });
-    } else if (isHotel) {
-        tasks.push({
-            id: "room_readiness",
-            stage: stage++,
-            classification: "required",
-            completed: counts.readyRoomCount > 0
-        });
-    }
-
-    // Team — restaurant only
-    if (!isHotel) {
-        tasks.push({
-            id: "team",
-            stage: stage++,
-            classification: "recommended",
-            completed: counts.staffCount > 0
-        });
-    }
-
-    // Offline payments — restaurant only
-    if (!isHotel) {
-        tasks.push({
-            id: "payments_offline",
-            stage: stage++,
-            classification: "recommended",
-            completed: offlinePaymentsConfigured
-        });
-    }
-
-    tasks.push({
-        id: "payments_online",
-        stage: stage++,
-        classification: isHotel ? "required" : "recommended",
-        completed: stripeConnected
-    });
-
-    // Verify — hotel only
-    if (isHotel) {
-        tasks.push({
-            id: "verify",
-            stage: stage++,
-            classification: "verification",
-            completed: counts.orderCount > 0
-        });
-    }
-
-    return tasks;
-}
-
-function buildSetupProgressResponse(business, counts, capabilities) {
-    const tasks = buildTasks(business, counts, capabilities);
-
-    const requiredTasks = tasks.filter(t => t.classification === "required");
-    const completedRequiredCount = requiredTasks.filter(t => t.completed).length;
-
-    const totalCoreCount = tasks.length;
-    const completedCoreCount = tasks.filter(t => t.completed).length;
-
-    const complete = completedCoreCount === totalCoreCount;
-
-    let nextAction = null;
-    for (const task of tasks) {
-        if (!task.completed) {
-            nextAction = task;
-            break;
-        }
-    }
-
-    return {
-        tasks,
-        nextAction,
-        completedRequiredCount,
-        totalRequiredCount: requiredTasks.length,
-        completedCoreCount,
-        totalCoreCount,
-        progressPercent: totalCoreCount === 0 ? 100 : Math.round((completedCoreCount / totalCoreCount) * 100),
-        complete,
-        dismissed: business.setupProgress?.setupGuideDismissed === true,
-        counts
-    };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Fixture factories
-// ─────────────────────────────────────────────────────────────────────────────
-
-function makeRestaurantBusiness(overrides = {}) {
-    return {
-        businessType: "restaurant",
-        stripeOnboardingComplete: false,
-        stripeChargesEnabled: false,
-        stripePayoutsEnabled: false,
-        defaultPaymentMethodId: null,
-        setupProgress: { setupGuideDismissed: false },
-        ...overrides,
-    };
-}
-
-function makeHotelBusiness(overrides = {}) {
+function accommodationBusiness(overrides = {}) {
     return {
         businessType: "hotel",
+        venueType: "hotel",
+        modules: ["lodging"],
+        countryCode: "mt",
+        slug: "harbour-hotel",
+        status: "active",
+        onboardingCompleted: false,
         stripeOnboardingComplete: false,
         stripeChargesEnabled: false,
         stripePayoutsEnabled: false,
-        defaultPaymentMethodId: null,
+        settings: {},
         setupProgress: { setupGuideDismissed: false },
         ...overrides,
     };
 }
 
-function makeEmptyCounts() {
-    return { menuItemCount: 0, servicePointCount: 0, readyRoomCount: 0, staffCount: 0, orderCount: 0 };
+function restaurantBusiness(overrides = {}) {
+    return {
+        businessType: "restaurant",
+        venueType: "restaurant",
+        modules: ["foodService"],
+        status: "active",
+        onboardingCompleted: false,
+        stripeOnboardingComplete: false,
+        stripeChargesEnabled: false,
+        stripePayoutsEnabled: false,
+        settings: {},
+        setupProgress: { setupGuideDismissed: false },
+        ...overrides,
+    };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RESTAURANT TASK SHAPE
-// ─────────────────────────────────────────────────────────────────────────────
+function progress(business, countOverrides = {}) {
+    return buildSetupProgressResponse(
+        business,
+        { ...EMPTY_COUNTS, ...countOverrides },
+        resolveBusinessCapabilities(business),
+    );
+}
 
-test("restaurant: has exactly 5 tasks — table, menu, team, offline pay, online pay", () => {
-    const biz = makeRestaurantBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    const tasks = buildTasks(biz, makeEmptyCounts(), caps);
+function task(result, id) {
+    const value = result.tasks.find((candidate) => candidate.id === id);
+    assert.ok(value, `Expected ${id} task`);
+    return value;
+}
 
-    const ids = tasks.map(t => t.id);
-    assert.deepEqual(ids, ["service_point", "menu_item", "team", "payments_offline", "payments_online"]);
-    assert.equal(tasks.length, 5);
+test("new accommodation business recommends offline billing without making it a universal blocker", () => {
+    const result = progress(accommodationBusiness());
+
+    assert.equal(task(result, "service_point").completed, false);
+    assert.equal(task(result, "room_readiness").completed, false);
+    assert.equal(task(result, "payments_offline").classification, "recommended");
+    assert.equal(task(result, "payments_offline").completed, false);
+    assert.equal(task(result, "payments_online").completed, false);
+    assert.equal(task(result, "reservation_settings").classification, "recommended");
+    assert.equal(result.subtitle, "Get Ready to Welcome Guests");
+    assert.equal(result.complete, false);
 });
 
-test("restaurant: does not include verify or operating_hours", () => {
-    const biz = makeRestaurantBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    const tasks = buildTasks(biz, makeEmptyCounts(), caps);
+test("an accommodation offline payment method completes its recommended setup task", () => {
+    const result = progress(accommodationBusiness({ defaultPaymentMethodId: "pm_accommodation_offline" }));
 
-    assert.ok(!tasks.find(t => t.id === "verify"), "verify must not appear in restaurant journey");
-    assert.ok(!tasks.find(t => t.id === "operating_hours"), "operating_hours must not appear in restaurant journey");
+    assert.equal(task(result, "payments_offline").completed, true);
+    assert.equal(task(result, "payments_offline").classification, "recommended");
+    assert.equal(result.complete, false);
 });
 
-test("restaurant: task classifications are correct", () => {
-    const biz = makeRestaurantBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    const tasks = buildTasks(biz, makeEmptyCounts(), caps);
-
-    assert.equal(tasks.find(t => t.id === "service_point").classification, "required");
-    assert.equal(tasks.find(t => t.id === "menu_item").classification, "required");
-    assert.equal(tasks.find(t => t.id === "team").classification, "recommended");
-    assert.equal(tasks.find(t => t.id === "payments_offline").classification, "recommended");
-    assert.equal(tasks.find(t => t.id === "payments_online").classification, "recommended");
+test("all supported lodging classifications use the accommodation task set", () => {
+    for (const venueType of ["hotel", "resort", "aparthotel", "guest_house", "hostel"]) {
+        const result = progress(accommodationBusiness({ venueType }));
+        assert.ok(task(result, "room_readiness"), venueType);
+        assert.equal(result.subtitle, "Get Ready to Welcome Guests", venueType);
+    }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RESTAURANT PROGRESSIVE JOURNEY
-// ─────────────────────────────────────────────────────────────────────────────
+test("dining service points do not satisfy the first-room requirement", () => {
+    const result = progress(accommodationBusiness({ modules: ["lodging", "foodService"] }), {
+        servicePointCount: 1,
+        roomCount: 0,
+    });
 
-test("restaurant: completing table only → not complete, next action is menu_item", () => {
-    const biz = makeRestaurantBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    const counts = { ...makeEmptyCounts(), servicePointCount: 1 };
-    const progress = buildSetupProgressResponse(biz, counts, caps);
-
-    assert.equal(progress.complete, false);
-    assert.equal(progress.completedCoreCount, 1);
-    assert.equal(progress.totalCoreCount, 5);
-    assert.equal(progress.nextAction.id, "menu_item");
+    assert.equal(task(result, "service_point").completed, false);
+    assert.equal(task(result, "room_readiness").completed, false);
 });
 
-test("restaurant: table + menu → not complete, next action is team", () => {
-    const biz = makeRestaurantBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    const counts = { ...makeEmptyCounts(), servicePointCount: 1, menuItemCount: 1 };
-    const progress = buildSetupProgressResponse(biz, counts, caps);
+test("a room without price and capacity does not satisfy lodging readiness", () => {
+    const result = progress(accommodationBusiness(), { roomCount: 1, readyRoomCount: 0 });
 
-    assert.equal(progress.complete, false);
-    assert.equal(progress.completedCoreCount, 2);
-    assert.equal(progress.nextAction.id, "team");
+    assert.equal(task(result, "service_point").completed, true);
+    assert.equal(task(result, "room_readiness").completed, false);
 });
 
-test("restaurant: 0/5 → 1/5 → 2/5 → 3/5 → 4/5 → 5/5 all progress correctly", () => {
-    let biz = makeRestaurantBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    let counts = makeEmptyCounts();
-    let progress;
+test("a priced, capacity-configured room satisfies lodging readiness", () => {
+    const result = progress(accommodationBusiness(), { roomCount: 1, readyRoomCount: 1 });
 
-    // 0/5
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 0);
-    assert.equal(progress.nextAction.id, "service_point");
-
-    // 1/5
-    counts.servicePointCount = 1;
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 1);
-    assert.equal(progress.nextAction.id, "menu_item");
-
-    // 2/5
-    counts.menuItemCount = 1;
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 2);
-    assert.equal(progress.nextAction.id, "team");
-
-    // 3/5
-    counts.staffCount = 1;
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 3);
-    assert.equal(progress.nextAction.id, "payments_offline");
-
-    // 4/5 — still not complete
-    biz.defaultPaymentMethodId = "pm_123";
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 4);
-    assert.equal(progress.complete, false);
-    assert.equal(progress.nextAction.id, "payments_online");
-
-    // 5/5 → complete
-    biz.stripeOnboardingComplete = true;
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 5);
-    assert.equal(progress.complete, true);
-    assert.equal(progress.nextAction, null);
+    assert.equal(task(result, "room_readiness").completed, true);
+    assert.equal(task(result, "payments_online").completed, false);
 });
 
-test("restaurant: tracker count and percentage stay synchronized", () => {
-    // table + menu + team = 3 of 5
-    const biz = makeRestaurantBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    const counts = { ...makeEmptyCounts(), servicePointCount: 1, menuItemCount: 1, staffCount: 1 };
-    const progress = buildSetupProgressResponse(biz, counts, caps);
+test("only online payments remain a required accommodation setup blocker", () => {
+    const result = progress(accommodationBusiness({ defaultPaymentMethodId: "pm_accommodation_billing" }), {
+        roomCount: 1,
+        readyRoomCount: 1,
+    });
 
-    assert.equal(progress.completedCoreCount, 3);
-    assert.equal(progress.totalCoreCount, 5);
-    assert.equal(progress.progressPercent, 60);
+    assert.equal(task(result, "payments_offline").classification, "recommended");
+    assert.equal(task(result, "payments_offline").completed, true);
+    assert.equal(task(result, "payments_online").classification, "required");
+    assert.equal(result.nextAction?.id, "payments_online");
+    assert.equal(result.complete, false);
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HOTEL JOURNEY
-// ─────────────────────────────────────────────────────────────────────────────
+test("an accommodation can complete setup without offline billing", () => {
+    const result = progress(accommodationBusiness({ stripeOnboardingComplete: true }), {
+        roomCount: 1,
+        readyRoomCount: 1,
+    });
 
-test("hotel: journey follows its own capability-aware task list (4 tasks: room, room_readiness, payments_online, verify)", () => {
-    const biz = makeHotelBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    const counts = makeEmptyCounts();
-    let progress = buildSetupProgressResponse(biz, counts, caps);
-
-    assert.equal(progress.totalCoreCount, 4, "Hotel sequence has 4 tasks");
-    const ids = progress.tasks.map(t => t.id);
-    assert.deepEqual(ids, ["service_point", "room_readiness", "payments_online", "verify"]);
-    assert.equal(progress.nextAction.id, "service_point");
-
-    counts.servicePointCount = 1;
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 1);
-    assert.equal(progress.nextAction.id, "room_readiness");
-
-    counts.readyRoomCount = 1;
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 2);
-    assert.equal(progress.nextAction.id, "payments_online");
-
-    biz.stripeOnboardingComplete = true;
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 3);
-    assert.equal(progress.complete, false);
-    assert.equal(progress.nextAction.id, "verify");
-
-    counts.orderCount = 1;
-    progress = buildSetupProgressResponse(biz, counts, caps);
-    assert.equal(progress.completedCoreCount, 4);
-    assert.equal(progress.complete, true);
-    assert.equal(progress.nextAction, null);
+    assert.equal(task(result, "payments_online").completed, true);
+    assert.equal(task(result, "payments_offline").completed, false);
+    assert.equal(result.nextAction, null);
+    assert.equal(result.complete, true);
 });
 
-test("hotel: does NOT include team, operating_hours, or payments_offline", () => {
-    const biz = makeHotelBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    const tasks = buildTasks(biz, makeEmptyCounts(), caps);
+test("accommodation setup completes without creating a reservation", () => {
+    const result = progress(accommodationBusiness({
+        stripeOnboardingComplete: true,
+        defaultPaymentMethodId: "pm_accommodation_billing",
+    }), {
+        roomCount: 1,
+        readyRoomCount: 1,
+    });
 
-    assert.ok(!tasks.find(t => t.id === "team"), "hotel must not have team task");
-    assert.ok(!tasks.find(t => t.id === "operating_hours"), "hotel must not have operating_hours");
-    assert.ok(!tasks.find(t => t.id === "payments_offline"), "hotel must not have payments_offline");
+    assert.equal(result.complete, true);
+    assert.equal(result.nextAction, null);
+    assert.equal(result.bookingReadiness?.operationalSetupComplete, true);
+    assert.equal(result.bookingReadiness?.publicBookingEligible, false);
+    assert.equal(result.tasks.some((candidate) => candidate.id === "verify"), false);
 });
 
-test("hotel: payments_online is required (Stripe Connect mandatory)", () => {
-    const biz = makeHotelBusiness();
-    const caps = resolveBusinessCapabilities(biz);
-    const tasks = buildTasks(biz, makeEmptyCounts(), caps);
+test("booking preview uses the canonical business country and slug", () => {
+    const result = progress(accommodationBusiness({ countryCode: "ng", slug: "lagoon-resort" }));
 
-    const po = tasks.find(t => t.id === "payments_online");
-    assert.ok(po, "payments_online task must exist for hotels");
-    assert.equal(po.classification, "required");
+    assert.equal(task(result, "booking_preview").href, "/reserve/ng/lagoon-resort?mode=stay");
+    assert.equal(task(result, "booking_preview").classification, "recommended");
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DISMISSAL GATING
-// ─────────────────────────────────────────────────────────────────────────────
+test("missing public identity omits the preview action instead of linking to a generic page", () => {
+    const result = progress(accommodationBusiness({ countryCode: "", slug: "" }));
 
-test("restaurant: complete=false when only 4 of 5 steps done (payments_online missing)", () => {
-    const biz = makeRestaurantBusiness({ defaultPaymentMethodId: "pm_123" });
-    const caps = resolveBusinessCapabilities(biz);
-    const counts = { ...makeEmptyCounts(), servicePointCount: 1, menuItemCount: 1, staffCount: 1 };
-    const progress = buildSetupProgressResponse(biz, counts, caps);
-
-    assert.equal(progress.completedCoreCount, 4);
-    assert.equal(progress.complete, false);
+    assert.equal(result.tasks.some((candidate) => candidate.id === "booking_preview"), false);
 });
 
-test("restaurant: complete=true only when all 5 steps done", () => {
-    const biz = makeRestaurantBusiness({ defaultPaymentMethodId: "pm_123", stripeOnboardingComplete: true });
-    const caps = resolveBusinessCapabilities(biz);
-    const counts = { ...makeEmptyCounts(), servicePointCount: 1, menuItemCount: 1, staffCount: 1 };
-    const progress = buildSetupProgressResponse(biz, counts, caps);
+test("disabled global reservations are visible without blocking operational completion", () => {
+    const result = progress(accommodationBusiness({
+        stripeOnboardingComplete: true,
+        defaultPaymentMethodId: "pm_accommodation_billing",
+        settings: { reservationsEnabled: false },
+    }), { roomCount: 1, readyRoomCount: 1, publicStayReservationsEnabled: true });
 
-    assert.equal(progress.completedCoreCount, 5);
-    assert.equal(progress.complete, true);
+    assert.equal(result.complete, true);
+    assert.equal(result.bookingReadiness?.onlineReservationsEnabled, false);
+    assert.equal(result.bookingReadiness?.publicBookingEligible, false);
+});
+
+test("disabled public stay mode is visible without creating a circular setup dependency", () => {
+    const result = progress(accommodationBusiness({
+        stripeOnboardingComplete: true,
+        defaultPaymentMethodId: "pm_accommodation_billing",
+        settings: { publicReservationModes: [] },
+    }), { roomCount: 1, readyRoomCount: 1, publicStayReservationsEnabled: false });
+
+    assert.equal(result.complete, true);
+    assert.equal(task(result, "reservation_settings").completed, false);
+    assert.equal(result.bookingReadiness?.publicStayReservationsEnabled, false);
+});
+
+test("hybrid lodging retains room requirements and keeps food service recommended", () => {
+    const result = progress(accommodationBusiness({ modules: ["lodging", "foodService"] }));
+
+    assert.ok(task(result, "room_readiness"));
+    assert.equal(task(result, "food_service_menu").classification, "recommended");
+    assert.equal(result.tasks.some((candidate) => candidate.id === "menu_item"), false);
+});
+
+test("incomplete hybrid food service does not block lodging setup completion", () => {
+    const result = progress(accommodationBusiness({
+        modules: ["lodging", "foodService"],
+        stripeOnboardingComplete: true,
+        defaultPaymentMethodId: "pm_hybrid_billing",
+    }), { roomCount: 1, readyRoomCount: 1, menuItemCount: 0 });
+
+    assert.equal(task(result, "food_service_menu").completed, false);
+    assert.equal(result.complete, true);
+});
+
+test("restaurant task definitions stay free of accommodation requirements", () => {
+    const result = progress(restaurantBusiness(), { servicePointCount: 1, menuItemCount: 1 });
+
+    assert.deepEqual(result.tasks.map((candidate) => candidate.id), [
+        "service_point",
+        "menu_item",
+        "team",
+        "payments_offline",
+        "payments_online",
+    ]);
+    assert.equal(result.complete, true);
+    assert.equal(result.subtitle, "Get Ready to Accept Orders");
+});
+
+test("completion keeps the reservation eligibility fence and primary-owner route guard", async () => {
+    const [controller, route] = await Promise.all([
+        readFile(new URL("../src/controllers/setupProgressController.js", import.meta.url), "utf8"),
+        readFile(new URL("../src/routes/owner-route.js", import.meta.url), "utf8"),
+    ]);
+
+    assert.match(controller, /withReservationEligibilityFence/);
+    assert.match(controller, /onboardingCompleted: true/);
+    assert.match(controller, /invalidateSetupProgress\(businessId\)/);
+    assert.match(route, /router\.post\("\/setup-progress\/dismiss", requirePrimaryOwner, dismissSetupGuide\)/);
 });

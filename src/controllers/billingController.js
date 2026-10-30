@@ -6,6 +6,7 @@ import BillingInvoice from "../models/BillingInvoice.js"
 import { getPlanOfflineCommissionRate } from "../utils/platformFee.js"
 import { attemptPastDueInvoicePayment } from "../services/billingRecoveryService.js"
 import { listBillingInvoicesForBusiness } from "../services/billingInvoiceLedgerService.js"
+import { readOfflineCommissionBilling } from "../services/offlineCommissionBillingReadService.js"
 import {
     invalidateBusinessConfiguration,
     invalidatePublicBusinessConfig,
@@ -1759,6 +1760,30 @@ export async function getCommissionSummary(req, res) {
     }
 }
 
+export async function getOfflineCommissionBilling(req, res) {
+    try {
+        const businessId = resolveBusinessId(req)
+        if (!businessId) return res.status(401).json({ message: "Unauthorized" })
+        const business = await Business.findOne({ businessId }).lean()
+        if (!business) return res.status(404).json({ message: "Business not found" })
+        const billingPeriod = await getCurrentBillingPeriod(business)
+        const currentPeriod = billingPeriod.start && billingPeriod.end
+            ? `${new Date(billingPeriod.start).toISOString()}/${new Date(billingPeriod.end).toISOString()}`
+            : null
+        const data = await readOfflineCommissionBilling({
+            businessId,
+            currency: business.currency,
+            currentPeriod,
+            page: req.query?.page,
+            limit: req.query?.limit,
+        })
+        res.json({ currency: String(business.currency || "EUR").toUpperCase(), ...data })
+    } catch (error) {
+        console.error("[getOfflineCommissionBilling] Error:", error)
+        res.status(500).json({ message: "Server error fetching offline commission billing" })
+    }
+}
+
 /**
  * GET /owner/billing/invoices
  * Queries the internal BillingInvoice collection.
@@ -1887,13 +1912,22 @@ export async function reportOfflineUsage(req, res) {
             })
         }
 
-        // Gather all unreported paid offline orders
-        const unreportedOrders = await Order.find({
+        // A business that has entered the new commission system must keep the
+        // legacy meter strictly on the historical side of its authoritative
+        // cutover.  `paidAt` is payment evidence, so records without it are
+        // deliberately not guessed into either billing path.
+        const legacyUsageScope = {
             businessId,
             paymentChannel: "offline",
             paymentStatus: "paid",
             commissionReportedToStripe: false,
-        }).lean()
+        }
+        if (biz.offlineCommissionInvoiceEnabled && biz.offlineCommissionInvoiceCutoverAt) {
+            legacyUsageScope.paidAt = { $lt: new Date(biz.offlineCommissionInvoiceCutoverAt) }
+        }
+
+        // Gather all unreported paid offline orders eligible for the legacy meter.
+        const unreportedOrders = await Order.find(legacyUsageScope).lean()
 
         if (unreportedOrders.length === 0) {
             return res.json({

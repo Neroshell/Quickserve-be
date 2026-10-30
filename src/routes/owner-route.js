@@ -57,6 +57,7 @@ import {
     checkInHotelReservation,
     createStaffReservation,
     getOwnerRestaurantAvailability,
+    getHotelBookingReadiness,
     getHotelRoomAvailability,
     getHotelPricingPreview,
     deleteReservation,
@@ -87,6 +88,7 @@ import {
     deletePaymentMethod,
     updatePlan,
     getCommissionSummary,
+    getOfflineCommissionBilling,
     getInvoices,
     archiveInvoice,
     updatePlatformFeeSettings,
@@ -846,6 +848,7 @@ router.get(
  *         description: Available rooms list
  */
 router.get("/reservations/availability", requirePermission(PERMISSIONS.RESERVATIONS_VIEW), getHotelRoomAvailability)
+router.get("/reservations/booking-readiness", requirePermission(PERMISSIONS.RESERVATIONS_VIEW), getHotelBookingReadiness)
 
 /**
  * @openapi
@@ -1235,6 +1238,11 @@ router.get(
     "/billing/commission",
     requireManagementArea(MANAGEMENT_ACCESS_AREAS.PAYMENTS_AND_BILLING),
     getCommissionSummary,
+)
+router.get(
+    "/billing/offline-commissions",
+    requireManagementArea(MANAGEMENT_ACCESS_AREAS.PAYMENTS_AND_BILLING),
+    getOfflineCommissionBilling,
 )
 
 /**

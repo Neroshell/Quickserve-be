@@ -7,7 +7,6 @@ import { buildReservationPricingSnapshot } from "../services/reservationPricingS
 import { dispatchRestaurantReservationEmail } from "../services/email/emailDispatchService.js";
 import { validateReservationGuestCapacity } from "../services/reservationCapacityService.js";
 import { EMAIL_JOB_NAMES } from "../queues/index.js";
-import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js";
 import {
   RESTAURANT_AVAILABILITY_POLICIES,
   getRestaurantAvailability,
@@ -31,12 +30,17 @@ import {
 } from "../services/publicBusinessResolverService.js";
 
 import { assertReservationEligibility } from "../services/reservationEligibilityService.js";
+import {
+  assertPublicReservationModeBookable,
+  getPublicReservationBookability,
+  resolvePublicReservationMode,
+} from "../services/publicReservationBookabilityService.js";
 const RESERVATION_CONFIRMATION_SESSION_HEADER =
   "x-reservation-confirmation-session";
 const PUBLIC_BUSINESS_FIELDS = new Set([
   "businessId", "slug", "name", "displayName", "address", "phoneNumber",
   "country", "currency", "timezone", "logoUrl", "branding", "operatingHours",
-  "settings", "hotelSettings", "businessType", "modules", "servicePoints",
+  "settings", "hotelSettings", "businessType", "venueType", "modules", "servicePoints",
 ]);
 const PUBLIC_SERVICE_POINT_FIELDS = new Set([
   "_id", "servicePointId", "label", "servicePointType", "roomType", "capacity",
@@ -151,6 +155,7 @@ export async function getPublicBusinessConfig(req, res) {
       timezone: business.timezone,
       language: business.language,
       businessType: business.businessType,
+      venueType: business.venueType || null,
       taxRate: business.taxRate,
       passPlatformFeeToCustomer: business.passPlatformFeeToCustomer,
       platformFeeMode: business.platformFeeMode || "business_absorbs",
@@ -253,6 +258,7 @@ export async function getBusinessBySlug(req, res) {
       settings: business.settings, // things like dineInEnabled etc.
       hotelSettings: business.hotelSettings,
       businessType: business.businessType,
+      venueType: business.venueType || null,
       modules: business.modules,
       servicePoints: servicePoints,
     };
@@ -270,6 +276,34 @@ export async function getBusinessBySlug(req, res) {
     }
     console.error("[publicController.getBusinessBySlug] Error:", error);
     res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * GET /public/reservation-options/:countryCode/:slug
+ * Returns only public, currently enabled booking modes. It intentionally does
+ * not disclose internal configuration, ServicePoints, or readiness details.
+ */
+export async function getPublicReservationOptions(req, res, {
+  resolveBusinessRequest = resolvePublicBusiness,
+} = {}) {
+  try {
+    const { business } = await resolveBusinessRequest({
+      businessSlug: req.params.slug,
+      countryCode: req.params.countryCode,
+      statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
+    });
+    if (!business) return res.status(404).json({ error: "Business not found" });
+
+    const { modes } = getPublicReservationBookability(business);
+    res.set({ "Cache-Control": "private, no-store, max-age=0" });
+    return res.json({ modes });
+  } catch (error) {
+    if (error instanceof PublicBusinessResolutionError || error.statusCode) {
+      return res.status(error.statusCode || 400).json({ error: error.message });
+    }
+    console.error("[publicController.getPublicReservationOptions] Error:", error);
+    return res.status(500).json({ error: "Server error" });
   }
 }
 
@@ -298,6 +332,7 @@ export async function createReservation(req, res, {
   try {
     const {
       isHotelBooking,
+      reservationMode,
       businessSlug,
       countryCode,
       customerName,
@@ -319,12 +354,8 @@ export async function createReservation(req, res, {
     const idempotencyKey = rawKey
       ? normalizeCreationIdempotencyKey(rawKey)
       : null;
-    if (!isHotelBooking && servicePointId != null && typeof servicePointId !== "string") {
-      return res.status(400).json({ error: "A valid ServicePoint ID is required." });
-    }
-    const requestedRestaurantServicePointId = !isHotelBooking && servicePointId
-      ? servicePointId.trim() || null
-      : null;
+    const hasStayFields = [checkInDate, checkOutDate].some((value) => value !== undefined && value !== null && value !== "");
+    const hasTimeslotFields = [date, startTime, endTime].some((value) => value !== undefined && value !== null && value !== "");
     const { business } = await resolveBusinessRequest({
       businessSlug,
       countryCode,
@@ -333,9 +364,24 @@ export async function createReservation(req, res, {
     if (!business) {
       return res.status(404).json({ error: "Business not found or inactive" });
     }
+    const resolvedReservationMode = resolvePublicReservationMode({
+      business,
+      reservationMode,
+      isHotelBooking,
+      hasStayFields,
+      hasTimeslotFields,
+    });
+    const isStayBooking = resolvedReservationMode === "stay";
+
+    if (!isStayBooking && servicePointId != null && typeof servicePointId !== "string") {
+      return res.status(400).json({ error: "A valid ServicePoint ID is required." });
+    }
+    const requestedRestaurantServicePointId = !isStayBooking && servicePointId
+      ? servicePointId.trim() || null
+      : null;
     assertReservationEligibility(business);
     const result = await createReservationRequest({
-      isHotelBooking,
+      isHotelBooking: isStayBooking,
       businessSlug: business.slug,
       countryCode: business.countryCode,
       business,
@@ -345,7 +391,7 @@ export async function createReservation(req, res, {
       guestCount,
       // A guest selection is a request only. Restaurant creation independently
       // validates and locks it through the canonical transactional allocator.
-      servicePointId: isHotelBooking
+      servicePointId: isStayBooking
         ? servicePointId
         : requestedRestaurantServicePointId,
       specialRequest,
@@ -355,7 +401,7 @@ export async function createReservation(req, res, {
       startTime,
       endTime,
       durationMinutes,
-      seatingPreference: isHotelBooking ? seatingPreference : "no_preference",
+      seatingPreference: isStayBooking ? seatingPreference : "no_preference",
       source: "online",
       idempotencyKey,
     });
@@ -375,6 +421,7 @@ export async function createReservation(req, res, {
       reservationId: result.reservationId,
       pricing: result.pricing,
       bookingMode: result.bookingMode,
+      reservationMode: resolvedReservationMode,
     };
 
     // For instant bookings, include the secureToken so the frontend
@@ -410,13 +457,15 @@ export async function getPublicRestaurantAvailability(req, res) {
       countryCode,
       statuses: PUBLIC_SERVABLE_BUSINESS_STATUSES,
     });
-    if (
-      !business ||
-      resolveBusinessCapabilities(business).reservations.primaryMode !== "timeslot"
-    ) {
+    if (!business) {
       return res.status(404).json({ error: "Restaurant not found" });
     }
-    assertReservationEligibility(business);
+    // Keep the established public availability response for the legacy global
+    // switch while the mode resolver governs all additive per-mode settings.
+    if (business.settings?.reservationsEnabled === false) {
+      return res.status(403).json({ error: "Reservations are disabled for this business" });
+    }
+    assertPublicReservationModeBookable(business, "timeslot");
 
     const availability = await getRestaurantAvailability({
       businessId: business.businessId,

@@ -66,6 +66,7 @@ test("loading the owner list synchronizes expiry for the authenticated tenant", 
     lean: async () => ({
       businessId: "hotel_1",
       ownerEmail: "owner@example.com",
+      businessType: "hotel",
     }),
   }));
   t.mock.method(Reservation, "updateMany", async (filter) => {
@@ -86,6 +87,8 @@ test("loading the owner list synchronizes expiry for the authenticated tenant", 
             status: "expired",
             paymentStatus: "pending",
             secureToken: "secret-token",
+            checkInDate: "2026-07-29",
+            checkOutDate: "2026-07-30",
           },
         ];
       },
@@ -122,10 +125,9 @@ test("loading the owner list synchronizes expiry for the authenticated tenant", 
   assert.equal(expiryFilter.status, "accepted_awaiting_payment");
   assert.deepEqual(expiryFilter.paymentStatus, { $ne: "paid" });
   assert.ok(expiryFilter.paymentExpiresAt.$lte instanceof Date);
-  assert.deepEqual(listFilter, {
-    businessId: "hotel_1",
-    archivedAt: null,
-  });
+  assert.equal(listFilter.businessId, "hotel_1");
+  assert.equal(listFilter.archivedAt, null);
+  assert.ok(Array.isArray(listFilter.$and));
   assert.equal(res.body[0].status, "expired");
   assert.equal(res.body[0].paymentUrl, null);
   assert.equal("secureToken" in res.body[0], false);

@@ -1,9 +1,13 @@
 import Business from "../models/Business.js"
 import MenuItem from "../models/menuItem.js"
-import Order from "../models/order.js"
 import ServicePoint from "../models/ServicePoint.js"
 import Staff from "../models/Staff.js"
 import { resolveBusinessCapabilities } from "../services/businessCapabilityService.js"
+import { getConfiguredPublicReservationModes } from "../services/publicReservationBookabilityService.js"
+import {
+    getReservationEligibility,
+    withReservationEligibilityFence,
+} from "../services/reservationEligibilityService.js"
 
 import {
     CACHE_TTL_SECONDS,
@@ -12,10 +16,13 @@ import {
 } from "../services/responseCacheService.js"
 import { invalidateSetupProgress } from "../services/cacheInvalidationService.js"
 
-import { withReservationEligibilityFence } from "../services/reservationEligibilityService.js"
 const BUSINESS_SELECT = [
     "businessId",
     "businessType",
+    "countryCode",
+    "slug",
+    "status",
+    "onboardingCompleted",
     "currentPlan",
     "plan",
     "stripeOnboardingComplete",
@@ -24,6 +31,7 @@ const BUSINESS_SELECT = [
     "defaultPaymentMethodId",
     "operatingHours",
     "modules",
+    "settings",
     "setupProgress"
 ].join(" ")
 
@@ -31,8 +39,44 @@ function hasText(value) {
     return typeof value === "string" && value.trim().length > 0
 }
 
-function buildTasks(business, counts, capabilities) {
-    const isHotel = capabilities.identity.shell === "hotel";
+function getStayPreviewHref(business) {
+    const countryCode = typeof business?.countryCode === "string"
+        ? business.countryCode.trim().toLowerCase()
+        : ""
+    const slug = typeof business?.slug === "string"
+        ? business.slug.trim().toLowerCase()
+        : ""
+
+    if (!/^[a-z]{2}$/.test(countryCode) || !/^[a-z0-9-]+$/.test(slug)) {
+        return null
+    }
+
+    return `/reserve/${encodeURIComponent(countryCode)}/${encodeURIComponent(slug)}?mode=stay`
+}
+
+function buildAccommodationBookingReadiness(business, capabilities) {
+    if (!capabilities.visibleModules.includes("lodging")) return null
+
+    const configuredModes = getConfiguredPublicReservationModes(business)
+    const onlineReservationsEnabled = business?.settings?.reservationsEnabled !== false
+    const publicStayReservationsEnabled = configuredModes.includes("stay")
+    const eligibility = getReservationEligibility(business)
+    const blockers = []
+
+    if (!onlineReservationsEnabled) blockers.push("Online reservations are disabled.")
+    if (!publicStayReservationsEnabled) blockers.push("Public stay booking is disabled.")
+    if (!eligibility.eligible) blockers.push(eligibility.message)
+
+    return {
+        onlineReservationsEnabled,
+        publicStayReservationsEnabled,
+        publicBookingEligible: onlineReservationsEnabled && publicStayReservationsEnabled && eligibility.eligible,
+        blockers,
+    }
+}
+
+export function buildSetupTasks(business, counts, capabilities) {
+    const isAccommodation = capabilities.visibleModules.includes("lodging");
     const hasFoodService = capabilities.visibleModules.includes("foodService");
 
     const stripeConnected = business.stripeOnboardingComplete === true ||
@@ -43,20 +87,40 @@ function buildTasks(business, counts, capabilities) {
     const tasks = [];
     let stage = 1;
 
-    // 1. Where customers order
-    const servicePointLabel = isHotel ? "room" : "table";
+    const servicePointLabel = isAccommodation ? "room" : "table";
     tasks.push({
         id: "service_point",
         stage: stage++,
         title: `Add your first ${servicePointLabel}`,
-        description: `Customers need a ${servicePointLabel} before they can start an order.`,
-        href: "/owner/service-points?create=1",
+        description: isAccommodation
+            ? "Add a room or accommodation unit so guests have somewhere to stay."
+            : "Customers need a table before they can start an order.",
+        href: isAccommodation ? "/owner/service-points?view=rooms&create=1" : "/owner/service-points?create=1",
         classification: "required",
-        completed: counts.servicePointCount > 0
+        completed: isAccommodation ? counts.roomCount > 0 : counts.servicePointCount > 0
     });
 
-    // 2. Readiness / Menu
-    if (hasFoodService) {
+    if (isAccommodation) {
+        tasks.push({
+            id: "room_readiness",
+            stage: stage++,
+            title: "Configure room pricing & capacity",
+            description: "Set your room rates and guest capacity to prepare your accommodation for bookings.",
+            href: "/owner/service-points?view=rooms",
+            classification: "required",
+            completed: counts.readyRoomCount > 0
+        });
+
+        tasks.push({
+            id: "reservation_settings",
+            stage: stage++,
+            title: "Configure guest reservations",
+            description: "Review your booking preferences and choose how guests can reserve your accommodation.",
+            href: "/owner/settings",
+            classification: "recommended",
+            completed: counts.publicStayReservationsEnabled === true
+        });
+    } else if (hasFoodService) {
         tasks.push({
             id: "menu_item",
             stage: stage++,
@@ -66,20 +130,21 @@ function buildTasks(business, counts, capabilities) {
             classification: "required",
             completed: counts.menuItemCount > 0
         });
-    } else if (isHotel) {
+    }
+
+    if (isAccommodation && hasFoodService) {
         tasks.push({
-            id: "room_readiness",
+            id: "food_service_menu",
             stage: stage++,
-            title: "Set your room pricing",
-            description: "Rooms must have pricing and capacity to be booked.",
-            href: "/owner/service-points",
-            classification: "required",
-            completed: counts.readyRoomCount > 0
+            title: "Set up Food Service",
+            description: "Add a menu item when you are ready to offer food service.",
+            href: "/owner/menu?create=1",
+            classification: "recommended",
+            completed: counts.menuItemCount > 0
         });
     }
 
-    // 3. Team (restaurant only)
-    if (!isHotel) {
+    if (!isAccommodation) {
         tasks.push({
             id: "team",
             stage: stage++,
@@ -91,62 +156,62 @@ function buildTasks(business, counts, capabilities) {
         });
     }
 
-    // 4. Offline Payments (restaurant only)
-    if (!isHotel) {
-        tasks.push({
-            id: "payments_offline",
-            stage: stage++,
-            title: "Set up offline payments",
-            description: "Add a card to receive offline commission invoices.",
-            href: "/owner/billing?action=add-card",
-            classification: "recommended",
-            completed: offlinePaymentsConfigured
-        });
-    }
+    tasks.push({
+        id: "payments_offline",
+        stage: stage++,
+        title: "Set up offline payments",
+        description: "Add a card to receive offline commission invoices.",
+        href: "/owner/billing?action=add-card",
+        // A saved billing card enables staff offline-payment operations, but
+        // must not make Stripe-less hotels ineligible for all reservations.
+        classification: "recommended",
+        completed: offlinePaymentsConfigured
+    });
 
-    // 5. Online Payments
     tasks.push({
         id: "payments_online",
         stage: stage++,
         title: "Set up online payments",
         description: "Connect your bank to receive online payments.",
         href: "/owner/billing?tab=payouts",
-        classification: isHotel ? "required" : "recommended",
+        classification: isAccommodation ? "required" : "recommended",
         completed: stripeConnected
     });
 
-    // Hotel only: Verify booking
-    if (isHotel) {
-        tasks.push({
-            id: "verify",
-            stage: stage++,
-            title: "Test your first booking",
-            description: "Make sure everything works by placing a test booking.",
-            href: "/",
-            classification: "verification",
-            completed: counts.orderCount > 0
-        });
+    if (isAccommodation) {
+        const previewHref = getStayPreviewHref(business)
+        if (previewHref) {
+            tasks.push({
+                id: "booking_preview",
+                stage: stage++,
+                title: "Preview your booking page",
+                description: "See how guests will experience booking your accommodation.",
+                href: previewHref,
+                classification: "recommended",
+                completed: false,
+            })
+        }
+
     }
 
     return tasks;
 }
 
-function buildSetupProgressResponse(business, counts, capabilities) {
-    const tasks = buildTasks(business, counts, capabilities);
+export function buildSetupProgressResponse(business, counts, capabilities) {
+    const tasks = buildSetupTasks(business, counts, capabilities);
 
     const requiredTasks = tasks.filter(t => t.classification === "required");
     const completedRequiredCount = requiredTasks.filter(t => t.completed).length;
     
-    // The tracker visually represents all core steps in the sequence
-    const totalCoreCount = tasks.length;
-    const completedCoreCount = tasks.filter(t => t.completed).length;
-    
-    // Completion of the setup journey requires ALL tasks in the sequence to be done
-    const complete = completedCoreCount === totalCoreCount;
+    const recommendedTasks = tasks.filter(t => t.classification !== "required");
+    const completedRecommendedCount = recommendedTasks.filter(t => t.completed).length;
+    const totalCoreCount = requiredTasks.length;
+    const completedCoreCount = completedRequiredCount;
+    const complete = completedRequiredCount === requiredTasks.length;
+    const bookingReadiness = buildAccommodationBookingReadiness(business, capabilities);
     
     let nextAction = null;
-    // Next action points to the first uncompleted task in the entire journey
-    for (const task of tasks) {
+    for (const task of requiredTasks) {
         if (!task.completed) {
             nextAction = task;
             break;
@@ -155,15 +220,25 @@ function buildSetupProgressResponse(business, counts, capabilities) {
 
     return {
         title: "Setup Progress",
-        subtitle: "Get Ready to Accept Orders",
+        subtitle: capabilities.visibleModules.includes("lodging")
+            ? "Get Ready to Welcome Guests"
+            : "Get Ready to Accept Orders",
         tasks,
         nextAction,
         completedRequiredCount,
         totalRequiredCount: requiredTasks.length,
         completedCoreCount,
         totalCoreCount,
-        progressPercent: totalCoreCount === 0 ? 100 : Math.round((completedCoreCount / totalCoreCount) * 100),
+        completedRecommendedCount,
+        totalRecommendedCount: recommendedTasks.length,
+        progressPercent: requiredTasks.length === 0 ? 100 : Math.round((completedRequiredCount / requiredTasks.length) * 100),
         complete,
+        completionMessage: capabilities.visibleModules.includes("lodging")
+            ? "Your Chillow workspace is ready. Review your public booking settings to start welcoming reservations."
+            : "Your Chillow workspace is ready to accept orders.",
+        bookingReadiness: bookingReadiness
+            ? { ...bookingReadiness, operationalSetupComplete: complete }
+            : null,
         dismissed: business.setupProgress?.setupGuideDismissed === true,
         counts
     };
@@ -180,23 +255,36 @@ async function getSetupProgressData(businessId) {
     const [
         menuItemCount,
         servicePointCount,
+        roomCount,
         readyRoomCount,
         staffCount,
-        orderCount
     ] = await Promise.all([
         MenuItem.countDocuments({ businessId }),
         ServicePoint.countDocuments({ businessId }),
-        ServicePoint.countDocuments({ businessId, servicePointType: "room", pricePerNight: { $gt: 0 }, maxGuests: { $gt: 0 } }),
+        ServicePoint.countDocuments({ businessId, servicePointType: "room" }),
+        ServicePoint.countDocuments({
+            businessId,
+            servicePointType: "room",
+            isActive: { $ne: false },
+            reservable: { $ne: false },
+            pricePerNight: { $gt: 0 },
+            maxGuests: { $gt: 0 },
+            $or: [
+                { "roomReadiness.state": "ready" },
+                { roomReadiness: { $exists: false } },
+                { roomReadiness: null },
+            ],
+        }),
         Staff.countDocuments({ businessId, accountStatus: { $ne: "disabled" } }),
-        Order.countDocuments({ businessId })
     ]);
 
     const counts = {
         menuItemCount,
         servicePointCount,
+        roomCount,
         readyRoomCount,
         staffCount,
-        orderCount
+        publicStayReservationsEnabled: getConfiguredPublicReservationModes(business).includes("stay"),
     };
 
     return {

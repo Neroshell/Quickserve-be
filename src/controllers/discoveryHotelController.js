@@ -11,6 +11,7 @@ import {
 import { findHotelRoomAvailability } from "../services/hotelReservationAvailabilityService.js";
 import { toPublicHotelAvailabilityRoomDto } from "./reservationController.js";
 import { assertReservationEligibility } from "../services/reservationEligibilityService.js";
+import { assertPublicReservationModeBookable } from "../services/publicReservationBookabilityService.js";
 
 function publicImage(value) {
   if (typeof value !== "string") return null;
@@ -73,9 +74,7 @@ async function handleDiscoveryHotel(req, res, withAvailability) {
     }
 
     assertReservationEligibility(business);
-    if (business.settings?.reservationsEnabled === false) {
-      return res.status(403).json({ error: "Reservations are disabled." });
-    }
+    assertPublicReservationModeBookable(business, "stay");
     const { rooms } = await findHotelRoomAvailability({
       business,
       checkInDate: req.query.checkInDate,

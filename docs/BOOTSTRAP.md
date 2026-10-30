@@ -32,7 +32,7 @@ Use this sequence for a completely empty, brand new environment.
 
 ### Step 1: Environment Variables
 1. **Backend**: Copy `Quickserve-be/.env.example` to `.env`. Fill in `MONGODB_URI`, `REDIS_URL`, `STRIPE_SECRET_KEY`, `SESSION_SECRET`, etc.
-2. **Frontend**: Copy `Quick-serve-qr-menu/.env.example` to `.env.local`. Ensure `NEXT_PUBLIC_API_BASE_URL` matches the backend origin.
+2. **Frontend**: Copy `chillow-app/.env.example` to `.env.local`. Ensure `NEXT_PUBLIC_API_BASE_URL` matches the backend origin.
 
 ### Step 2: Dependencies
 ```bash

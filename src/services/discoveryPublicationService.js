@@ -1,4 +1,5 @@
 import { evaluateBusinessOperatingStatus } from "../utils/operatingHours.js"
+import { getVenueTypeDefinition, resolveEffectiveVenueType } from "../constants/venueTypeCatalog.js"
 
 const DISCOVERY_VISIBLE_BUSINESS_STATUS = "active"
 const MAX_SHORT_DESCRIPTION_LENGTH = 280
@@ -127,11 +128,16 @@ export function buildDiscoveryListingDto(business) {
     const profile = business.propertyProfile || {}
     const countryCode = business.countryCode.trim().toLowerCase()
     const slug = business.slug.trim().toLowerCase()
+    const venueType = resolveEffectiveVenueType(business)
+    const venueTypeDefinition = getVenueTypeDefinition(venueType)
+    if (!venueTypeDefinition) return null
 
     return {
         id: business.businessId,
         name: business.displayName || business.name,
         businessType: business.businessType,
+        venueType,
+        venueLabel: venueTypeDefinition.label,
         countryCode,
         slug,
         location: {
@@ -203,6 +209,7 @@ export const DISCOVERY_BUSINESS_SELECT = [
     "displayName",
     "slug",
     "businessType",
+    "venueType",
     "status",
     "country",
     "countryCode",
