@@ -66,6 +66,7 @@ docker-data/
 
 
 test/*
+!test/ownerDashboardMode.test.js
 !test/menuItemPriceIntegrity.test.js
 !test/customerOrderVisitScope.test.js
 !test/qrCapability.test.js

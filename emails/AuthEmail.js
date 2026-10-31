@@ -86,15 +86,15 @@ export default function AuthEmail({ userName, resetLink }) {
 
   return e(Html, null,
     e(Head, null),
-    e(Preview, null, "Reset your QuickServe password"),
+    e(Preview, null, "Reset your chillow password"),
     e(Body, { style: main },
       e(Container, { style: container },
         e(Section, { style: header },
-          e(Heading, { style: headingStyle }, "QuickServe")
+          e(Heading, { style: headingStyle }, "chillow")
         ),
         e(Section, { style: content },
           e(Text, { style: greeting }, `Hello ${userName || "there"},`),
-          e(Text, { style: text }, "We received a request to reset the password associated with your QuickServe account."),
+          e(Text, { style: text }, "We received a request to reset the password associated with your chillow account."),
           e(Text, { style: text }, "You can reset your password immediately by clicking the button below:"),
           e(Section, { style: buttonContainer },
             e(Button, { href: resetLink, style: button }, "Reset Password")

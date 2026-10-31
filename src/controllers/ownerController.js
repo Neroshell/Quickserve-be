@@ -278,6 +278,19 @@ export async function getTableSessionsOverview(req, res) {
     }
 }
 
+export function resolveDashboardMode({ requestedDashboard, visibleModules = [] }) {
+    const hasLodging = visibleModules.includes("lodging")
+    const hasFoodService = visibleModules.includes("foodService")
+
+    // Only a genuinely hybrid workspace can opt into the secondary food-service
+    // dashboard. Single-module businesses retain their established dashboard.
+    if (hasLodging && hasFoodService && requestedDashboard === "foodService") {
+        return "foodService"
+    }
+
+    return hasLodging ? "hotel" : "foodService"
+}
+
 export async function getDashboardData(req, res) {
     try {
         const businessId = req.session?.user?.businessId
@@ -287,7 +300,12 @@ export async function getDashboardData(req, res) {
         if (!business) return res.status(404).json({ error: "Business not found" })
 
         const capabilities = resolveBusinessCapabilities(business)
-        if (capabilities.visibleModules.includes("lodging")) {
+        const dashboardMode = resolveDashboardMode({
+            requestedDashboard: req.query?.dashboard,
+            visibleModules: capabilities.visibleModules,
+        })
+
+        if (dashboardMode === "hotel") {
             const hotelDashboard = await hotelDashboardService({
                 business,
                 access: dashboardAccessForRequest(req),
