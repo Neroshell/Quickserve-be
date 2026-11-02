@@ -30,7 +30,7 @@ const container = {
 
 const headingStyle = {
   color: "#ffffff",
-  fontSize: "24px",
+  fontSize: "26px",
   fontWeight: "bold",
   margin: "0 0 8px 0",
 };
@@ -96,21 +96,21 @@ export default function OnboardingEmail({ userName, businessName, inviteLink, ro
   const e = React.createElement;
   const isOwner = role === "owner";
   const isVerification = Boolean(verificationCode);
-  const headerColor = isOwner ? "#ea580c" : "#0284c7";
   const headerSubtitle = isVerification
-    ? "Email Verification"
+    ? "Email verification"
     : isOwner
       ? "Partner Portal Onboarding"
       : "Staff Onboarding";
 
   const headerStyle = {
-    backgroundColor: headerColor,
-    padding: "32px 20px",
+    backgroundColor: "#ffffff",
+    borderTop: "4px solid #ea601a",
+    padding: "20px",
     textAlign: "center",
   };
 
   const buttonStyle = {
-    backgroundColor: headerColor,
+    backgroundColor: "#c2410c",
     color: "#ffffff",
     padding: "12px 24px",
     borderRadius: "6px",
@@ -121,18 +121,18 @@ export default function OnboardingEmail({ userName, businessName, inviteLink, ro
 
   const introText = isOwner
     ? isVerification
-      ? "Your QuickServe owner account has been created. Verify your email address to continue setting up your business."
-      : `Your business account for ${businessName} has been successfully created on QuickServe.`
-    : "You have been added as a member of the Staff for a business on QuickServe.";
+      ? "Your Chillow owner account has been created. Verify your email address to continue setting up your business."
+      : `Your business account for ${businessName} has been successfully created on Chillow.`
+    : "You have been invited to join a business team on Chillow.";
 
   return e(Html, null,
     e(Head, null),
-    e(Preview, null, isVerification ? "Your QuickServe verification code" : "Set up your QuickServe account"),
+    e(Preview, null, isVerification ? "Enter this 6-digit code to verify your email address." : "Your Chillow account is ready to set up."),
     e(Body, { style: main },
       e(Container, { style: container },
         e(Section, { style: headerStyle },
-          e(Heading, { style: headingStyle }, "QuickServe"),
-          e(Text, { style: subheading }, headerSubtitle)
+          e(Heading, { style: { ...headingStyle, color: "#0f172a" } }, "Chillow"),
+          e(Text, { style: { ...subheading, color: "#64748b" } }, headerSubtitle)
         ),
         e(Section, { style: content },
           e(Text, { style: greetingStyle }, `Hello ${userName},`),
@@ -149,7 +149,7 @@ export default function OnboardingEmail({ userName, businessName, inviteLink, ro
                   e(Button, { href: inviteLink, style: buttonStyle }, "Set Up Your Password")
                 )
               ),
-          e(Text, { style: footerText }, "Welcome aboard! The QuickServe Team")
+          e(Text, { style: footerText }, "Welcome to Chillow.")
         )
       )
     )

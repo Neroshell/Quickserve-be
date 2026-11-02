@@ -1,4 +1,5 @@
 import React from "react";
+import { isSafeBusinessLogoUrl } from "./emailPresentationUtils.js";
 import {
   Html,
   Head,
@@ -45,10 +46,21 @@ const codeBox = {
   margin: "32px 0",
 };
 
+const confirmedStatus = {
+  backgroundColor: "#f0fdf4",
+  border: "1px solid #bbf7d0",
+  borderRadius: "8px",
+  color: "#166534",
+  fontSize: "14px",
+  fontWeight: "700",
+  margin: "0 0 20px",
+  padding: "12px 14px",
+  textAlign: "center",
+};
+
 export default function HotelPaymentConfirmationEmail({
   businessName = "Hotel Name",
   businessLogoUrl,
-  primaryColor = "#ea580c",
   customerName = "Guest",
   publicReference = "QS-H-123456",
   servicePointLabel = "Deluxe Room",
@@ -67,15 +79,17 @@ export default function HotelPaymentConfirmationEmail({
   expiresAt = "Dec 3 at 11:00 AM",
 }) {
   const e = React.createElement;
+  const hasBusinessLogo = isSafeBusinessLogoUrl(businessLogoUrl);
 
   const header = {
-    backgroundColor: primaryColor,
-    padding: "32px 20px",
+    borderTop: "4px solid #ea601a",
+    backgroundColor: "#ffffff",
+    padding: "20px 20px 18px",
     textAlign: "center",
   };
 
   const codeStyle = {
-    color: primaryColor,
+    color: "#c2410c",
     fontSize: "36px",
     fontWeight: "800",
     letterSpacing: "8px",
@@ -90,24 +104,27 @@ export default function HotelPaymentConfirmationEmail({
       e(Container, { style: container },
         // Header
         e(Section, { style: header },
-          businessLogoUrl ? e(Img, {
+          hasBusinessLogo ? e(Img, {
             src: businessLogoUrl,
-            width: "64",
-            height: "64",
+            width: "40",
+            height: "40",
             alt: businessName,
             style: {
               margin: "0 auto",
               borderRadius: "12px",
-              marginBottom: "16px",
+              marginBottom: "8px",
               objectFit: "cover",
               backgroundColor: "#fff",
             }
           }) : null,
-          e(Heading, { style: { color: "#ffffff", margin: 0, fontSize: "24px" } }, "Booking Confirmed")
+          e(Text, { style: { color: "#64748b", textAlign: "center", margin: "0 0 8px", fontSize: "12px", fontWeight: "700", letterSpacing: "1px", textTransform: "uppercase" } }, "Chillow"),
+          e(Heading, { style: { color: "#0f172a", margin: 0, fontSize: "26px" } }, "Your stay is confirmed"),
+          e(Text, { style: { color: "#334155", textAlign: "center", margin: "8px 0 0", fontSize: "15px", fontWeight: "600" } }, businessName)
         ),
         
         // Body
         e(Section, { style: contentPadding },
+          e(Text, { style: confirmedStatus }, "Paid · Booking confirmed"),
           e(Text, { style: { fontSize: "16px", color: "#334155", margin: "0 0 16px" } },
             "Hi ", e("strong", null, customerName), ","
           ),

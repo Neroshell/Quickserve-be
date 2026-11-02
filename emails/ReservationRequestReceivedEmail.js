@@ -17,6 +17,7 @@ export default function ReservationRequestReceivedEmail({ businessName, business
       `Thank you for your reservation request at ${businessName}.`,
       "Your reservation is currently pending review. We will notify you once it has been confirmed or declined.",
     ],
+    statusNotice: { text: "Awaiting review · Not yet confirmed", tone: "info" },
     detailsTitle: "Reservation Details",
     details: [
       { label: "Date", value: formatReservationDate(reservation.date) },

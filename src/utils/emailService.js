@@ -247,8 +247,8 @@ export async function sendReceiptEmail(
       $or: [{ businessId: order.businessId }, { restaurantId: order.businessId }]
     }).lean();
 
-    const businessName = business?.displayName || business?.name || "QuickServe";
-    const businessLogoUrl = business?.logoUrl;
+    const businessName = business?.displayName || business?.name || "Chillow";
+    const businessLogoUrl = business?.branding?.logoUrl || business?.logoUrl;
     const servicePointTerm = business?.businessType === "hotel_apartment" ? "Room" : "Table";
     const servicePointLabel = await getReceiptServicePointLabel(order);
 
@@ -310,7 +310,7 @@ export async function sendReceiptEmail(
 export async function sendAuthEmail({ to, userName, resetLink }) {
   try {
     const html = await render(React.createElement(AuthEmail, { userName, resetLink }));
-    const subject = `Reset Your QuickServe Password`;
+    const subject = "Reset your Chillow password";
     const from = process.env.EMAIL_FROM_AUTH || "QuickServe Auth <auth@quickservehq.com>";
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
@@ -332,8 +332,8 @@ export async function sendOnboardingEmail({ to, userName, businessName, inviteLi
   try {
     const html = await render(React.createElement(OnboardingEmail, { userName, businessName, inviteLink, role }));
     const subject = role === "owner"
-      ? `Welcome to QuickServe — Set up your account for ${businessName}`
-      : `You've been added as Staff on QuickServe`;
+      ? `Set up your Chillow owner account for ${businessName}`
+      : "You've been invited to join Chillow";
     const from = process.env.EMAIL_FROM_ONBOARDING || "QuickServe <onboarding@quickservehq.com>";
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
@@ -353,11 +353,11 @@ export async function sendOnboardingVerificationCode({ to, userName, verificatio
   try {
     const html = await render(React.createElement(OnboardingEmail, {
       userName,
-      businessName: "QuickServe",
+      businessName: "Chillow",
       verificationCode,
       role: "owner"
     }));
-    const subject = "Verify your QuickServe email";
+    const subject = "Your Chillow verification code";
     const from = process.env.EMAIL_FROM_ONBOARDING || "QuickServe <onboarding@quickservehq.com>";
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
@@ -379,7 +379,7 @@ export async function sendReservationRequestEmail({
 }) {
   try {
     const html = await render(React.createElement(ReservationRequestEmail, { businessName, reservation }));
-    const subject = `New Reservation Request for ${businessName}`;
+    const subject = `New reservation request · ${businessName}`;
     const from = process.env.EMAIL_FROM_RESERVATIONS || "QuickServe Reservations <reservations@quickservehq.com>";
     return await deliverPreparedEmail(
       { to, subject, html, from, idempotencyKey },
@@ -415,7 +415,7 @@ export async function sendReservationRequestReceivedEmail({
 }) {
   try {
     const html = await render(React.createElement(ReservationRequestReceivedEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
-    const subject = `Reservation Request Received - ${businessName}`;
+    const subject = `Request received · ${businessName}`;
     return await deliverPreparedEmail(
       { to, subject, html, from: RESERVATION_FROM, idempotencyKey },
       { returnResult, timeoutMs },
@@ -442,7 +442,7 @@ export async function sendReservationConfirmedEmail({
 }) {
   try {
     const html = await render(React.createElement(ReservationConfirmedEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
-    const subject = `Reservation Confirmed - ${businessName}`;
+    const subject = `Reservation confirmed · ${businessName}`;
     return await deliverPreparedEmail(
       { to, subject, html, from: RESERVATION_FROM, idempotencyKey },
       { returnResult, timeoutMs },
@@ -469,7 +469,7 @@ export async function sendReservationPaymentEmail({ to, businessName, businessLo
     // Points to the QuickServe payment page, NOT the post-payment confirmation page.
     const paymentUrl = `${frontendBaseUrl}/reservation/pay/${reservation.secureToken}`;
     const html = await render(React.createElement(ReservationPaymentEmail, { businessName, businessLogoUrl, primaryColor, reservation, paymentUrl }));
-    const subject = `Action Required: Payment for your Reservation - ${businessName}`;
+    const subject = `Payment needed · ${businessName}`;
     return await sendEmail({ to, subject, html, from: RESERVATION_FROM });
   } catch (error) {
     console.error("[sendReservationPaymentEmail] Error", {
@@ -498,8 +498,8 @@ export async function sendReservationCancelledEmail({
   try {
     const html = await render(React.createElement(ReservationCancelledEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
     const subject = reservation?.cancellationOutcome
-      ? `Reservation Cancelled - ${businessName}`
-      : `Reservation Unavailable - ${businessName}`;
+      ? `Reservation cancelled · ${businessName}`
+      : `Reservation unavailable · ${businessName}`;
     return await deliverPreparedEmail(
       { to, subject, html, from: RESERVATION_FROM, idempotencyKey },
       { returnResult, timeoutMs },
@@ -540,7 +540,7 @@ export async function sendReservationArrivalReminderEmail({
     return await deliverPreparedEmail(
       {
         to,
-        subject: `Your reservation at ${businessName} is coming up`,
+        subject: `Your reservation is coming up · ${businessName}`,
         html,
         from: RESERVATION_FROM,
         idempotencyKey,
@@ -588,7 +588,7 @@ export async function sendReservationRefundEmail({
     return await deliverPreparedEmail(
       {
         to,
-        subject: `Refund Confirmed - ${businessName}`,
+        subject: `Refund issued · ${businessName}`,
         html,
         from: RESERVATION_FROM,
         idempotencyKey: getReservationRefundEmailIdempotencyKey(refund),
@@ -611,7 +611,7 @@ export async function sendReservationRefundEmail({
 export async function sendEmailChangeVerification({ to, userName, confirmLink, oldEmail, newEmail }) {
   try {
     const html = await render(React.createElement(EmailChangeEmail, { mode: "verify", userName, confirmLink, oldEmail, newEmail }));
-    const subject = "Confirm your new QuickServe login email";
+    const subject = "Confirm your new Chillow login email";
     const from = process.env.EMAIL_FROM_AUTH || "QuickServe Auth <auth@quickservehq.com>";
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
@@ -626,7 +626,7 @@ export async function sendEmailChangeVerification({ to, userName, confirmLink, o
 export async function sendEmailChangeNotification({ to, userName, oldEmail, newEmail }) {
   try {
     const html = await render(React.createElement(EmailChangeEmail, { mode: "notify", userName, oldEmail, newEmail }));
-    const subject = "Your QuickServe login email has been changed";
+    const subject = "Your Chillow login email was changed";
     const from = process.env.EMAIL_FROM_AUTH || "QuickServe Auth <auth@quickservehq.com>";
     return await sendEmail({ to, subject, html, from });
   } catch (error) {
@@ -647,7 +647,7 @@ export async function sendHotelPaymentConfirmationEmail({ reservation, business,
       }).format(amount || 0);
     };
 
-    const businessName = business?.displayName || business?.name || "QuickServe Hotel";
+    const businessName = business?.displayName || business?.name || "Chillow";
     const primaryColor = business?.branding?.primaryColor || "#ea580c";
     
     const formatDate = (date) => date ? new Date(date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
@@ -656,7 +656,7 @@ export async function sendHotelPaymentConfirmationEmail({ reservation, business,
 
     const html = await render(React.createElement(HotelPaymentConfirmationEmail, {
       businessName,
-      businessLogoUrl: business?.logoUrl,
+      businessLogoUrl: business?.branding?.logoUrl || business?.logoUrl,
       primaryColor,
       customerName: reservation.name,
       publicReference: reservation.publicReference || reservation._id.toString(),
@@ -676,7 +676,7 @@ export async function sendHotelPaymentConfirmationEmail({ reservation, business,
       expiresAt: expiresAt ? new Date(expiresAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "numeric", hour12: true }) : "",
     }));
 
-    const subject = `Your booking at ${businessName} is confirmed`;
+    const subject = `Your stay is confirmed · ${businessName}`;
     const from = process.env.EMAIL_FROM_RESERVATIONS || "QuickServe Reservations <reservations@quickservehq.com>";
     
     return await sendEmail({ to: reservation.email, subject, html, from });

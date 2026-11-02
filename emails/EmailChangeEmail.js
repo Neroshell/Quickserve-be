@@ -30,14 +30,15 @@ const container = {
 };
 
 const header = {
-  backgroundColor: "#1e293b",
-  padding: "32px 20px",
+  backgroundColor: "#ffffff",
+  borderTop: "4px solid #ea601a",
+  padding: "20px",
   textAlign: "center",
 };
 
 const headingStyle = {
-  color: "#ffffff",
-  fontSize: "24px",
+  color: "#0f172a",
+  fontSize: "26px",
   fontWeight: "bold",
   margin: "0",
 };
@@ -90,7 +91,7 @@ const buttonContainer = {
 };
 
 const button = {
-  backgroundColor: "#ea601a",
+  backgroundColor: "#c2410c",
   color: "#ffffff",
   padding: "14px 28px",
   borderRadius: "6px",
@@ -125,15 +126,15 @@ export default function EmailChangeEmail({ mode = "verify", userName, confirmLin
   if (mode === "notify") {
     return e(Html, null,
       e(Head, null),
-      e(Preview, null, "Your QuickServe login email has been changed"),
+      e(Preview, null, "A security notice about your Chillow account email update."),
       e(Body, { style: main },
         e(Container, { style: container },
           e(Section, { style: header },
-            e(Heading, { style: headingStyle }, "QuickServe")
+            e(Heading, { style: headingStyle }, "Chillow")
           ),
           e(Section, { style: content },
             e(Text, { style: greeting }, `Hello ${userName || "there"},`),
-            e(Text, { style: text }, "This is a security notification. The login email for your QuickServe account has been successfully changed."),
+            e(Text, { style: text }, "This is a security notification. The login email for your Chillow account has been successfully changed."),
             e(Section, { style: emailRow },
               e(Text, { style: emailLabel }, "Previous Email"),
               e(Text, { style: emailValue }, oldEmail)
@@ -143,7 +144,7 @@ export default function EmailChangeEmail({ mode = "verify", userName, confirmLin
               e(Text, { style: emailValue }, newEmail)
             ),
             e(Hr, null),
-            e(Text, { style: warningText }, "If you did not make this change, contact QuickServe support immediately.")
+            e(Text, { style: warningText }, "If you did not make this change, contact Chillow support immediately.")
           )
         )
       )
@@ -153,15 +154,15 @@ export default function EmailChangeEmail({ mode = "verify", userName, confirmLin
   // mode === "verify"
   return e(Html, null,
     e(Head, null),
-    e(Preview, null, "Confirm your new QuickServe login email"),
+    e(Preview, null, "Approve the requested change within 30 minutes."),
     e(Body, { style: main },
       e(Container, { style: container },
         e(Section, { style: header },
-          e(Heading, { style: headingStyle }, "QuickServe")
+          e(Heading, { style: headingStyle }, "Chillow")
         ),
         e(Section, { style: content },
           e(Text, { style: greeting }, `Hello ${userName || "there"},`),
-          e(Text, { style: text }, "We received a request to change the login email for your QuickServe account."),
+          e(Text, { style: text }, "We received a request to change the login email for your Chillow account."),
           e(Section, { style: emailRow },
             e(Text, { style: emailLabel }, "Current Email"),
             e(Text, { style: emailValue }, oldEmail)

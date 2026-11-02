@@ -14,14 +14,17 @@ import {
 
 export default function ReservationRequestEmail({ businessName, reservation }) {
   const e = React.createElement;
-  const previewText = `New Reservation Request for ${businessName}`;
+  const previewText = `A new table request is awaiting review for ${businessName}.`;
 
   return e(Html, null,
     e(Head, null),
     e(Preview, null, previewText),
     e(Body, { style: main },
       e(Container, { style: container },
-        e(Heading, { style: h1 }, "New Reservation Request"),
+        e(Section, { style: header },
+          e(Text, { style: brand }, "Chillow"),
+          e(Heading, { style: h1 }, "New reservation request")
+        ),
         e(Text, { style: text },
           "You have received a new reservation request for ",
           e("strong", null, businessName),
@@ -43,7 +46,7 @@ export default function ReservationRequestEmail({ businessName, reservation }) {
         ),
         e(Hr, { style: hr }),
         e(Text, { style: footer },
-          "Log into your QuickServe owner dashboard to confirm or cancel this reservation."
+          "Open your Chillow owner dashboard to review this request. The guest has not been confirmed yet."
         )
       )
     )
@@ -58,7 +61,7 @@ const main = {
 const container = {
   backgroundColor: "#ffffff",
   margin: "0 auto",
-  padding: "20px 0 48px",
+  padding: "0 0 32px",
   marginBottom: "64px",
   border: "1px solid #e6ebf1",
   borderRadius: "5px",
@@ -66,32 +69,47 @@ const container = {
 };
 
 const h1 = {
-  color: "#333",
-  fontSize: "24px",
+  color: "#0f172a",
+  fontSize: "26px",
   fontWeight: "bold",
   textAlign: "center",
-  padding: "0 20px",
-  margin: "30px 0",
+  margin: "0",
+};
+
+const header = {
+  borderTop: "4px solid #ea601a",
+  padding: "20px",
+  textAlign: "center",
+};
+
+const brand = {
+  color: "#64748b",
+  fontSize: "12px",
+  fontWeight: "700",
+  letterSpacing: "1px",
+  textTransform: "uppercase",
+  margin: "0 0 8px",
 };
 
 const text = {
-  color: "#525f7f",
+  color: "#334155",
   fontSize: "16px",
   lineHeight: "24px",
-  textAlign: "center",
+  textAlign: "left",
   padding: "0 20px",
   marginBottom: "20px",
 };
 
 const detailsSection = {
   padding: "20px",
-  backgroundColor: "#f8f9fa",
-  borderRadius: "5px",
+  backgroundColor: "#eff6ff",
+  border: "1px solid #bfdbfe",
+  borderRadius: "8px",
   margin: "0 20px",
 };
 
 const detailText = {
-  color: "#333",
+  color: "#334155",
   fontSize: "15px",
   lineHeight: "24px",
   margin: "5px 0",

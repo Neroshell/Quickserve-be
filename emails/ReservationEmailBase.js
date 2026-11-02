@@ -1,4 +1,5 @@
 import React from "react";
+import { isSafeBusinessLogoUrl } from "./emailPresentationUtils.js";
 import {
   Html,
   Head,
@@ -26,7 +27,7 @@ import {
  * @param {object} props
  * @param {string} props.businessName        - Restaurant display name (the "from" identity)
  * @param {string} [props.businessLogoUrl]   - Optional logo URL
- * @param {string} [props.primaryColor]      - Optional brand colour (hex); falls back to QuickServe orange
+ * @param {string} [props.primaryColor]      - Optional brand colour (hex); falls back to Chillow orange
  * @param {string} props.previewText         - Inbox preview line
  * @param {string} props.title               - Header headline (e.g. "Reservation Confirmed")
  * @param {string} props.customerName        - Recipient's name for the greeting
@@ -36,9 +37,8 @@ import {
  * @param {Array<string|React.ReactNode>} [props.closing]  - Paragraphs shown below the details box
  */
 export default function ReservationEmailBase({
-  businessName = "QuickServe",
+  businessName = "Chillow",
   businessLogoUrl,
-  primaryColor,
   previewText,
   title,
   customerName,
@@ -46,6 +46,8 @@ export default function ReservationEmailBase({
   detailsTitle = "Reservation Details",
   details = [],
   closing = [],
+  /** Optional explicit lifecycle status: { text: string, tone?: 'info'|'success'|'warning'|'danger' } */
+  statusNotice = null,
   /** Optional CTA button: { text: string, url: string } */
   callToAction = null,
   /** Optional link shown beneath the primary CTA: { text: string, url: string } */
@@ -54,9 +56,13 @@ export default function ReservationEmailBase({
   cancelAction = null,
 }) {
   const e = React.createElement;
-  const brand = primaryColor || "#ea580c";
+  // Tenant colours are not guaranteed to meet contrast requirements. Keep the
+  // platform CTA colour stable rather than placing white text over arbitrary
+  // business colours in an email client.
+  const brand = "#c2410c";
+  const hasBusinessLogo = isSafeBusinessLogoUrl(businessLogoUrl);
 
-  const visibleDetails = details.filter((d) => d && d.value);
+  const visibleDetails = details.filter((d) => d && d.value !== null && d.value !== undefined && d.value !== "");
 
   return e(Html, null,
     e(Head, null),
@@ -65,7 +71,7 @@ export default function ReservationEmailBase({
       e(Container, { style: container },
 
         // Branded header
-        e(Section, { style: { ...header, backgroundColor: brand } },
+        e(Section, { style: header },
           e(Row, null,
             e(Column, { align: "center" },
               e(Text, { style: brandText }, businessName),
@@ -78,11 +84,9 @@ export default function ReservationEmailBase({
         e(Section, { style: businessSection },
           e(Row, null,
             e(Column, { align: "center" },
-              businessLogoUrl
-                ? e(Img, { src: businessLogoUrl, width: "64", height: "64", alt: businessName, style: logo })
-                : e("div", { style: { ...logoPlaceholder, backgroundColor: hexWithAlpha(brand, "1a") } },
-                    e(Text, { style: { ...logoPlaceholderText, color: brand } }, (businessName || "Q").charAt(0))
-                  ),
+              hasBusinessLogo
+                ? e(Img, { src: businessLogoUrl, width: "40", height: "40", alt: `${businessName} logo`, style: logo })
+                : null,
               e(Text, { style: businessNameText }, businessName)
             )
           )
@@ -91,7 +95,8 @@ export default function ReservationEmailBase({
         // Greeting + intro
         e(Section, { style: bodySection },
           e(Text, { style: greeting }, `Hello ${customerName || "there"},`),
-          ...intro.map((p, i) => e(Text, { key: `intro-${i}`, style: paragraph }, p))
+          ...intro.map((p, i) => e(Text, { key: `intro-${i}`, style: paragraph }, p)),
+          statusNotice ? e(Text, { style: { ...statusNoticeStyle, ...statusToneStyles[statusNotice.tone] } }, statusNotice.text) : null
         ),
 
         // Details box
@@ -148,7 +153,7 @@ export default function ReservationEmailBase({
 
         // Footer
         e(Section, { style: footer },
-          e(Text, { style: footerText }, "Powered by QuickServe")
+          e(Text, { style: footerText }, "Powered by Chillow")
         )
       )
     )
@@ -193,13 +198,15 @@ const container = {
 };
 
 const header = {
-  padding: "32px 20px",
+  borderTop: "4px solid #ea601a",
+  padding: "20px 20px 18px",
   textAlign: "center",
+  backgroundColor: "#ffffff",
 };
 
 const brandText = {
-  color: "rgba(255, 255, 255, 0.85)",
-  fontSize: "13px",
+  color: "#64748b",
+  fontSize: "12px",
   fontWeight: "600",
   letterSpacing: "1px",
   textTransform: "uppercase",
@@ -207,19 +214,19 @@ const brandText = {
 };
 
 const headingStyle = {
-  color: "#ffffff",
+  color: "#0f172a",
   fontSize: "26px",
   fontWeight: "bold",
   margin: "0",
 };
 
 const businessSection = {
-  padding: "28px 20px 8px",
+  padding: "16px 20px 4px",
 };
 
 const logo = {
   borderRadius: "8px",
-  margin: "0 auto 12px",
+  margin: "0 auto 8px",
 };
 
 const logoPlaceholder = {
@@ -239,7 +246,7 @@ const logoPlaceholderText = {
 };
 
 const businessNameText = {
-  fontSize: "18px",
+  fontSize: "16px",
   fontWeight: "600",
   color: "#334155",
   margin: "0",
@@ -262,6 +269,22 @@ const paragraph = {
   lineHeight: "24px",
   color: "#475569",
   margin: "0 0 14px 0",
+};
+
+const statusNoticeStyle = {
+  borderRadius: "8px",
+  fontSize: "14px",
+  fontWeight: "700",
+  lineHeight: "20px",
+  margin: "4px 0 18px",
+  padding: "12px 14px",
+};
+
+const statusToneStyles = {
+  info: { backgroundColor: "#eff6ff", border: "1px solid #bfdbfe", color: "#1d4ed8" },
+  success: { backgroundColor: "#f0fdf4", border: "1px solid #bbf7d0", color: "#166534" },
+  warning: { backgroundColor: "#fffbeb", border: "1px solid #fde68a", color: "#92400e" },
+  danger: { backgroundColor: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c" },
 };
 
 const detailsOuter = {
@@ -334,6 +357,7 @@ const buttonStyle = {
   textDecoration: "none",
   textAlign: "center",
   display: "inline-block",
+  margin: "0 auto",
   padding: "12px 24px",
 };
 

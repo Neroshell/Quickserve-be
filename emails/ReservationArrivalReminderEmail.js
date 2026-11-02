@@ -21,6 +21,7 @@ export default function ReservationArrivalReminderEmail({
       `This is a friendly reminder about your upcoming reservation at ${businessName}.`,
       "When you arrive, use the button below to let us know you're here.",
     ],
+    statusNotice: { text: "Arrival reminder", tone: "info" },
     detailsTitle: "Reservation Details",
     details: [
       { label: "Date", value: formatReservationDate(reservation.date) },

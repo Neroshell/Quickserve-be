@@ -36,6 +36,7 @@ export default function ReservationRefundEmail({
       "Your reservation has been cancelled and the refund below has been issued to your original payment method.",
       "Most card refunds appear within 5–10 business days. In some cases, the original charge may disappear or update instead of showing as a separate refund.",
     ],
+    statusNotice: { text: "Refund issued", tone: "success" },
     detailsTitle: "Refund Details",
     details: [
       {

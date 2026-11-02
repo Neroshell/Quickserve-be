@@ -29,14 +29,15 @@ const container = {
 };
 
 const header = {
-  backgroundColor: "#1e293b",
-  padding: "32px 20px",
+  backgroundColor: "#ffffff",
+  borderTop: "4px solid #ea601a",
+  padding: "20px",
   textAlign: "center",
 };
 
 const headingStyle = {
-  color: "#ffffff",
-  fontSize: "24px",
+  color: "#0f172a",
+  fontSize: "26px",
   fontWeight: "bold",
   margin: "0",
 };
@@ -65,7 +66,7 @@ const buttonContainer = {
 };
 
 const button = {
-  backgroundColor: "#0f172a",
+  backgroundColor: "#c2410c",
   color: "#ffffff",
   padding: "12px 24px",
   borderRadius: "6px",
@@ -86,20 +87,20 @@ export default function AuthEmail({ userName, resetLink }) {
 
   return e(Html, null,
     e(Head, null),
-    e(Preview, null, "Reset your chillow password"),
+    e(Preview, null, "Use your secure password-reset link. It expires in 1 hour."),
     e(Body, { style: main },
       e(Container, { style: container },
         e(Section, { style: header },
-          e(Heading, { style: headingStyle }, "chillow")
+          e(Heading, { style: headingStyle }, "Chillow")
         ),
         e(Section, { style: content },
           e(Text, { style: greeting }, `Hello ${userName || "there"},`),
           e(Text, { style: text }, "We received a request to reset the password associated with your chillow account."),
-          e(Text, { style: text }, "You can reset your password immediately by clicking the button below:"),
+          e(Text, { style: text }, "Use the secure button below to reset it. This link expires in 1 hour."),
           e(Section, { style: buttonContainer },
             e(Button, { href: resetLink, style: button }, "Reset Password")
           ),
-          e(Text, { style: footerText }, "If you did not request this, please ignore this email.")
+          e(Text, { style: footerText }, "If you did not request this, you can safely ignore this email.")
         )
       )
     )

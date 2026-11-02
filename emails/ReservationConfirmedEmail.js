@@ -16,6 +16,7 @@ export default function ReservationConfirmedEmail({ businessName, businessLogoUr
       "Great news!",
       `Your reservation at ${businessName} has been confirmed.`,
     ],
+    statusNotice: { text: "Confirmed", tone: "success" },
     detailsTitle: "Reservation Details",
     details: [
       { label: "Date", value: formatReservationDate(reservation.date) },

@@ -40,6 +40,13 @@ export function uploadSingleImage(req, res, next) {
       if (req.file?.size > MAX_IMAGE_UPLOAD_BYTES) {
         return res.status(413).json({ error: "Image must be 5MB or smaller." })
       }
+      const bytes = req.file?.buffer
+      const declared = req.file?.mimetype
+      const isJpeg = bytes?.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+      const isPng = bytes?.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      const isWebp = bytes?.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP"
+      const contentMatchesMime = (declared === "image/jpeg" && isJpeg) || (declared === "image/png" && isPng) || (declared === "image/webp" && isWebp)
+      if (!contentMatchesMime) return res.status(415).json({ error: "Image content does not match an allowed JPEG, PNG, or WebP file." })
       return next()
     }
     if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
@@ -122,6 +129,40 @@ router.post(
   }
   },
 )
+
+async function persistBrandAsset(req, res) {
+  const businessId = req.session?.user?.businessId
+  const assetType = req.body?.assetType
+  if (!businessId) return res.status(401).json({ error: "Unauthorized" })
+  if (!["logo", "cover"].includes(assetType)) return res.status(400).json({ error: "assetType must be logo or cover" })
+  if (!req.file) return res.status(400).json({ error: "Image file is required" })
+
+  const business = await Business.findOne({ businessId })
+  if (!business) return res.status(404).json({ error: "Business not found" })
+  const previousLogoPublicId = business.logoPublicId
+  const { secure_url, public_id } = await uploadToCloudinary(req.file.buffer, `quickserve/${businessId}/branding/${assetType}s`, req.file.mimetype)
+  try {
+    business.branding = { ...(business.branding?.toObject?.() || business.branding || {}), [assetType === "logo" ? "logoUrl" : "coverImageUrl"]: secure_url }
+    if (assetType === "logo") {
+      business.logoUrl = secure_url
+      business.logoPublicId = public_id
+    }
+    await business.save()
+  } catch (error) {
+    await deleteFromCloudinary(public_id)
+    throw error
+  }
+  await Promise.all([invalidatePublicBusinessConfig(businessId), invalidatePublicBusinessRoute(business.countryCode, business.slug)])
+  if (assetType === "logo" && previousLogoPublicId && previousLogoPublicId !== public_id) {
+    deleteFromCloudinary(previousLogoPublicId).catch((error) => console.error("[upload/brand-asset] old-logo cleanup failed", error?.message))
+  }
+  return res.json({ assetType, url: secure_url, publicId: public_id, branding: business.branding, logoUrl: business.logoUrl })
+}
+
+router.post("/brand-asset", requireManagementArea(MANAGEMENT_ACCESS_AREAS.BRANDING), uploadSingleImage, async (req, res) => {
+  try { return await persistBrandAsset(req, res) }
+  catch (err) { console.error("[upload/brand-asset]", err); return res.status(500).json({ error: err.message || "Upload failed" }) }
+})
 
 router.post(
   "/property-photo",

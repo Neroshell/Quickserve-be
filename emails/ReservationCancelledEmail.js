@@ -30,6 +30,9 @@ export default function ReservationCancelledEmail({ businessName, businessLogoUr
           "Thank you for your reservation request.",
           "Unfortunately, we are unable to accommodate this reservation.",
         ],
+    statusNotice: isOwnerCancellation
+      ? { text: isNoRefund ? "Cancelled · No refund issued" : "Cancelled", tone: "danger" }
+      : { text: "Unavailable", tone: "warning" },
     detailsTitle: isOwnerCancellation
       ? "Cancellation Details"
       : "Requested Details",

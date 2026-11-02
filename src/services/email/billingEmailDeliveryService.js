@@ -190,6 +190,35 @@ function billingLink() {
     return `${getCanonicalFrontendOrigin()}/owner/billing`
 }
 
+function escapeEmailHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;")
+}
+
+/**
+ * Billing messages are intentionally self-contained HTML because this delivery
+ * path must remain usable without changing its durable queue contract. The
+ * presentation uses tables and inline styles for broad email-client support.
+ */
+function renderBillingEmail({ title, preview = "", status, tone = "info", greeting, paragraphs = [], detailHtml = "", action = null, footer = "" }) {
+    const tones = {
+        info: { foreground: "#1d4ed8", background: "#eff6ff", border: "#bfdbfe" },
+        success: { foreground: "#166534", background: "#f0fdf4", border: "#bbf7d0" },
+        warning: { foreground: "#92400e", background: "#fffbeb", border: "#fde68a" },
+        danger: { foreground: "#b91c1c", background: "#fef2f2", border: "#fecaca" },
+    }
+    const palette = tones[tone] || tones.info
+    const copy = paragraphs.map((paragraph) => `<p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:24px;">${escapeEmailHtml(paragraph)}</p>`).join("")
+    const actionHtml = action?.href && action?.label
+        ? `<table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:28px auto 0;"><tr><td align="center" bgcolor="#c2410c" style="border-radius:8px;"><a href="${escapeEmailHtml(action.href)}" style="display:inline-block;padding:14px 24px;color:#ffffff;font-size:15px;font-weight:700;line-height:20px;text-decoration:none;">${escapeEmailHtml(action.label)}</a></td></tr></table>`
+        : ""
+    return `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body style="margin:0;padding:0;background:#f6f9fc;font-family:Arial,Helvetica,sans-serif;"><div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">${escapeEmailHtml(preview)}</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center" style="padding:32px 12px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden;"><tr><td style="border-top:4px solid #ea601a;padding:20px 32px 18px;text-align:center;"><p style="margin:0 0 8px;color:#64748b;font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">Chillow</p><h1 style="margin:0;color:#0f172a;font-size:26px;line-height:34px;">${escapeEmailHtml(title)}</h1></td></tr><tr><td style="padding:0 32px 32px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px;background:${palette.background};border:1px solid ${palette.border};border-radius:8px;"><tr><td style="padding:12px 16px;color:${palette.foreground};font-size:14px;font-weight:700;">${escapeEmailHtml(status)}</td></tr></table><p style="margin:0 0 16px;color:#0f172a;font-size:16px;font-weight:700;line-height:24px;">Hi ${escapeEmailHtml(greeting || "there")},</p>${copy}${detailHtml}${actionHtml}${footer ? `<p style="margin:24px 0 0;color:#64748b;font-size:13px;line-height:20px;">${escapeEmailHtml(footer)}</p>` : ""}</td></tr><tr><td style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;color:#64748b;font-size:13px;">Chillow billing</td></tr></table></td></tr></table></body></html>`
+}
+
 async function upcomingAmountHtml({ business, plan, stripeClient }) {
     if (!business.stripeCustomerId || !stripeClient) {
         return { html: "<p>Your invoice amount will be finalized by Stripe before billing.</p>", currency: resolveBillingCurrency({ plan, business }) }
@@ -234,8 +263,16 @@ export async function buildBillingNotification({
             ? invoiceDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })
             : "tomorrow"
         return {
-            subject: "Your QuickServe invoice is coming tomorrow",
-            html: `<div><p>Hi ${name},</p><p>Your next QuickServe invoice will be charged on <strong>${formatted}</strong>.</p>${preview.html}<p>This includes your subscription (if any) and offline commission fees for this billing period.</p><p><a href="${link}">Manage billing</a></p></div>`,
+            subject: "Your Chillow invoice is coming up",
+            html: renderBillingEmail({
+                title: "Your next invoice is coming up",
+                preview: `Estimated charge available for ${formatted}.`,
+                status: "Upcoming invoice",
+                greeting: name,
+                paragraphs: [`Your next Chillow invoice is scheduled for ${formatted}.`, "Charges can include your subscription and applicable offline commissions."],
+                detailHtml: `<div style="margin:0 0 8px;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;color:#0f172a;font-size:15px;line-height:24px;">${preview.html}</div>`,
+                action: { href: link, label: "Manage billing" },
+            }),
             currency: preview.currency,
         }
     }
@@ -248,22 +285,29 @@ export async function buildBillingNotification({
             ? ` of ${formatMoneyFromMinorUnits(amountMinor, currency)}`
             : ""
         return {
-            subject: "QuickServe Payment Successful",
-            html: `<div><p>Hi ${name},</p><p>Your recent QuickServe payment${amountText} has been successfully processed.</p><p>Thank you for your continued partnership!</p></div>`,
+            subject: "Your Chillow payment was successful",
+            html: renderBillingEmail({
+                title: "Payment successful",
+                preview: `Your Chillow payment${amountText} was processed successfully.`,
+                status: "Paid",
+                tone: "success",
+                greeting: name,
+                paragraphs: [`Your Chillow payment${amountText} has been processed successfully.`, "Thank you for continuing to operate with Chillow."],
+            }),
             currency,
         }
     }
     if (jobName === EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_3) {
-        return { subject: "Action Required: QuickServe Payment Overdue", html: `<div><p>Hi ${name},</p><p>We were unable to process your recent QuickServe payment. Your account is currently <strong>overdue</strong>.</p><p>Please update your payment method to avoid service interruption.</p><p><a href="${link}">Update billing</a></p></div>` }
+        return { subject: "Action needed: Chillow payment overdue", html: renderBillingEmail({ title: "Your payment is overdue", preview: "Update your payment method to help avoid interruption.", status: "Payment overdue", tone: "warning", greeting: name, paragraphs: ["We could not complete your Chillow payment. Update your payment method to help avoid interruption to offline ordering services."], action: { href: link, label: "Review billing" } }) }
     }
     if (jobName === EMAIL_JOB_NAMES.BILLING_OVERDUE_DAY_5) {
-        return { subject: "Final Warning: QuickServe Payment Overdue", html: `<div><p>Hi ${name},</p><p>Your QuickServe account is significantly overdue. <strong>If payment is not resolved, offline services will be restricted soon.</strong></p><p><a href="${link}">Update billing</a></p></div>` }
+        return { subject: "Final reminder: Chillow payment overdue", html: renderBillingEmail({ title: "Final payment reminder", preview: "Offline ordering may be restricted if payment remains unresolved.", status: "Final reminder", tone: "danger", greeting: name, paragraphs: ["Your Chillow payment is still overdue. If it is not resolved, offline ordering services may soon be restricted."], action: { href: link, label: "Review billing" } }) }
     }
     if (jobName === EMAIL_JOB_NAMES.BILLING_OFFLINE_RESTRICTED) {
-        return { subject: "QuickServe Offline Services Restricted", html: `<div><p>Hi ${name},</p><p>Because your QuickServe payment has been overdue for 7 days, <strong>your offline ordering services have been temporarily restricted</strong>.</p><p>You can still access your dashboard and receive online-paid orders.</p><p><a href="${link}">Update billing to restore</a></p></div>` }
+        return { subject: "Chillow offline ordering is restricted", html: renderBillingEmail({ title: "Offline ordering is restricted", preview: "Dashboard access and online-paid orders remain available.", status: "Offline ordering restricted", tone: "danger", greeting: name, paragraphs: ["Your Chillow payment has been overdue for seven days, so offline ordering services are temporarily restricted.", "You can still access your dashboard and receive online-paid orders. Resolve the billing issue to restore offline ordering."], action: { href: link, label: "Review billing" } }) }
     }
     if (jobName === EMAIL_JOB_NAMES.BILLING_SERVICE_RESTORED) {
-        return { subject: "QuickServe Services Restored", html: `<div><p>Hi ${name},</p><p>Good news! Your QuickServe billing has been resolved and <strong>your offline ordering services have been fully restored</strong>.</p><p>Thank you for your prompt attention.</p></div>` }
+        return { subject: "Chillow offline ordering has been restored", html: renderBillingEmail({ title: "Offline ordering is available again", preview: "Your offline ordering services are available again.", status: "Services restored", tone: "success", greeting: name, paragraphs: ["Your Chillow billing issue has been resolved. Offline ordering services have been restored.", "You can continue using supported offline ordering workflows."] }) }
     }
     throw new TypeError("Unsupported billing email job")
 }

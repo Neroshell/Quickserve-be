@@ -1,4 +1,5 @@
 import React from "react";
+import { isSafeBusinessLogoUrl } from "./emailPresentationUtils.js";
 import {
   Html,
   Head,
@@ -33,14 +34,15 @@ const container = {
 };
 
 const header = {
-  backgroundColor: "#ea580c",
-  padding: "32px 20px",
+  borderTop: "4px solid #ea601a",
+  padding: "20px 20px 18px",
   textAlign: "center",
+  backgroundColor: "#ffffff",
 };
 
 const brandText = {
-  color: "rgba(255, 255, 255, 0.8)",
-  fontSize: "14px",
+  color: "#64748b",
+  fontSize: "12px",
   fontWeight: "600",
   letterSpacing: "1px",
   textTransform: "uppercase",
@@ -48,47 +50,29 @@ const brandText = {
 };
 
 const headingStyle = {
-  color: "#ffffff",
-  fontSize: "28px",
+  color: "#0f172a",
+  fontSize: "26px",
   fontWeight: "bold",
   margin: "0 0 8px 0",
 };
 
 const subheading = {
-  color: "rgba(255, 255, 255, 0.9)",
-  fontSize: "16px",
+  color: "#334155",
+  fontSize: "15px",
   margin: "0",
 };
 
 const businessSection = {
-  padding: "32px 20px 20px",
+  padding: "16px 20px 12px",
 };
 
 const logo = {
   borderRadius: "8px",
-  margin: "0 auto 16px",
-};
-
-const logoPlaceholder = {
-  width: "64px",
-  height: "64px",
-  borderRadius: "8px",
-  backgroundColor: "#f1f5f9",
-  margin: "0 auto 16px",
-  textAlign: "center",
-  lineHeight: "64px",
-};
-
-const logoPlaceholderText = {
-  fontSize: "24px",
-  fontWeight: "bold",
-  color: "#94a3b8",
-  margin: "0",
-  lineHeight: "64px",
+  margin: "0 auto 10px",
 };
 
 const businessNameText = {
-  fontSize: "20px",
+  fontSize: "16px",
   fontWeight: "600",
   color: "#334155",
   margin: "0",
@@ -98,6 +82,59 @@ const businessNameText = {
 const detailsSection = {
   padding: "0 32px 24px",
 };
+
+function PaymentStatusBadge({ paymentStatus }) {
+  const e = React.createElement;
+  const isPaid = paymentStatus === "paid";
+  const colors = isPaid
+    ? { backgroundColor: "#f0fdf4", border: "1px solid #bbf7d0", color: "#166534" }
+    : { backgroundColor: "#fffbeb", border: "1px solid #fde68a", color: "#92400e" };
+
+  // A Section is always emitted as width="100%" by React Email. Keep the
+  // alignment table full width, but make the coloured table intrinsic-width so
+  // its padding can never make a percentage-sized table overflow on iOS Mail.
+  return e("table", {
+    role: "presentation",
+    width: "100%",
+    border: "0",
+    cellPadding: "0",
+    cellSpacing: "0",
+    style: { borderCollapse: "collapse", margin: "0 0 20px" },
+  },
+    e("tbody", null,
+      e("tr", null,
+        e("td", { align: "center", style: { padding: "0 20px", textAlign: "center" } },
+          e("table", {
+            role: "presentation",
+            align: "center",
+            border: "0",
+            cellPadding: "0",
+            cellSpacing: "0",
+            style: { borderCollapse: "separate", margin: "0 auto", width: "auto" },
+          },
+            e("tbody", null,
+              e("tr", null,
+                e("td", {
+                  style: {
+                    ...colors,
+                    borderRadius: "8px",
+                    fontSize: "14px",
+                    fontWeight: "700",
+                    lineHeight: "20px",
+                    padding: "12px 14px",
+                    textAlign: "center",
+                    verticalAlign: "middle",
+                    whiteSpace: "nowrap",
+                  },
+                }, isPaid ? "Paid" : "Payment pending · Unpaid")
+              )
+            )
+          )
+        )
+      )
+    )
+  );
+}
 
 const detailLabel = {
   fontSize: "12px",
@@ -238,7 +275,7 @@ function formatPrice(amount, currency) {
 }
 
 export default function ReceiptEmail({
-  businessName = "QuickServe",
+  businessName = "Chillow",
   businessLogoUrl,
   orderId,
   orderDate,
@@ -267,7 +304,8 @@ export default function ReceiptEmail({
     offline: "Pay in person",
   };
   const displayPaymentMethod = paymentMethodMap[paymentMethod] || paymentMethod;
-  const displayPaymentStatus = paymentStatus === "paid" ? "Paid" : "Pending / Unpaid";
+  const displayPaymentStatus = paymentStatus === "paid" ? "Paid" : "Payment pending · Unpaid";
+  const hasBusinessLogo = isSafeBusinessLogoUrl(businessLogoUrl);
 
   return e(Html, null,
     e(Head, null),
@@ -279,7 +317,7 @@ export default function ReceiptEmail({
         e(Section, { style: header },
           e(Row, null,
             e(Column, { align: "center" },
-              e(Text, { style: brandText }, "QuickServe"),
+              e(Text, { style: brandText }, "Chillow"),
               e(Heading, { style: headingStyle }, "Order Receipt"),
               e(Text, { style: subheading }, "Thank you for your order!")
             )
@@ -290,15 +328,15 @@ export default function ReceiptEmail({
         e(Section, { style: businessSection },
           e(Row, null,
             e(Column, { align: "center" },
-              businessLogoUrl
-                ? e(Img, { src: businessLogoUrl, width: "64", height: "64", alt: businessName, style: logo })
-                : e("div", { style: logoPlaceholder },
-                    e(Text, { style: logoPlaceholderText }, businessName.charAt(0))
-                  ),
+              hasBusinessLogo
+                ? e(Img, { src: businessLogoUrl, width: "64", height: "64", alt: `${businessName} logo`, style: logo })
+                : null,
               e(Text, { style: businessNameText }, businessName)
             )
           )
         ),
+
+        e(PaymentStatusBadge, { paymentStatus }),
 
         // Order details
         e(Section, { style: detailsSection },
@@ -379,7 +417,7 @@ export default function ReceiptEmail({
             e(Column, { align: "right", style: { width: "80px" } }, e(Text, { style: totalValue }, formatPrice(tipAmount, currency)))
           ) : null,
           e(Row, { style: grandTotalRow },
-            e(Column, { align: "right" }, e(Text, { style: grandTotalLabel }, "Total")),
+            e(Column, { align: "right" }, e(Text, { style: grandTotalLabel }, paymentStatus === "paid" ? "Total paid" : "Total due")),
             e(Column, { align: "right", style: { width: "80px" } }, e(Text, { style: grandTotalValue }, formatPrice(total, currency)))
           )
         ),
@@ -389,7 +427,7 @@ export default function ReceiptEmail({
         // Footer
         e(Section, { style: footer },
           e(Text, { style: footerText }, "Please keep this email for your records."),
-          e(Text, { style: footerLink }, "Powered by QuickServe")
+          e(Text, { style: footerLink }, "Powered by Chillow")
         )
       )
     )
