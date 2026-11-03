@@ -429,11 +429,16 @@ export async function processReservationEmailDelivery(
       viewReservationUrl = `${arrivalUrl}&view=1`;
     }
 
+    const includesLocation = [
+      EMAIL_JOB_NAMES.RESTAURANT_RESERVATION_CONFIRMED,
+      EMAIL_JOB_NAMES.RESERVATION_ARRIVAL_REMINDER,
+    ].includes(job.name);
     const result = await sender({
       to: recipient,
       businessName: business.displayName || business.name,
       businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
       primaryColor: business.branding?.primaryColor,
+      ...(includesLocation ? { businessAddress: business.address } : {}),
       reservation: reservationObject,
       arrivalUrl,
       notComingUrl,

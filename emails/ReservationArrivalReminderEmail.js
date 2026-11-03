@@ -5,6 +5,7 @@ export default function ReservationArrivalReminderEmail({
   businessName,
   businessLogoUrl,
   primaryColor,
+  businessAddress,
   reservation = {},
   arrivalUrl,
   notComingUrl,
@@ -35,6 +36,7 @@ export default function ReservationArrivalReminderEmail({
       { label: "Service Point", value: reservation.servicePointLabel },
       { label: "Notes", value: reservation.specialRequest },
     ],
+    location: { address: businessAddress },
     callToAction: { text: "I'm Here", url: arrivalUrl },
     cancelAction: notComingUrl
       ? {

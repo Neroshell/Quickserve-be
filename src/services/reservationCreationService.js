@@ -1075,6 +1075,7 @@ export async function createRestaurantReservation({
               businessName: businessDisplayName,
               businessLogoUrl: business.branding?.logoUrl || business.logoUrl,
               primaryColor: business.branding?.primaryColor,
+              businessAddress: business.address,
               reservation: reservationObj,
             }),
         }),

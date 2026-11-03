@@ -1002,7 +1002,11 @@ export async function updateReservationStatus(req, res) {
                   status === "confirmed"
                     ? reservationObj.confirmedAt || reservationObj.updatedAt
                     : reservationObj.cancelledAt || reservationObj.updatedAt,
-                directSend: () => sender(emailArgs),
+              directSend: () => sender(
+                status === "confirmed"
+                  ? { ...emailArgs, businessAddress: business.address }
+                  : emailArgs,
+              ),
               });
               if (dispatch.mode === "queued") {
                 emailStatus = dispatch.queued ? "queued" : "pending_retry";

@@ -1,5 +1,6 @@
 import React from "react";
 import { isSafeBusinessLogoUrl } from "./emailPresentationUtils.js";
+import BusinessLocationSection, { normalizeBusinessAddress } from "./BusinessLocationSection.js";
 import {
   Html,
   Head,
@@ -34,6 +35,7 @@ import {
  * @param {Array<string|React.ReactNode>} [props.intro]   - Paragraphs shown above the details box
  * @param {string} [props.detailsTitle]      - Heading for the details box
  * @param {Array<{label:string,value:any}>} [props.details] - Detail rows (rows with falsy value are skipped)
+ * @param {{address:string}|null} [props.location] - Explicit opt-in venue location
  * @param {Array<string|React.ReactNode>} [props.closing]  - Paragraphs shown below the details box
  */
 export default function ReservationEmailBase({
@@ -45,6 +47,7 @@ export default function ReservationEmailBase({
   intro = [],
   detailsTitle = "Reservation Details",
   details = [],
+  location = null,
   closing = [],
   /** Optional explicit lifecycle status: { text: string, tone?: 'info'|'success'|'warning'|'danger' } */
   statusNotice = null,
@@ -61,6 +64,7 @@ export default function ReservationEmailBase({
   // business colours in an email client.
   const brand = "#c2410c";
   const hasBusinessLogo = isSafeBusinessLogoUrl(businessLogoUrl);
+  const locationAddress = normalizeBusinessAddress(location?.address);
 
   const visibleDetails = details.filter((d) => d && d.value !== null && d.value !== undefined && d.value !== "");
 
@@ -115,6 +119,14 @@ export default function ReservationEmailBase({
                   )
                 )
               )
+            )
+          : null,
+
+        // Location is deliberately opt-in so lifecycle emails only show it
+        // where the guest needs venue directions.
+        locationAddress
+          ? e(Section, { style: locationOuter },
+              e(BusinessLocationSection, { address: locationAddress })
             )
           : null,
 
@@ -296,6 +308,10 @@ const detailsBox = {
   border: "1px solid #e2e8f0",
   borderRadius: "8px",
   padding: "20px 24px",
+};
+
+const locationOuter = {
+  padding: "0 32px",
 };
 
 const detailsHeading = {

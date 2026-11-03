@@ -1,5 +1,6 @@
 import React from "react";
 import { isSafeBusinessLogoUrl } from "./emailPresentationUtils.js";
+import BusinessLocationSection from "./BusinessLocationSection.js";
 import {
   Html,
   Head,
@@ -61,6 +62,7 @@ const confirmedStatus = {
 export default function HotelPaymentConfirmationEmail({
   businessName = "Hotel Name",
   businessLogoUrl,
+  businessAddress,
   customerName = "Guest",
   publicReference = "QS-H-123456",
   servicePointLabel = "Deluxe Room",
@@ -202,6 +204,8 @@ export default function HotelPaymentConfirmationEmail({
               )
             )
           ),
+
+          e(BusinessLocationSection, { address: businessAddress }),
           
           // Check-In Code
           e(Section, { style: codeBox },

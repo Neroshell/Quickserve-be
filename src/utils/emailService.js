@@ -435,13 +435,20 @@ export async function sendReservationConfirmedEmail({
   businessName,
   businessLogoUrl,
   primaryColor,
+  businessAddress,
   reservation,
   idempotencyKey,
   returnResult = false,
   timeoutMs,
 }) {
   try {
-    const html = await render(React.createElement(ReservationConfirmedEmail, { businessName, businessLogoUrl, primaryColor, reservation }));
+    const html = await render(React.createElement(ReservationConfirmedEmail, {
+      businessName,
+      businessLogoUrl,
+      primaryColor,
+      businessAddress,
+      reservation,
+    }));
     const subject = `Reservation confirmed · ${businessName}`;
     return await deliverPreparedEmail(
       { to, subject, html, from: RESERVATION_FROM, idempotencyKey },
@@ -516,6 +523,7 @@ export async function sendReservationArrivalReminderEmail({
   businessName,
   businessLogoUrl,
   primaryColor,
+  businessAddress,
   reservation,
   arrivalUrl,
   notComingUrl,
@@ -531,6 +539,7 @@ export async function sendReservationArrivalReminderEmail({
         businessName,
         businessLogoUrl,
         primaryColor,
+        businessAddress,
         reservation,
         arrivalUrl,
         notComingUrl,
@@ -657,6 +666,7 @@ export async function sendHotelPaymentConfirmationEmail({ reservation, business,
     const html = await render(React.createElement(HotelPaymentConfirmationEmail, {
       businessName,
       businessLogoUrl: business?.branding?.logoUrl || business?.logoUrl,
+      businessAddress: business?.address,
       primaryColor,
       customerName: reservation.name,
       publicReference: reservation.publicReference || reservation._id.toString(),

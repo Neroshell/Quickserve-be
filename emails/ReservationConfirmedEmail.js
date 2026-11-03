@@ -4,7 +4,13 @@ import ReservationEmailBase, { formatReservationDate } from "./ReservationEmailB
 /**
  * Customer-facing email sent when a reservation is confirmed by the business.
  */
-export default function ReservationConfirmedEmail({ businessName, businessLogoUrl, primaryColor, reservation = {} }) {
+export default function ReservationConfirmedEmail({
+  businessName,
+  businessLogoUrl,
+  primaryColor,
+  businessAddress,
+  reservation = {},
+}) {
   return React.createElement(ReservationEmailBase, {
     businessName,
     businessLogoUrl,
@@ -24,6 +30,7 @@ export default function ReservationConfirmedEmail({ businessName, businessLogoUr
       { label: "Guests", value: reservation.guestCount },
       { label: "Service Point", value: reservation.servicePointLabel },
     ],
+    location: { address: businessAddress },
     closing: [
       "We look forward to welcoming you. Thank you,",
     ],
